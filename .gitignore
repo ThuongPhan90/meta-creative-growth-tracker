@@ -1,0 +1,27 @@
+# dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+*.tsbuildinfo
+
+# local secrets
+.env*
+!.env.example
+.vercel/
+
+# tests and coverage
+coverage/
+playwright-report/
+test-results/
+
+# editors and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# local QA artifacts
+.qa/
+*.log

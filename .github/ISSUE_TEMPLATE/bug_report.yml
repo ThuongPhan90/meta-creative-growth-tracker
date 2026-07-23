@@ -1,0 +1,77 @@
+name: Báo lỗi
+description: Báo hành vi sai có thể tái hiện
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Không gửi access token, App Secret, cookie, DATABASE_URL hoặc Meta ID thật.
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Chế độ
+      options:
+        - Demo
+        - Live
+    validations:
+      required: true
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Môi trường
+      options:
+        - Local
+        - Vercel Preview
+        - Vercel Production
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit/version
+      placeholder: abc1234
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Bước tái hiện
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Kết quả mong đợi
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Kết quả thực tế
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Log/ảnh đã che dữ liệu
+      description: Giữ Meta error code/request ID nếu có, xóa credential và identifier.
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Xác nhận an toàn
+      options:
+        - label: Tôi đã xóa secret, token, cookie, database URL và dữ liệu Meta thật.
+          required: true

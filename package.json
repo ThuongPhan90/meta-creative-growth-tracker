@@ -1,0 +1,42 @@
+{
+  "name": "meta-creative-growth-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Self-hosted, read-only Meta creative and app growth tracker for a single owner.",
+  "license": "MIT",
+  "engines": {
+    "node": "24.x"
+  },
+  "packageManager": "pnpm@10.34.5",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:check": "tsx scripts/check-database.ts"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "next": "16.2.11",
+    "postgres": "^3.4.9",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "server-only": "^0.0.1",
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "eslint": "^9.17.0",
+    "eslint-config-next": "16.2.11",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
+  }
+}
