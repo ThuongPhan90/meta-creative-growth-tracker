@@ -357,6 +357,38 @@ describe("MetaMarketingApiSyncAdapter", () => {
     ]);
   });
 
+  it("requires reauthorization when a required read permission is missing", async () => {
+    const healthUpdates: unknown[] = [];
+    const repository = {
+      updateConnectionHealth: async (update: unknown) => {
+        healthUpdates.push(update);
+      },
+    } as unknown as TrackerRepository;
+    const client: MetaGraphReadClient = {
+      request: async <T>() => ({ id: "user-1", name: "Owner" }) as T,
+      getAll: async <T>() =>
+        [
+          { permission: "ads_read", status: "granted" },
+          { permission: "pages_show_list", status: "granted" },
+        ] as T[],
+    };
+    const adapter = new MetaMarketingApiSyncAdapter({
+      client,
+      expectedMetaUserId: "user-1",
+    });
+
+    await expect(adapter.validate(context(repository))).rejects.toMatchObject({
+      code: "META_PERMISSIONS_REQUIRED",
+      retryable: false,
+    });
+    expect(healthUpdates).toEqual([
+      expect.objectContaining({
+        status: "needs_reauth",
+        errorCode: "META_PERMISSIONS_REQUIRED",
+      }),
+    ]);
+  });
+
   it("preserves the previous metric window when asset mapping is partial", async () => {
     const client: MetaGraphReadClient = {
       request: async <T>(path: string) => {

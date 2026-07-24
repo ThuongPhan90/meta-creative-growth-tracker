@@ -117,6 +117,20 @@ export function getSecurityServerEnv(
   if (!ownerSetupSecret || Buffer.byteLength(ownerSetupSecret, "utf8") < 32) {
     invalid.push("OWNER_SETUP_SECRET");
   }
+  const secretEntries = [
+    ["SESSION_SECRET", sessionSecret],
+    ["TOKEN_ENCRYPTION_KEY", tokenEncryptionKey],
+    ["OWNER_SETUP_SECRET", ownerSetupSecret],
+  ] as const;
+  for (let left = 0; left < secretEntries.length; left += 1) {
+    for (let right = left + 1; right < secretEntries.length; right += 1) {
+      const [leftName, leftValue] = secretEntries[left];
+      const [rightName, rightValue] = secretEntries[right];
+      if (leftValue && rightValue && leftValue === rightValue) {
+        invalid.push(leftName, rightName);
+      }
+    }
+  }
 
   if (invalid.length > 0) {
     throw new EnvironmentValidationError(invalid);

@@ -47,6 +47,7 @@ export async function POST(request: NextRequest) {
       version: meta.metaGraphVersion,
       redirectUri,
       state,
+      rerequestDeclinedPermissions: true,
     });
 
     const response = NextResponse.redirect(authorizationUrl, 303);

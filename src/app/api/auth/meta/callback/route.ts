@@ -4,6 +4,7 @@ import {
   exchangeForLongLivedMetaToken,
   exchangeMetaAuthorizationCode,
   MetaGraphClient,
+  missingMetaOAuthScopes,
 } from "@/lib/meta";
 import { createTrackerRepository } from "@/lib/db";
 import {
@@ -20,6 +21,7 @@ import { ensureDatabaseReady, isDemoMode } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+const META_REQUEST_TIMEOUT_MS = 15_000;
 
 type MetaIdentity = {
   id: string;
@@ -39,7 +41,13 @@ function connectRedirect(
   const url = new URL("/connect", appUrl);
   url.searchParams.set("error", code);
   url.searchParams.set("message", message);
-  return NextResponse.redirect(url, 303);
+  return NextResponse.redirect(url, {
+    status: 303,
+    headers: {
+      "Cache-Control": "no-store",
+      "Referrer-Policy": "no-referrer",
+    },
+  });
 }
 
 function clearNonce(response: NextResponse) {
@@ -104,12 +112,14 @@ export async function GET(request: NextRequest) {
       version: meta.metaGraphVersion,
       code,
       redirectUri,
+      signal: AbortSignal.timeout(META_REQUEST_TIMEOUT_MS),
     });
     const longLived = await exchangeForLongLivedMetaToken({
       appId: meta.metaAppId,
       appSecret: meta.metaAppSecret,
       version: meta.metaGraphVersion,
       shortLivedAccessToken: shortLived.accessToken,
+      signal: AbortSignal.timeout(META_REQUEST_TIMEOUT_MS),
     });
 
     const graph = new MetaGraphClient({
@@ -117,26 +127,69 @@ export async function GET(request: NextRequest) {
       appSecret: meta.metaAppSecret,
       version: meta.metaGraphVersion,
     });
-    const identity = await graph.request<MetaIdentity>("me", {
-      fields: "id,name",
-    });
+    const identity = await graph.request<MetaIdentity>(
+      "me",
+      {
+        fields: "id,name",
+      },
+      {
+        signal: AbortSignal.timeout(META_REQUEST_TIMEOUT_MS),
+      },
+    );
     if (!identity.id) {
       throw new Error("Meta did not return an owner identity.");
     }
 
-    let permissions: MetaPermission[] = [];
-    try {
-      permissions = await graph.getAll<MetaPermission>("me/permissions", {
+    const permissions = await graph.getAll<MetaPermission>(
+      "me/permissions",
+      {
         limit: 100,
-      });
-    } catch {
-      permissions = [];
+      },
+      {
+        maxItems: 500,
+        maxPages: 5,
+        signal: AbortSignal.timeout(META_REQUEST_TIMEOUT_MS),
+      },
+    );
+    const grantedScopes = permissions
+      .filter((item) => item.status === "granted")
+      .map((item) => item.permission);
+    const declinedScopes = permissions
+      .filter((item) => item.status !== "granted")
+      .map((item) => item.permission);
+    const missingScopes = missingMetaOAuthScopes(grantedScopes);
+    if (missingScopes.length > 0) {
+      const response = connectRedirect(
+        appUrl,
+        "META_PERMISSIONS_REQUIRED",
+        `Meta chưa cấp đủ quyền chỉ đọc bắt buộc: ${missingScopes.join(", ")}.`,
+      );
+      clearNonce(response);
+      return response;
     }
 
     await ensureDatabaseReady();
     const repository = await createTrackerRepository();
-    const existing = await repository.getConnection();
-    if (existing && existing.metaUserId !== identity.id) {
+
+    const expiresAt =
+      longLived.expiresInSeconds === null
+        ? null
+        : new Date(
+            Date.now() + longLived.expiresInSeconds * 1_000,
+          ).toISOString();
+    const connection = await repository.claimOrRefreshConnection({
+      metaUserId: identity.id,
+      metaUserName: identity.name ?? null,
+      encryptedAccessToken: encryptMetaToken(longLived.accessToken, {
+        binding: identity.id,
+        key: security.tokenEncryptionKey,
+      }),
+      grantedScopes,
+      declinedScopes,
+      tokenExpiresAt: expiresAt,
+      status: "connected",
+    });
+    if (!connection) {
       const response = connectRedirect(
         appUrl,
         "OWNER_MISMATCH",
@@ -146,31 +199,14 @@ export async function GET(request: NextRequest) {
       return response;
     }
 
-    const expiresAt =
-      longLived.expiresInSeconds === null
-        ? null
-        : new Date(
-            Date.now() + longLived.expiresInSeconds * 1_000,
-          ).toISOString();
-    const connection = await repository.upsertConnection({
-      metaUserId: identity.id,
-      metaUserName: identity.name ?? null,
-      encryptedAccessToken: encryptMetaToken(longLived.accessToken, {
-        binding: identity.id,
-        key: security.tokenEncryptionKey,
-      }),
-      grantedScopes: permissions
-        .filter((item) => item.status === "granted")
-        .map((item) => item.permission),
-      declinedScopes: permissions
-        .filter((item) => item.status !== "granted")
-        .map((item) => item.permission),
-      tokenExpiresAt: expiresAt,
-      status: "connected",
-    });
-
     const returnUrl = new URL(stateClaims.returnTo, appUrl);
-    const response = NextResponse.redirect(returnUrl, 303);
+    const response = NextResponse.redirect(returnUrl, {
+      status: 303,
+      headers: {
+        "Cache-Control": "no-store",
+        "Referrer-Policy": "no-referrer",
+      },
+    });
     response.cookies.set(
       OWNER_SESSION_COOKIE,
       createOwnerSession(connection.connectionId, {

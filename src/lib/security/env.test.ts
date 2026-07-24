@@ -58,4 +58,24 @@ describe("server environment validation", () => {
       ownerSetupSecret: "o".repeat(32),
     });
   });
+
+  it("rejects reused security secrets without exposing their value", () => {
+    const reusedSecret = "a".repeat(64);
+    const error = (() => {
+      try {
+        getSecurityServerEnv({
+          SESSION_SECRET: reusedSecret,
+          TOKEN_ENCRYPTION_KEY: reusedSecret,
+          OWNER_SETUP_SECRET: "o".repeat(32),
+        });
+      } catch (cause) {
+        return cause;
+      }
+    })();
+
+    expect(error).toBeInstanceOf(EnvironmentValidationError);
+    expect(String(error)).toContain("SESSION_SECRET");
+    expect(String(error)).toContain("TOKEN_ENCRYPTION_KEY");
+    expect(String(error)).not.toContain(reusedSecret);
+  });
 });

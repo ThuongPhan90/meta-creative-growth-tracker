@@ -23,6 +23,7 @@ import {
   computeOsCpiBaselines,
   rateCreativeCpi,
 } from "@/lib/reporting";
+import { evaluateMetaConnectionLifecycle } from "@/lib/meta";
 import {
   getRuntimeConfiguration,
   readDatabaseHealth,
@@ -321,6 +322,13 @@ function setupChecks(input: {
   lastInitialSyncAt: string | null;
   reportingTimezone?: string;
 }): SetupCheck[] {
+  const connectionLifecycle = input.connection
+    ? evaluateMetaConnectionLifecycle(input.connection)
+    : null;
+  const connectionReady =
+    input.connection?.status === "connected" &&
+    connectionLifecycle !== "needs_reauth";
+
   return [
     {
       id: "app",
@@ -377,12 +385,24 @@ function setupChecks(input: {
     {
       id: "connection",
       label: "Kết nối chủ sở hữu",
-      description: input.connection
-        ? `Đã khóa với ${input.connection.metaUserName ?? "Meta owner"}.`
+      description: connectionReady
+        ? `Đã khóa với ${input.connection?.metaUserName ?? "Meta owner"}.${
+            connectionLifecycle === "expiring_soon"
+              ? " Token sắp hết hạn."
+              : connectionLifecycle === "unknown"
+                ? " Chưa xác định được thời hạn token."
+                : ""
+          }`
+        : input.connection
+          ? "Kết nối cần xác thực lại trước khi đồng bộ."
         : "Đăng nhập Meta và cấp quyền read-only.",
-      status: input.connection ? "ready" : "locked",
-      actionLabel: input.connection ? undefined : "Kết nối Meta",
-      actionHref: input.connection ? undefined : "/connect",
+      status: connectionReady
+        ? connectionLifecycle === "healthy"
+          ? "ready"
+          : "warning"
+        : "locked",
+      actionLabel: connectionReady ? undefined : "Kết nối Meta",
+      actionHref: connectionReady ? undefined : "/connect",
     },
     {
       id: "sync",
@@ -715,16 +735,25 @@ export const getApplicationSnapshot = cache(
     const hasDelivery = delivery.some(
       (item) => item.impressions > 0 || item.spend > 0,
     );
+    const connectionLifecycle =
+      evaluateMetaConnectionLifecycle(connection);
+    const connectionReady =
+      connection.status === "connected" &&
+      connectionLifecycle !== "needs_reauth";
     const dashboard: DashboardViewModel = {
-      mode: connection.status === "connected" ? "connected" : "setup",
+      mode: connectionReady ? "connected" : "setup",
       ownerName: connection.metaUserName ?? "Owner",
       connectionLabel:
-        connection.status === "connected"
-          ? "Meta đã kết nối"
+        connectionReady
+          ? connectionLifecycle === "expiring_soon"
+            ? "Meta đã kết nối · token sắp hết hạn"
+            : "Meta đã kết nối"
           : `Meta ${connection.status}`,
       connectionDetail:
-        connection.status === "connected"
-          ? "Đang đọc toàn bộ tài sản mà owner token được Meta cấp quyền."
+        connectionReady
+          ? connectionLifecycle === "unknown"
+            ? "Đang đọc tài sản được cấp quyền; Meta chưa trả thời hạn truy cập."
+            : "Đang đọc toàn bộ tài sản mà owner token được Meta cấp quyền."
           : "Kết nối cần được xác thực lại trước lần đồng bộ tiếp theo.",
       lastSyncAt: formatTimestamp(
         lastSyncAt,
@@ -765,11 +794,19 @@ export const getApplicationSnapshot = cache(
         {
           label: "Quyền truy cập",
           status:
-            connection.status === "connected" ? "ready" : "error",
+            !connectionReady
+              ? "error"
+              : connectionLifecycle === "healthy"
+                ? "ready"
+                : "warning",
           detail:
-            connection.status === "connected"
-              ? "Token read-only hợp lệ"
-              : "Cần kết nối lại",
+            !connectionReady
+              ? "Cần kết nối lại"
+              : connectionLifecycle === "healthy"
+                ? "Token read-only còn hiệu lực"
+                : connectionLifecycle === "expiring_soon"
+                  ? "Token sắp hết hạn; nên kết nối lại"
+                  : "Chưa xác định được thời hạn token"
         },
         {
           label: "Event mapping",
