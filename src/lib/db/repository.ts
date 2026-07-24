@@ -174,12 +174,17 @@ export class TrackerRepository {
     )) as unknown as T[];
   }
 
-  async upsertConnection(
+  /**
+   * Atomically claims the single-owner deployment or refreshes the existing
+   * connection for the same Meta user. A different Meta user receives null
+   * without changing the owner row.
+   */
+  async claimOrRefreshConnection(
     input: MetaConnectionInput,
-  ): Promise<MetaConnectionRecord> {
+  ): Promise<MetaConnectionRecord | null> {
     const rows = await this.query<DatabaseRow>(
       `
-        insert into tracker.meta_connections (
+        insert into tracker.meta_connections as current_connection (
           owner_id,
           meta_user_id,
           meta_user_name,
@@ -218,6 +223,7 @@ export class TrackerRepository {
           last_validated_at = now(),
           last_error_code = null,
           last_error_message = null
+        where current_connection.meta_user_id = excluded.meta_user_id
         returning *
       `,
       [
@@ -232,7 +238,7 @@ export class TrackerRepository {
       ],
     );
 
-    return mapConnection(rows[0], false);
+    return rows[0] ? mapConnection(rows[0], false) : null;
   }
 
   async getConnection(): Promise<MetaConnectionRecord | null> {
