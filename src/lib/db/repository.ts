@@ -2544,6 +2544,33 @@ export class TrackerRepository {
     return mapSyncRun(rows[0]);
   }
 
+  /**
+   * The advisory lock proves no other sync session currently owns this
+   * connection. Any older queued/running rows are therefore interrupted runs,
+   * typically left behind when the serverless runtime terminated the process.
+   */
+  async recoverInterruptedSyncRuns(
+    connectionId: DatabaseId,
+    currentSyncRunId: DatabaseId,
+  ): Promise<number> {
+    const rows = await this.query<DatabaseRow>(
+      `
+        update tracker.sync_runs
+        set
+          status = 'failed',
+          finished_at = now(),
+          error_code = 'STALE_SYNC_RUN_RECOVERED',
+          error_message = 'Recovered after the previous sync process ended unexpectedly'
+        where connection_id = $1
+          and sync_run_id < $2
+          and status in ('queued', 'running')
+        returning sync_run_id
+      `,
+      [connectionId, currentSyncRunId],
+    );
+    return rows.length;
+  }
+
   async listRecentSyncRuns(
     connectionId: DatabaseId,
     limit = 10,

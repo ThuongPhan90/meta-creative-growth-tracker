@@ -16,6 +16,7 @@ import { runStoredMetaSync } from "@/lib/sync";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
+const SYNC_DEADLINE_MS = 270_000;
 
 export async function GET(request: NextRequest) {
   try {
@@ -55,6 +56,10 @@ export async function GET(request: NextRequest) {
     }
 
     const security = getSecurityServerEnv();
+    const signal = AbortSignal.any([
+      request.signal,
+      AbortSignal.timeout(SYNC_DEADLINE_MS),
+    ]);
     const result = await runStoredMetaSync({
       repository,
       connectionId: connection.connectionId,
@@ -64,6 +69,7 @@ export async function GET(request: NextRequest) {
       // immediately after a timeout/failure. The advisory lock still prevents
       // two attempts from syncing the same connection concurrently.
       requestKey: `cron:incremental:${new Date().toISOString()}:${randomUUID()}`,
+      signal,
       adapterFactory: {
         decryption: {
           key: security.tokenEncryptionKey,

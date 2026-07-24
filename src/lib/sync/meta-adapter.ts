@@ -49,6 +49,7 @@ import type {
   SyncStageResult,
   SyncWarning,
 } from "./contracts";
+import { mapWithConcurrency } from "./concurrency";
 import { SyncStageError } from "./contracts";
 import { runMetaSync } from "./orchestrator";
 
@@ -193,6 +194,11 @@ const AD_EFFECTIVE_STATUSES = [
   "PREAPPROVED",
   "WITH_ISSUES",
 ] as const;
+
+const BUSINESS_ASSET_DISCOVERY_CONCURRENCY = 6;
+const AD_ACCOUNT_ASSET_READ_CONCURRENCY = 2;
+const CREATIVE_DETAIL_CONCURRENCY = 6;
+const AD_ACCOUNT_INSIGHT_SYNC_CONCURRENCY = 2;
 
 const BREAKDOWN_ATTEMPTS = [
   {
@@ -429,6 +435,14 @@ interface StoredAccount {
   inventoryComplete: boolean;
 }
 
+interface AdAccountInventorySnapshot {
+  campaigns: GraphCampaign[];
+  adSets: GraphAdSet[];
+  ads: GraphAd[];
+  accountCreatives: GraphCreative[];
+  warnings: SyncWarning[];
+}
+
 interface InventoryState {
   syncRunId: DatabaseId;
   accounts: Map<string, StoredAccount>;
@@ -620,6 +634,22 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw signal.reason ?? new Error("Sync was aborted.");
   }
+}
+
+async function allSettledOrThrow<T extends readonly unknown[]>(
+  operations: { [K in keyof T]: Promise<T[K]> },
+): Promise<T> {
+  const settled = await Promise.allSettled(operations);
+  const failure = settled.find(
+    (result): result is PromiseRejectedResult =>
+      result.status === "rejected",
+  );
+  if (failure) {
+    throw failure.reason;
+  }
+  return settled.map(
+    (result) => (result as PromiseFulfilledResult<unknown>).value,
+  ) as unknown as T;
 }
 
 function validDate(value: string): boolean {
@@ -1553,7 +1583,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       userBusinesses,
       userAccounts,
       userPages,
-    ] = await Promise.all([
+    ] = await allSettledOrThrow([
       this.readCollection<GraphBusiness>(
         context,
         warnings,
@@ -1599,8 +1629,8 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       mergeGraphItem(pages, page.id, page);
     }
 
+    const businessAssetJobs: Array<() => Promise<void>> = [];
     for (const business of businesses.values()) {
-      throwIfAborted(context.signal);
       const edgeRequests = [
         {
           edge: "owned_ad_accounts",
@@ -1641,58 +1671,66 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       ];
 
       for (const request of edgeRequests) {
-        const path = `${business.id}/${request.edge}`;
-        if (request.kind === "account") {
-          const values = await this.readCollection<GraphAdAccount>(
-            context,
-            warnings,
-            path,
-            request.fields,
-            "META_BUSINESS_ASSET_INACCESSIBLE",
-          );
-          for (const value of values) {
-            const assetMetaId = mergeAdAccount(accounts, value);
-            accountRelations.push({
-              businessMetaId: business.id,
-              assetMetaId,
-              relationship: request.relation,
-            });
+        businessAssetJobs.push(async () => {
+          throwIfAborted(context.signal);
+          const path = `${business.id}/${request.edge}`;
+          if (request.kind === "account") {
+            const values = await this.readCollection<GraphAdAccount>(
+              context,
+              warnings,
+              path,
+              request.fields,
+              "META_BUSINESS_ASSET_INACCESSIBLE",
+            );
+            for (const value of values) {
+              const assetMetaId = mergeAdAccount(accounts, value);
+              accountRelations.push({
+                businessMetaId: business.id,
+                assetMetaId,
+                relationship: request.relation,
+              });
+            }
+          } else if (request.kind === "page") {
+            const values = await this.readCollection<GraphPage>(
+              context,
+              warnings,
+              path,
+              request.fields,
+              "META_BUSINESS_ASSET_INACCESSIBLE",
+            );
+            for (const value of values) {
+              mergeGraphItem(pages, value.id, value);
+              pageRelations.push({
+                businessMetaId: business.id,
+                assetMetaId: value.id,
+                relationship: request.relation,
+              });
+            }
+          } else {
+            const values = await this.readCollection<GraphApp>(
+              context,
+              warnings,
+              path,
+              request.fields,
+              "META_BUSINESS_ASSET_INACCESSIBLE",
+            );
+            for (const value of values) {
+              mergeGraphItem(apps, value.id, value);
+              appRelations.push({
+                businessMetaId: business.id,
+                assetMetaId: value.id,
+                relationship: request.relation,
+              });
+            }
           }
-        } else if (request.kind === "page") {
-          const values = await this.readCollection<GraphPage>(
-            context,
-            warnings,
-            path,
-            request.fields,
-            "META_BUSINESS_ASSET_INACCESSIBLE",
-          );
-          for (const value of values) {
-            mergeGraphItem(pages, value.id, value);
-            pageRelations.push({
-              businessMetaId: business.id,
-              assetMetaId: value.id,
-              relationship: request.relation,
-            });
-          }
-        } else {
-          const values = await this.readCollection<GraphApp>(
-            context,
-            warnings,
-            path,
-            request.fields,
-            "META_BUSINESS_ASSET_INACCESSIBLE",
-          );
-          for (const value of values) {
-            mergeGraphItem(apps, value.id, value);
-            appRelations.push({
-              businessMetaId: business.id,
-              assetMetaId: value.id,
-              relationship: request.relation,
-            });
-          }
-        }
+        });
       }
     }
+    await mapWithConcurrency(
+      businessAssetJobs,
+      BUSINESS_ASSET_DISCOVERY_CONCURRENCY,
+      (job) => job(),
+    );
 
     return {
       businesses,
@@ -1705,58 +1743,107 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     };
   }
 
+  private async readAdAccountInventory(
+    context: MetaSyncStageContext,
+    account: StoredAccount,
+  ): Promise<AdAccountInventorySnapshot> {
+    const accountPath = canonicalAdAccountId(account.graph);
+    const warnings: SyncWarning[] = [];
+    const [campaigns, adSets, ads, accountCreatives] =
+      await allSettledOrThrow([
+        this.readCollection<GraphCampaign>(
+          context,
+          warnings,
+          `${accountPath}/campaigns`,
+          CAMPAIGN_FIELDS,
+          "META_ACCOUNT_RESOURCE_INACCESSIBLE",
+          {
+            effective_status: JSON.stringify(CAMPAIGN_EFFECTIVE_STATUSES),
+          },
+          true,
+        ),
+        this.readCollection<GraphAdSet>(
+          context,
+          warnings,
+          `${accountPath}/adsets`,
+          AD_SET_FIELDS,
+          "META_ACCOUNT_RESOURCE_INACCESSIBLE",
+          {
+            effective_status: JSON.stringify(AD_SET_EFFECTIVE_STATUSES),
+          },
+          true,
+        ),
+        this.readCollection<GraphAd>(
+          context,
+          warnings,
+          `${accountPath}/ads`,
+          AD_FIELDS,
+          "META_ACCOUNT_RESOURCE_INACCESSIBLE",
+          {
+            effective_status: JSON.stringify(AD_EFFECTIVE_STATUSES),
+          },
+          true,
+        ),
+        this.readCollection<GraphCreative>(
+          context,
+          warnings,
+          `${accountPath}/adcreatives`,
+          CREATIVE_FIELDS,
+          "META_ACCOUNT_RESOURCE_INACCESSIBLE",
+        ),
+      ]);
+
+    const creativesByMetaId = new Map<string, GraphCreative>();
+    for (const creative of accountCreatives) {
+      mergeGraphItem(creativesByMetaId, creative.id, creative);
+    }
+    const attachedCreativeIds = new Set(
+      ads
+        .map((ad) => optionalString(ad.creative?.id))
+        .filter((id): id is string => Boolean(id)),
+    );
+    const missingCreativeIds = [...attachedCreativeIds].filter(
+      (metaCreativeId) => !creativesByMetaId.has(metaCreativeId),
+    );
+    const missingCreatives = await mapWithConcurrency(
+      missingCreativeIds,
+      CREATIVE_DETAIL_CONCURRENCY,
+      (metaCreativeId) =>
+        this.readCreative(context, warnings, metaCreativeId),
+    );
+    for (const creative of missingCreatives) {
+      if (creative) {
+        creativesByMetaId.set(creative.id, creative);
+      }
+    }
+
+    return {
+      campaigns,
+      adSets,
+      ads,
+      accountCreatives: [...creativesByMetaId.values()],
+      warnings,
+    };
+  }
+
   private async syncAdAccount(
     context: MetaSyncStageContext,
-    warnings: SyncWarning[],
+    stageWarnings: SyncWarning[],
     state: InventoryState,
     account: StoredAccount,
     pageInternalIds: Map<string, DatabaseId>,
     stats: MutableAssetStats,
+    snapshot: AdAccountInventorySnapshot,
   ): Promise<void> {
     const accountPath = canonicalAdAccountId(account.graph);
-    const warningStart = warnings.length;
-    const [campaigns, adSets, ads, accountCreatives] = await Promise.all([
-      this.readCollection<GraphCampaign>(
-        context,
-        warnings,
-        `${accountPath}/campaigns`,
-        CAMPAIGN_FIELDS,
-        "META_ACCOUNT_RESOURCE_INACCESSIBLE",
-        {
-          effective_status: JSON.stringify(CAMPAIGN_EFFECTIVE_STATUSES),
-        },
-        true,
-      ),
-      this.readCollection<GraphAdSet>(
-        context,
-        warnings,
-        `${accountPath}/adsets`,
-        AD_SET_FIELDS,
-        "META_ACCOUNT_RESOURCE_INACCESSIBLE",
-        {
-          effective_status: JSON.stringify(AD_SET_EFFECTIVE_STATUSES),
-        },
-        true,
-      ),
-      this.readCollection<GraphAd>(
-        context,
-        warnings,
-        `${accountPath}/ads`,
-        AD_FIELDS,
-        "META_ACCOUNT_RESOURCE_INACCESSIBLE",
-        {
-          effective_status: JSON.stringify(AD_EFFECTIVE_STATUSES),
-        },
-        true,
-      ),
-      this.readCollection<GraphCreative>(
-        context,
-        warnings,
-        `${accountPath}/adcreatives`,
-        CREATIVE_FIELDS,
-        "META_ACCOUNT_RESOURCE_INACCESSIBLE",
-      ),
-    ]);
+    const {
+      campaigns,
+      adSets,
+      ads,
+      accountCreatives,
+      warnings,
+    } = snapshot;
+    throwIfAborted(context.signal);
 
     const campaignInputs: CampaignInput[] = campaigns.map((campaign) => ({
       metaCampaignId: campaign.id,
@@ -1771,6 +1858,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       metaUpdatedTime: optionalString(campaign.updated_time) ?? null,
       rawPayload: toJsonObject(campaign),
     }));
+    throwIfAborted(context.signal);
     const campaignInternalIds = await context.repository.upsertCampaigns(
       account.internalId,
       campaignInputs,
@@ -1813,6 +1901,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         message: `${missingCampaignLinks} ad sets were skipped because their campaign was inaccessible.`,
       });
     }
+    throwIfAborted(context.signal);
     const adSetInternalIds = await context.repository.upsertAdSets(
       account.internalId,
       adSetInputs,
@@ -1867,6 +1956,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         message: `${missingAdLinks} ads were skipped because their campaign or ad set was inaccessible.`,
       });
     }
+    throwIfAborted(context.signal);
     const adInternalIds = await context.repository.upsertAds(
       account.internalId,
       adInputs,
@@ -1877,11 +1967,6 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     for (const creative of accountCreatives) {
       mergeGraphItem(creativesByMetaId, creative.id, creative);
     }
-    const attachedCreativeIds = new Set(
-      eligibleAds
-        .map((ad) => optionalString(ad.creative?.id))
-        .filter((id): id is string => Boolean(id)),
-    );
     const adAliasByCreativeId = new Map<string, string>();
     for (const ad of eligibleAds) {
       const metaCreativeId = optionalString(ad.creative?.id);
@@ -1894,19 +1979,6 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         adAliasByCreativeId.set(metaCreativeId, adName);
       }
     }
-    for (const metaCreativeId of attachedCreativeIds) {
-      if (!creativesByMetaId.has(metaCreativeId)) {
-        const creative = await this.readCreative(
-          context,
-          warnings,
-          metaCreativeId,
-        );
-        if (creative) {
-          creativesByMetaId.set(metaCreativeId, creative);
-        }
-      }
-    }
-
     const extractedByCreative = new Map<
       string,
       PhysicalCreativeAsset[]
@@ -1958,6 +2030,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         },
       });
     }
+    throwIfAborted(context.signal);
     const creativeInternalIds = await context.repository.upsertCreatives(
       context.connectionId,
       creativeInputs,
@@ -1975,6 +2048,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         }
       }
     }
+    throwIfAborted(context.signal);
     const assetInternalIds = await context.repository.upsertCreativeAssets(
       context.connectionId,
       [...assetInputsByKey.values()],
@@ -2014,6 +2088,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       }
       state.assetsByCreative.set(metaCreativeId, storedAssets);
     }
+    throwIfAborted(context.signal);
     await context.repository.replaceCreativeAssetLinks(
       [...creativeInternalIds.values()],
       creativeAssetLinks,
@@ -2035,6 +2110,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         });
       }
     }
+    throwIfAborted(context.signal);
     await context.repository.replaceAdCreativeLinks(
       [...adInternalIds.values()],
       adCreativeLinks,
@@ -2073,10 +2149,12 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       "META_AD_PARENT_UNAVAILABLE",
       "META_CREATIVE_INACCESSIBLE",
     ]);
-    account.inventoryComplete = !warnings
-      .slice(warningStart)
-      .some((item) => incompleteInventoryCodes.has(item.code));
+    account.inventoryComplete = !warnings.some((item) =>
+      incompleteInventoryCodes.has(item.code),
+    );
+    stageWarnings.push(...warnings);
     if (account.inventoryComplete) {
+      throwIfAborted(context.signal);
       await context.repository.reconcileAdAccountInventory({
         adAccountId: account.internalId,
         campaignMetaIds: campaignInputs.map(
@@ -2147,12 +2225,13 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       }),
     );
 
+    throwIfAborted(context.signal);
     const [
       businessInternalIds,
       accountInternalIds,
       pageInternalIds,
       appInternalIds,
-    ] = await Promise.all([
+    ] = await allSettledOrThrow([
       context.repository.upsertBusinesses(context.connectionId, businessInputs),
       context.repository.upsertAdAccounts(context.connectionId, accountInputs),
       context.repository.upsertPages(context.connectionId, pageInputs),
@@ -2209,6 +2288,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       discovered.appRelations,
       appInternalIds,
     );
+    throwIfAborted(context.signal);
     if (discoveryComplete) {
       await context.repository.reconcileConnectionInventory({
         connectionId: context.connectionId,
@@ -2221,7 +2301,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         appLinks,
       });
     } else {
-      await Promise.all([
+      await allSettledOrThrow([
         context.repository.linkBusinessAdAccounts(accountLinks),
         context.repository.linkBusinessPages(pageLinks),
         context.repository.linkBusinessApps(appLinks),
@@ -2261,14 +2341,20 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       unresolvedPhysicalAssets: 0,
     };
 
+    const accounts = [...state.accounts.values()];
     let current = 0;
-    for (const account of state.accounts.values()) {
+    await context.reportProgress({
+      current,
+      total: accounts.length,
+      message: `Reading ${accounts.length} Meta ad accounts`,
+    });
+    const accountSnapshots = await mapWithConcurrency(
+      accounts,
+      AD_ACCOUNT_ASSET_READ_CONCURRENCY,
+      (account) => this.readAdAccountInventory(context, account),
+    );
+    for (const [index, account] of accounts.entries()) {
       throwIfAborted(context.signal);
-      await context.reportProgress({
-        current,
-        total: state.accounts.size,
-        message: `Reading ${canonicalAdAccountId(account.graph)}`,
-      });
       await this.syncAdAccount(
         context,
         warnings,
@@ -2276,8 +2362,14 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         account,
         pageInternalIds,
         stats,
+        accountSnapshots[index],
       );
       current += 1;
+      await context.reportProgress({
+        current,
+        total: accounts.length,
+        message: `Stored ${canonicalAdAccountId(account.graph)}`,
+      });
     }
     const accountInventoriesComplete = [...state.accounts.values()].every(
       (account) => account.inventoryComplete,
@@ -2289,6 +2381,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
           creativeAssetIds.add(asset.creativeAssetId);
         }
       }
+      throwIfAborted(context.signal);
       await context.repository.reconcileConnectionCreativeInventory({
         connectionId: context.connectionId,
         creativeIds: [...state.creativeInternalIds.values()],
@@ -2297,7 +2390,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     }
     await context.reportProgress({
       current,
-      total: state.accounts.size,
+      total: accounts.length,
       message: "Meta asset discovery complete",
     });
 
@@ -2546,9 +2639,33 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     const breakdownModes: JsonObject = {};
     const accountWindows: JsonObject = {};
     const coveredDateTos: string[] = [];
+    const insightAccounts = [...state.accounts.values()];
     let current = 0;
+    let insightProgressUpdates = Promise.resolve();
+    const markInsightAccountComplete = async (
+      account: StoredAccount,
+      dateFrom: string,
+      dateTo: string,
+    ) => {
+      current += 1;
+      const completed = current;
+      insightProgressUpdates = insightProgressUpdates.then(() =>
+        context.reportProgress({
+          current: completed,
+          total: insightAccounts.length,
+          message: `Stored insights for ${canonicalAdAccountId(account.graph)}`,
+          details: { date_from: dateFrom, date_to: dateTo },
+        }),
+      );
+      await insightProgressUpdates;
+    };
+    await context.reportProgress({
+      current,
+      total: insightAccounts.length,
+      message: `Reading insights for ${insightAccounts.length} Meta ad accounts`,
+    });
 
-    for (const account of state.accounts.values()) {
+    const syncInsightAccount = async (account: StoredAccount) => {
       throwIfAborted(context.signal);
       const { dateFrom, dateTo } =
         explicitWindow ??
@@ -2566,12 +2683,6 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
           optionalString(account.graph.timezone_name) ??
           settings.reportingTimezone,
       };
-      await context.reportProgress({
-        current,
-        total: state.accounts.size,
-        message: `Reading daily insights for ${canonicalAdAccountId(account.graph)}`,
-        details: { date_from: dateFrom, date_to: dateTo },
-      });
 
       let result: {
         rows: MetaInsightRow[];
@@ -2594,8 +2705,8 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
             error,
           ),
         );
-        current += 1;
-        continue;
+        await markInsightAccountComplete(account, dateFrom, dateTo);
+        return;
       }
 
       const assetResult = await this.readExactAssetInsights(
@@ -2832,8 +2943,8 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
           message:
             "The current asset snapshot could not map every insight row, so previously stored metrics for this window were preserved.",
         });
-        current += 1;
-        continue;
+        await markInsightAccountComplete(account, dateFrom, dateTo);
+        return;
       }
 
       const uniqueDailyMetrics = new Map<string, DailyMetricInput>();
@@ -2862,19 +2973,28 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
           message:
             "Meta returned conflicting rows for the same metric grain, so the previous account window was preserved.",
         });
-        current += 1;
-        continue;
+        await markInsightAccountComplete(account, dateFrom, dateTo);
+        return;
       }
-      metricsUpserted += await context.repository.replaceDailyMetricsWindow({
-        adAccountId: account.internalId,
-        dateFrom,
-        dateTo,
-        metrics: [...uniqueDailyMetrics.values()],
-      });
+      throwIfAborted(context.signal);
+      const storedMetrics =
+        await context.repository.replaceDailyMetricsWindow({
+          adAccountId: account.internalId,
+          dateFrom,
+          dateTo,
+          metrics: [...uniqueDailyMetrics.values()],
+        });
+      metricsUpserted += storedMetrics;
       accountsSucceeded += 1;
       coveredDateTos.push(dateTo);
-      current += 1;
-    }
+      await markInsightAccountComplete(account, dateFrom, dateTo);
+    };
+
+    await mapWithConcurrency(
+      insightAccounts,
+      AD_ACCOUNT_INSIGHT_SYNC_CONCURRENCY,
+      syncInsightAccount,
+    );
 
     if (unmappedRows > 0) {
       warnings.push({

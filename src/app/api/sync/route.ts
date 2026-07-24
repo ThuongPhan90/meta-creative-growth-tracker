@@ -19,6 +19,7 @@ import { runStoredMetaSync } from "@/lib/sync";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
+const SYNC_DEADLINE_MS = 270_000;
 
 const allowedKinds = new Set<SyncKind>([
   "full",
@@ -85,6 +86,10 @@ export async function POST(request: NextRequest) {
     }
 
     const security = getSecurityServerEnv();
+    const signal = AbortSignal.any([
+      request.signal,
+      AbortSignal.timeout(SYNC_DEADLINE_MS),
+    ]);
     const result = await runStoredMetaSync({
       repository,
       connectionId: connection.connectionId,
@@ -93,6 +98,7 @@ export async function POST(request: NextRequest) {
       requestKey:
         request.headers.get("x-idempotency-key") ??
         `manual:${kind}:${randomUUID()}`,
+      signal,
       adapterFactory: {
         decryption: {
           key: security.tokenEncryptionKey,

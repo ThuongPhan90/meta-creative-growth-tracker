@@ -11,7 +11,7 @@ import {
   encryptMetaToken,
   TokenEncryptionError,
 } from "@/lib/security/encryption";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { MetaSyncStageContext } from "./contracts";
 import {
@@ -138,8 +138,10 @@ describe("exactCoverageMatches", () => {
 function repositoryHarness(): {
   repository: TrackerRepository;
   metricBatches: DailyMetricInput[][];
+  reconciledAccounts: DatabaseId[];
 } {
   const metricBatches: DailyMetricInput[][] = [];
+  const reconciledAccounts: DatabaseId[] = [];
   const repository = {
     getSettings: async () => settings(),
     updateConnectionHealth: async () => undefined,
@@ -163,7 +165,11 @@ function repositoryHarness(): {
     linkBusinessPages: async () => undefined,
     linkBusinessApps: async () => undefined,
     reconcileConnectionInventory: async () => undefined,
-    reconcileAdAccountInventory: async () => undefined,
+    reconcileAdAccountInventory: async (input: {
+      adAccountId: DatabaseId;
+    }) => {
+      reconciledAccounts.push(input.adAccountId);
+    },
     reconcileConnectionCreativeInventory: async () => undefined,
     upsertCampaigns: async (
       _accountId: DatabaseId,
@@ -197,6 +203,7 @@ function repositoryHarness(): {
   return {
     repository: repository as unknown as TrackerRepository,
     metricBatches,
+    reconciledAccounts,
   };
 }
 
@@ -454,6 +461,116 @@ describe("MetaMarketingApiSyncAdapter", () => {
       ]),
     );
     expect(result.checkpoint).toBeUndefined();
+  });
+
+  it("keeps account inventory warnings isolated during concurrent reads", async () => {
+    const client: MetaGraphReadClient = {
+      request: async <T>(path: string) => {
+        throw new Error(`Unexpected request path: ${path}`) as never as T;
+      },
+      getAll: async <T>(path: string) => {
+        const values: Record<string, unknown[]> = {
+          "me/businesses": [],
+          "me/adaccounts": [
+            {
+              id: "act_100",
+              account_id: "100",
+              name: "Unavailable account",
+              currency: "USD",
+              timezone_name: "Asia/Ho_Chi_Minh",
+            },
+            {
+              id: "act_200",
+              account_id: "200",
+              name: "Healthy account",
+              currency: "USD",
+              timezone_name: "Asia/Ho_Chi_Minh",
+            },
+          ],
+          "me/accounts": [],
+          "act_100/campaigns": [],
+          "act_100/adsets": [],
+          "act_100/adcreatives": [],
+          "act_200/campaigns": [],
+          "act_200/adsets": [],
+          "act_200/ads": [],
+          "act_200/adcreatives": [],
+        };
+        if (path.startsWith("act_200/")) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        if (path === "act_100/ads") {
+          throw new Error("Ads edge is temporarily inaccessible.");
+        }
+        if (!(path in values)) {
+          throw new Error(`Unexpected collection path: ${path}`);
+        }
+        return values[path] as T[];
+      },
+    };
+    const harness = repositoryHarness();
+    const adapter = new MetaMarketingApiSyncAdapter({ client });
+
+    const result = await adapter.syncAssets(context(harness.repository));
+
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "META_ACCOUNT_RESOURCE_INACCESSIBLE",
+          resource: "act_100/ads",
+        }),
+      ]),
+    );
+    expect(harness.reconciledAccounts).toContain("account:act_200");
+    expect(harness.reconciledAccounts).not.toContain("account:act_100");
+  });
+
+  it("does not start account persistence after the sync signal aborts", async () => {
+    const abortController = new AbortController();
+    const client: MetaGraphReadClient = {
+      request: async <T>(path: string) => {
+        throw new Error(`Unexpected request path: ${path}`) as never as T;
+      },
+      getAll: async <T>(path: string) => {
+        const values: Record<string, unknown[]> = {
+          "me/businesses": [],
+          "me/adaccounts": [
+            {
+              id: "act_100",
+              account_id: "100",
+              name: "Account",
+              currency: "USD",
+              timezone_name: "Asia/Ho_Chi_Minh",
+            },
+          ],
+          "me/accounts": [],
+          "act_100/campaigns": [],
+          "act_100/adsets": [],
+          "act_100/ads": [],
+          "act_100/adcreatives": [],
+        };
+        if (path === "act_100/adcreatives") {
+          abortController.abort(new Error("sync deadline exceeded"));
+        }
+        if (!(path in values)) {
+          throw new Error(`Unexpected collection path: ${path}`);
+        }
+        return values[path] as T[];
+      },
+    };
+    const harness = repositoryHarness();
+    const upsertCampaigns = vi.fn(async () => new Map());
+    Object.assign(harness.repository, { upsertCampaigns });
+    const adapter = new MetaMarketingApiSyncAdapter({ client });
+    const syncContext = {
+      ...context(harness.repository),
+      signal: abortController.signal,
+    };
+
+    await expect(adapter.syncAssets(syncContext)).rejects.toThrow(
+      "sync deadline exceeded",
+    );
+    expect(upsertCampaigns).not.toHaveBeenCalled();
   });
 
   it("discovers all asset edges and stores dynamic spend once at ad scope", async () => {
