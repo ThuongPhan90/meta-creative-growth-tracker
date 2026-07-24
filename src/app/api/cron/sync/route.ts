@@ -5,6 +5,7 @@ import {
   createTrackerRepository,
   SyncAlreadyRunningError,
 } from "@/lib/db";
+import { evaluateMetaConnectionLifecycle } from "@/lib/meta";
 import { getSecurityServerEnv } from "@/lib/security";
 import {
   assertCronAuthorization,
@@ -33,6 +34,23 @@ export async function GET(request: NextRequest) {
         ok: true,
         skipped: true,
         message: "Chưa có Meta connection.",
+      });
+    }
+    if (evaluateMetaConnectionLifecycle(connection) === "needs_reauth") {
+      if (connection.status !== "needs_reauth") {
+        await repository.updateConnectionHealth({
+          connectionId: connection.connectionId,
+          status: "needs_reauth",
+          errorCode: "META_REAUTH_REQUIRED",
+          errorMessage:
+            "The stored Meta access deadline has expired.",
+        });
+      }
+      return NextResponse.json({
+        ok: true,
+        skipped: true,
+        code: "META_REAUTH_REQUIRED",
+        message: "Kết nối Meta đã hết hạn; cron dừng cho đến khi kết nối lại.",
       });
     }
 
