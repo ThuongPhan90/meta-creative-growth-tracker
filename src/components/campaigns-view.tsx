@@ -2,7 +2,7 @@ import { FolderSearch, Search } from "lucide-react";
 import Link from "next/link";
 
 import { PageHeader } from "@/components/ui/page-header";
-import type { CampaignInventoryPage } from "@/lib/db";
+import type { CampaignInventoryItem, CampaignInventoryPage } from "@/lib/db";
 
 type AccountOption = {
   id: string;
@@ -17,6 +17,74 @@ type CampaignFilters = {
   showInactive: boolean;
   page: number;
 };
+
+type CampaignStatusTone =
+  | "active"
+  | "paused"
+  | "issue"
+  | "inactive"
+  | "neutral";
+
+export function getCampaignStatusPresentation(
+  campaign: Pick<
+    CampaignInventoryItem,
+    "effectiveStatus" | "status" | "isActive"
+  >,
+): {
+  inventoryNote: string | null;
+  label: string;
+  raw: string;
+  tone: CampaignStatusTone;
+} {
+  const raw = (campaign.effectiveStatus ?? campaign.status ?? "UNKNOWN")
+    .trim()
+    .toUpperCase();
+
+  let presentation: {
+    label: string;
+    tone: CampaignStatusTone;
+  };
+  if (raw === "ACTIVE") {
+    presentation = { label: "Đang hoạt động", tone: "active" };
+  } else if (
+    raw === "PAUSED" ||
+    raw === "CAMPAIGN_PAUSED" ||
+    raw === "ADSET_PAUSED"
+  ) {
+    presentation = { label: "Tạm dừng", tone: "paused" };
+  } else if (
+    raw === "WITH_ISSUES" ||
+    raw === "DISAPPROVED" ||
+    raw === "PENDING_REVIEW"
+  ) {
+    presentation = { label: "Cần kiểm tra", tone: "issue" };
+  } else if (raw === "ARCHIVED") {
+    presentation = { label: "Đã lưu trữ", tone: "inactive" };
+  } else if (raw === "DELETED") {
+    presentation = { label: "Đã xóa", tone: "inactive" };
+  } else {
+    presentation = {
+      label: raw === "UNKNOWN" ? "Chưa xác định" : raw.replaceAll("_", " "),
+      tone: "neutral",
+    };
+  }
+
+  if (!campaign.isActive) {
+    return {
+      inventoryNote: "Không còn trong dữ liệu mới nhất",
+      label: `Meta gần nhất: ${presentation.label}`,
+      raw,
+      tone: "inactive",
+    };
+  }
+
+  return {
+    inventoryNote: null,
+    label: presentation.label,
+    raw,
+    tone: presentation.tone,
+  };
+}
 
 function pageHref(filters: CampaignFilters, page: number) {
   const query = new URLSearchParams();
@@ -135,51 +203,59 @@ export function CampaignsView({
       {data.items.length ? (
         <section
           className="campaign-table"
-          aria-label="Danh sách campaign"
+          aria-label="Bảng danh sách campaign, có thể cuộn ngang"
+          role="table"
+          tabIndex={0}
         >
-          <div className="campaign-table__head">
-            <span>Campaign</span>
-            <span>Ad Account</span>
-            <span>Trạng thái</span>
-            <span>Objective</span>
-            <span>Ad Sets</span>
-            <span>Ads</span>
-            <span>Creative</span>
+          <div className="campaign-table__head" role="row">
+            <span role="columnheader">Campaign</span>
+            <span role="columnheader">Ad Account</span>
+            <span role="columnheader">Trạng thái</span>
+            <span role="columnheader">Objective</span>
+            <span role="columnheader">Ad Sets</span>
+            <span role="columnheader">Ads</span>
+            <span role="columnheader">Creative</span>
           </div>
-          {data.items.map((campaign) => (
-            <div
-              className="campaign-table__row"
-              key={campaign.campaignId}
-            >
-              <span>
-                <strong>{campaign.name}</strong>
-                <small>{campaign.metaCampaignId}</small>
-              </span>
-              <span>
-                <strong>{campaign.adAccountName}</strong>
-                <small>{campaign.metaAdAccountId}</small>
-              </span>
-              <span>
-                <em
-                  className={`inventory-status${
-                    campaign.isActive
-                      ? " inventory-status--active"
-                      : ""
-                  }`}
-                >
-                  {campaign.effectiveStatus ??
-                    campaign.status ??
-                    "UNKNOWN"}
-                </em>
-              </span>
-              <span>{campaign.objective ?? "—"}</span>
-              <span>{campaign.adSetCount.toLocaleString("vi-VN")}</span>
-              <span>{campaign.adCount.toLocaleString("vi-VN")}</span>
-              <span>
-                {campaign.creativeAssetCount.toLocaleString("vi-VN")}
-              </span>
-            </div>
-          ))}
+          {data.items.map((campaign) => {
+            const status = getCampaignStatusPresentation(campaign);
+            return (
+              <div
+                className="campaign-table__row"
+                key={campaign.campaignId}
+                role="row"
+              >
+                <span role="cell">
+                  <strong>{campaign.name}</strong>
+                  <small>{campaign.metaCampaignId}</small>
+                </span>
+                <span role="cell">
+                  <strong>{campaign.adAccountName}</strong>
+                  <small>{campaign.metaAdAccountId}</small>
+                </span>
+                <span role="cell">
+                  <em
+                    className={`inventory-status inventory-status--${status.tone}`}
+                    title={`Trạng thái Meta gần nhất: ${status.raw}`}
+                  >
+                    {status.label}
+                  </em>
+                  {status.inventoryNote ? (
+                    <small>{status.inventoryNote}</small>
+                  ) : null}
+                </span>
+                <span role="cell">{campaign.objective ?? "—"}</span>
+                <span role="cell">
+                  {campaign.adSetCount.toLocaleString("vi-VN")}
+                </span>
+                <span role="cell">
+                  {campaign.adCount.toLocaleString("vi-VN")}
+                </span>
+                <span role="cell">
+                  {campaign.creativeAssetCount.toLocaleString("vi-VN")}
+                </span>
+              </div>
+            );
+          })}
         </section>
       ) : (
         <section className="standard-empty-state">
@@ -207,31 +283,40 @@ export function CampaignsView({
 
       {data.total > data.limit ? (
         <nav className="table-pagination" aria-label="Phân trang campaign">
-          <Link
-            className={`button button--secondary${
-              currentPage <= 1 ? " button--disabled" : ""
-            }`}
-            aria-disabled={currentPage <= 1}
-            href={pageHref(filters, Math.max(1, currentPage - 1))}
-          >
-            Trang trước
-          </Link>
+          {currentPage <= 1 ? (
+            <span
+              className="button button--secondary button--disabled"
+              aria-disabled="true"
+            >
+              Trang trước
+            </span>
+          ) : (
+            <Link
+              className="button button--secondary"
+              href={pageHref(filters, currentPage - 1)}
+            >
+              Trang trước
+            </Link>
+          )}
           <span>
             Trang {currentPage.toLocaleString("vi-VN")} /{" "}
             {pageCount.toLocaleString("vi-VN")}
           </span>
-          <Link
-            className={`button button--secondary${
-              currentPage >= pageCount ? " button--disabled" : ""
-            }`}
-            aria-disabled={currentPage >= pageCount}
-            href={pageHref(
-              filters,
-              Math.min(pageCount, currentPage + 1),
-            )}
-          >
-            Trang sau
-          </Link>
+          {currentPage >= pageCount ? (
+            <span
+              className="button button--secondary button--disabled"
+              aria-disabled="true"
+            >
+              Trang sau
+            </span>
+          ) : (
+            <Link
+              className="button button--secondary"
+              href={pageHref(filters, currentPage + 1)}
+            >
+              Trang sau
+            </Link>
+          )}
         </nav>
       ) : null}
     </div>

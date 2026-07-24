@@ -161,17 +161,11 @@ async function loadCreativeLibrary(
   repository: TrackerRepository,
   connectionId: string,
 ) {
-  const items: CreativeLibraryItem[] = [];
-  for (let offset = 0; offset <= MAX_VIEW_ROWS; offset += PAGE_SIZE) {
-    const limit = Math.min(PAGE_SIZE, MAX_VIEW_ROWS + 1 - items.length);
-    const batch = await repository.listCreativeLibrary({
-      connectionId,
-      limit,
-      offset,
-    });
-    items.push(...batch);
-    if (items.length > MAX_VIEW_ROWS || batch.length < limit) break;
-  }
+  const items = await repository.listCreativeLibrary({
+    connectionId,
+    limit: MAX_VIEW_ROWS + 1,
+    offset: 0,
+  });
   return {
     items: items.slice(0, MAX_VIEW_ROWS),
     truncated: items.length > MAX_VIEW_ROWS,
@@ -264,8 +258,15 @@ function mapCreatives(
           : item.assetType === "image"
             ? ("Banner" as const)
             : ("Unknown" as const),
-      linkLabel: item.adCount > 0 ? "Ads" : "Chưa liên kết",
+      linkLabel:
+        item.activeAdCount > 0
+          ? "Đang chạy"
+          : item.adCount > 0
+            ? "Không chạy"
+            : "Chưa liên kết",
       linkCount: item.adCount,
+      currentAdCount: item.currentAdCount,
+      activeAdCount: item.activeAdCount,
       imageUrl: safeThumbnail(item.thumbnailUrl ?? item.previewUrl),
       duration: formatDuration(item.durationSeconds),
       ratio: ratio(item.width, item.height),
@@ -278,11 +279,18 @@ function mapCreatives(
           id: `${item.creativeAssetId}:UNKNOWN:none`,
           ...common,
           platform: "Unknown",
-          readiness: item.adCount > 0 ? "Chờ phân phối" : "Chưa gắn Ads",
+          readiness:
+            item.activeAdCount > 0
+              ? "Chờ phân phối"
+              : item.adCount > 0
+                ? "Chưa có dữ liệu"
+                : "Chưa gắn Ads",
           performanceLabel:
-            item.adCount > 0
+            item.activeAdCount > 0
               ? "Chưa có dữ liệu"
-              : "Mở khóa khi creative được gắn Ads",
+              : item.adCount > 0
+                ? "Không có Ads đang chạy"
+                : "Mở khóa khi creative được gắn Ads",
           eventMapping: { install: null, registration: null },
           performance: null,
         },
@@ -685,15 +693,17 @@ export const getApplicationSnapshot = cache(
         status: item.isActive
           ? item.verificationStatus ?? "ACCESSIBLE"
           : "INACTIVE",
+        isCurrent: item.isActive,
+        lastSeenAt: item.lastSeenAt,
       })),
       ...inventory.adAccounts.map((item) => ({
         id: item.metaAdAccountId,
         name: item.name,
         kind: "Ad Account" as const,
         parentName: item.businessName,
-        status: item.isActive
-          ? metaAdAccountStatusLabel(item.accountStatus)
-          : "INACTIVE",
+        status: metaAdAccountStatusLabel(item.accountStatus),
+        isCurrent: item.isActive,
+        lastSeenAt: item.lastSeenAt,
         currency: item.currency,
         timezone: item.timezoneName,
       })),
@@ -703,6 +713,8 @@ export const getApplicationSnapshot = cache(
         kind: "Page" as const,
         parentName: null,
         status: item.isActive ? item.category ?? "ACCESSIBLE" : "INACTIVE",
+        isCurrent: item.isActive,
+        lastSeenAt: item.lastSeenAt,
       })),
       ...inventory.apps.map((item) => ({
         id: item.metaAppId,
@@ -710,6 +722,8 @@ export const getApplicationSnapshot = cache(
         kind: "App" as const,
         parentName: null,
         status: item.isActive ? item.platform.toUpperCase() : "INACTIVE",
+        isCurrent: item.isActive,
+        lastSeenAt: item.lastSeenAt,
       })),
     ];
     const creatives = mapCreatives(

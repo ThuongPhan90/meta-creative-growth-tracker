@@ -7,6 +7,10 @@ import {
   createTrackerRepository,
   type CreativeTrackerPage,
 } from "@/lib/db";
+import {
+  isOperationalMetaAssetAccount,
+  shouldIncludeInactiveMetaAdAccounts,
+} from "@/lib/meta";
 
 export const dynamic = "force-dynamic";
 
@@ -90,14 +94,20 @@ export default async function TrackerPage({
       ? query.format
       : "";
   const pageNumber = validPage(query.page);
+  const account = query.account?.trim().slice(0, 128) ?? "";
+  const showInactive = shouldIncludeInactiveMetaAdAccounts(
+    snapshot.assets,
+    account,
+    query.showInactive === "1",
+  );
   const filters: TrackerFilters = {
     dateFrom,
     dateTo,
     query: query.q?.trim().slice(0, 200) ?? "",
-    account: query.account?.trim().slice(0, 128) ?? "",
+    account,
     campaign: query.campaign?.trim().slice(0, 128) ?? "",
     format,
-    showInactive: query.showInactive === "1",
+    showInactive,
     dateRangeChanged:
       dateFrom !== dateFromDefault || dateTo !== dateToDefault,
     page: pageNumber,
@@ -128,13 +138,13 @@ export default async function TrackerPage({
     .filter(
       (asset) =>
         filters.showInactive ||
-        asset.status === "ACTIVE" ||
+        isOperationalMetaAssetAccount(asset) ||
         asset.id === filters.account,
     )
     .map((asset) => ({
       id: asset.id,
       name: asset.name,
-      active: asset.status === "ACTIVE",
+      active: isOperationalMetaAssetAccount(asset),
     }));
 
   return (

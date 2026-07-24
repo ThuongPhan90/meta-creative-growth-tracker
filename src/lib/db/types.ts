@@ -326,6 +326,8 @@ export interface CreativeLibraryItem {
   pageNames: string[];
   creativeContainerCount: number;
   adCount: number;
+  currentAdCount: number;
+  activeAdCount: number;
   adAccountCount: number;
   pageCount: number;
   lastUsedAt: string | null;

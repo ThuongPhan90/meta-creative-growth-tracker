@@ -1,3 +1,5 @@
+import type { MetaAssetRow } from "@/types/view-models";
+
 const META_AD_ACCOUNT_STATUS_LABELS: Readonly<Record<number, string>> = {
   1: "ACTIVE",
   2: "DISABLED",
@@ -8,6 +10,14 @@ const META_AD_ACCOUNT_STATUS_LABELS: Readonly<Record<number, string>> = {
   100: "PENDING_CLOSURE",
   101: "CLOSED",
 };
+
+const ACTIONABLE_META_AD_ACCOUNT_STATUSES = new Set([
+  "DISABLED",
+  "UNSETTLED",
+  "PENDING_RISK_REVIEW",
+  "PENDING_SETTLEMENT",
+  "IN_GRACE_PERIOD",
+]);
 
 /**
  * Meta discovery access and the account's advertising status are different.
@@ -29,4 +39,40 @@ export function metaAdAccountStatusLabel(
     META_AD_ACCOUNT_STATUS_LABELS[accountStatus] ??
     `STATUS ${accountStatus}`
   );
+}
+
+export function isOperationalMetaAssetAccount(
+  asset: Pick<MetaAssetRow, "kind" | "status" | "isCurrent">,
+): boolean {
+  return (
+    asset.kind === "Ad Account" &&
+    asset.isCurrent !== false &&
+    asset.status.trim().toUpperCase() === "ACTIVE"
+  );
+}
+
+export function isActionableMetaAdAccountStatus(status: string): boolean {
+  const normalizedStatus = status.trim().toUpperCase();
+  return (
+    ACTIONABLE_META_AD_ACCOUNT_STATUSES.has(normalizedStatus) ||
+    (normalizedStatus.startsWith("PENDING") &&
+      normalizedStatus !== "PENDING_CLOSURE")
+  );
+}
+
+export function shouldIncludeInactiveMetaAdAccounts(
+  assets: readonly MetaAssetRow[],
+  selectedAccountId: string,
+  requested: boolean,
+): boolean {
+  if (requested) return true;
+  if (!selectedAccountId) return false;
+
+  const selectedAccount = assets.find(
+    (asset) =>
+      asset.kind === "Ad Account" && asset.id === selectedAccountId,
+  );
+  return selectedAccount
+    ? !isOperationalMetaAssetAccount(selectedAccount)
+    : false;
 }

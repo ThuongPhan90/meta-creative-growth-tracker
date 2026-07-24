@@ -43,6 +43,7 @@ import type {
 } from "./types";
 
 type DatabaseRow = Record<string, unknown>;
+const MAX_CREATIVE_LIBRARY_ROWS = 5_001;
 
 interface IdRow extends DatabaseRow {
   internal_id: unknown;
@@ -1877,7 +1878,10 @@ export class TrackerRepository {
           select *
           from tracker.meta_ad_accounts
           where connection_id = $1
-          order by is_active desc, name
+          order by
+            coalesce(is_active and account_status = 1, false) desc,
+            is_active desc,
+            name
         `,
         [connectionId],
       ),
@@ -2004,8 +2008,7 @@ export class TrackerRepository {
             )
             and (
               $4::text is null
-              or campaign.effective_status = $4
-              or campaign.status = $4
+              or coalesce(campaign.effective_status, campaign.status) = $4
             )
             and (
               $5::text is null
@@ -2017,6 +2020,11 @@ export class TrackerRepository {
         select filtered.*, count(*) over () as total_count
         from filtered
         order by
+          coalesce(
+            filtered.is_active
+            and coalesce(filtered.effective_status, filtered.status) = 'ACTIVE',
+            false
+          ) desc,
           filtered.is_active desc,
           filtered.last_seen_at desc,
           filtered.name
@@ -2064,12 +2072,44 @@ export class TrackerRepository {
   async listCreativeLibrary(
     filters: CreativeLibraryFilters,
   ): Promise<CreativeLibraryItem[]> {
-    const limit = Math.min(Math.max(filters.limit ?? 50, 1), 200);
+    const limit = Math.min(
+      Math.max(filters.limit ?? 50, 1),
+      MAX_CREATIVE_LIBRARY_ROWS,
+    );
     const offset = Math.max(filters.offset ?? 0, 0);
     const rows = await this.query<DatabaseRow>(
       `
-        select usage.*
+        with current_ad_usage as (
+          select
+            asset_link.creative_asset_id,
+            count(distinct ad.ad_id) filter (
+              where ad.is_active
+                and account.is_active
+                and account.account_status = 1
+            ) as current_ad_count,
+            count(distinct ad.ad_id) filter (
+              where ad.is_active
+                and account.is_active
+                and account.account_status = 1
+                and coalesce(ad.effective_status, ad.status) = 'ACTIVE'
+            ) as active_ad_count
+          from tracker.creative_asset_links asset_link
+          join tracker.ad_creative_links ad_link
+            on ad_link.creative_id = asset_link.creative_id
+          join tracker.meta_ads ad
+            on ad.ad_id = ad_link.ad_id
+          join tracker.meta_ad_accounts account
+            on account.ad_account_id = ad.ad_account_id
+          where account.connection_id = $1
+          group by asset_link.creative_asset_id
+        )
+        select
+          usage.*,
+          coalesce(ad_usage.current_ad_count, 0) as current_ad_count,
+          coalesce(ad_usage.active_ad_count, 0) as active_ad_count
         from tracker.creative_asset_usage usage
+        left join current_ad_usage ad_usage
+          on ad_usage.creative_asset_id = usage.creative_asset_id
         where usage.connection_id = $1
           and ($2::text is null or usage.asset_type = $2)
           and (
@@ -2080,7 +2120,12 @@ export class TrackerRepository {
             or usage.meta_image_hash ilike '%' || $3 || '%'
             or array_to_string(usage.creative_codes, ' ') ilike '%' || $3 || '%'
           )
-        order by usage.last_used_at desc nulls last, usage.last_seen_at desc
+        order by
+          (coalesce(ad_usage.active_ad_count, 0) > 0) desc,
+          coalesce(ad_usage.active_ad_count, 0) desc,
+          coalesce(ad_usage.current_ad_count, 0) desc,
+          usage.last_used_at desc nulls last,
+          usage.last_seen_at desc
         limit $4
         offset $5
       `,
@@ -2112,6 +2157,8 @@ export class TrackerRepository {
       pageNames: asStringArray(row.page_names),
       creativeContainerCount: asNumber(row.creative_container_count),
       adCount: asNumber(row.ad_count),
+      currentAdCount: asNumber(row.current_ad_count),
+      activeAdCount: asNumber(row.active_ad_count),
       adAccountCount: asNumber(row.ad_account_count),
       pageCount: asNumber(row.page_count),
       lastUsedAt: asNullableIso(row.last_used_at),
@@ -2206,6 +2253,8 @@ export class TrackerRepository {
             on account.ad_account_id = metric.ad_account_id
           where metric.metric_date between $2::date and $3::date
             and account.connection_id = $1
+            and account.is_active
+            and account.account_status = 1
             and ($4::bigint is null or metric.ad_account_id = $4)
             and ($5::text is null or metric.currency = $5)
           group by

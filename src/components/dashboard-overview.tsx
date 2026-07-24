@@ -152,7 +152,12 @@ export function DashboardOverview({
               </div>
               <Smartphone aria-hidden="true" size={19} />
             </div>
-            <div className="event-table" role="table" aria-label="Sức khỏe sự kiện">
+            <div
+              className="event-table"
+              role="table"
+              aria-label="Bảng sức khỏe sự kiện, có thể cuộn ngang"
+              tabIndex={0}
+            >
               <div className="event-table__header" role="row">
                 <span role="columnheader">Tên sự kiện</span>
                 <span role="columnheader">Android</span>
@@ -202,7 +207,7 @@ export function DashboardOverview({
                   <strong>{item.label}</strong>
                   <span>{item.detail}</span>
                 </div>
-                <StatusPill status={item.status} label={item.detail} compact />
+                <StatusPill status={item.status} compact />
               </li>
             ))}
           </ul>

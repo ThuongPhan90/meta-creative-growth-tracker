@@ -16,12 +16,24 @@ import {
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import {
+  useDeferredValue,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  countActiveCreativeAssets,
+  CREATIVE_BATCH_SIZE,
+  getCreativeAdStatusPresentation,
+  prioritizeCreatives,
+  resolveSelectedCreative,
+} from "@/components/creative-library-logic";
 import { PageHeader } from "@/components/ui/page-header";
+import { PerformanceRating } from "@/components/ui/performance-rating";
 import type {
   CreativeFormat,
   CreativePlatform,
-  CreativeRating,
   CreativeReadiness,
   CreativeRow,
 } from "@/types/view-models";
@@ -53,6 +65,7 @@ const statusOptions: SelectOption<CreativeReadiness>[] = [
   { value: "Thiếu event mapping", label: "Thiếu event mapping" },
   { value: "Chưa gắn Ads", label: "Chưa gắn Ads" },
   { value: "Chờ phân phối", label: "Chờ phân phối" },
+  { value: "Chưa có dữ liệu", label: "Chưa có dữ liệu" },
   { value: "Không xác định", label: "Không xác định" },
 ];
 
@@ -89,7 +102,9 @@ function FilterSelect<T extends string>({
 function readinessClass(status: CreativeReadiness) {
   if (status === "Sẵn sàng") return "creative-status--ready";
   if (status === "Chờ phân phối") return "creative-status--info";
-  if (status === "Không xác định") return "creative-status--neutral";
+  if (status === "Không xác định" || status === "Chưa có dữ liệu") {
+    return "creative-status--neutral";
+  }
   return "creative-status--warning";
 }
 
@@ -101,21 +116,14 @@ function formatMetric(
   return new Intl.NumberFormat("vi-VN", options).format(value);
 }
 
-function ratingClass(rating: CreativeRating | null) {
-  if (rating === "TỐT") return "performance-rating--good";
-  if (rating === "ỔN") return "performance-rating--stable";
-  if (rating === "KÉM" || rating === "KHÔNG INSTALL") {
-    return "performance-rating--poor";
-  }
-  return "performance-rating--limited";
-}
-
 function CreativeThumb({
   creative,
   large = false,
+  eager = false,
 }: {
   creative: CreativeRow;
   large?: boolean;
+  eager?: boolean;
 }) {
   return (
     <span className={`creative-thumb${large ? " creative-thumb--large" : ""}`}>
@@ -123,6 +131,7 @@ function CreativeThumb({
         src={creative.imageUrl}
         alt={`Thumbnail ${creative.name}`}
         fill
+        loading={large || eager ? "eager" : "lazy"}
         sizes={large ? "220px" : "110px"}
       />
       {creative.format === "Video" ? (
@@ -144,19 +153,28 @@ export function CreativeLibrary({
   isConnected: boolean;
 }) {
   const router = useRouter();
+  const prioritized = useMemo(
+    () => prioritizeCreatives(creatives),
+    [creatives],
+  );
   const [query, setQuery] = useState("");
   const [format, setFormat] = useState<CreativeFormat | "all">("all");
   const [platform, setPlatform] = useState<CreativePlatform | "all">("all");
   const [readiness, setReadiness] = useState<CreativeReadiness | "all">("all");
   const [selectedId, setSelectedId] = useState<string | null>(
-    creatives.at(0)?.id ?? null,
+    prioritized.at(0)?.id ?? null,
   );
+  const [visibleLimit, setVisibleLimit] = useState(CREATIVE_BATCH_SIZE);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const creativeTriggerRefs = useRef(
+    new Map<string, HTMLButtonElement>(),
+  );
+  const deferredQuery = useDeferredValue(query);
 
   const filtered = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    return creatives.filter((creative) => {
+    const normalizedQuery = deferredQuery.trim().toLowerCase();
+    return prioritized.filter((creative) => {
       const matchesQuery =
         !normalizedQuery ||
         creative.name.toLowerCase().includes(normalizedQuery) ||
@@ -177,10 +195,41 @@ export function CreativeLibrary({
         matchesReadiness
       );
     });
-  }, [creatives, format, platform, query, readiness]);
+  }, [deferredQuery, format, platform, prioritized, readiness]);
 
-  const selected =
-    creatives.find((creative) => creative.id === selectedId) ?? null;
+  const visibleCreatives = useMemo(
+    () => filtered.slice(0, visibleLimit),
+    [filtered, visibleLimit],
+  );
+  const selected = resolveSelectedCreative(visibleCreatives, selectedId);
+  const effectiveSelectedId = selected?.id ?? null;
+  const activeCreativeCount = useMemo(
+    () => countActiveCreativeAssets(prioritized),
+    [prioritized],
+  );
+  const remainingCreativeCount =
+    filtered.length - visibleCreatives.length;
+
+  function openCreativeDetail(creativeId: string) {
+    setSelectedId(creativeId);
+    window.requestAnimationFrame(() => {
+      if (window.matchMedia("(max-width: 980px)").matches) {
+        document
+          .getElementById("creative-detail-panel")
+          ?.scrollIntoView({ block: "start" });
+      }
+    });
+  }
+
+  function closeCreativeDetail() {
+    const triggerId = effectiveSelectedId;
+    setSelectedId(null);
+    window.requestAnimationFrame(() => {
+      if (triggerId) {
+        creativeTriggerRefs.current.get(triggerId)?.focus();
+      }
+    });
+  }
 
   async function handleSync() {
     if (!isConnected) {
@@ -249,26 +298,38 @@ export function CreativeLibrary({
                 value={query}
                 type="search"
                 placeholder="Tìm tên creative hoặc ID..."
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setVisibleLimit(CREATIVE_BATCH_SIZE);
+                }}
               />
             </label>
             <FilterSelect
               value={format}
               label="Lọc theo định dạng"
               options={formatOptions}
-              onChange={setFormat}
+              onChange={(value) => {
+                setFormat(value);
+                setVisibleLimit(CREATIVE_BATCH_SIZE);
+              }}
             />
             <FilterSelect
               value={platform}
               label="Lọc theo nền tảng"
               options={platformOptions}
-              onChange={setPlatform}
+              onChange={(value) => {
+                setPlatform(value);
+                setVisibleLimit(CREATIVE_BATCH_SIZE);
+              }}
             />
             <FilterSelect
               value={readiness}
               label="Lọc theo trạng thái"
               options={statusOptions}
-              onChange={setReadiness}
+              onChange={(value) => {
+                setReadiness(value);
+                setVisibleLimit(CREATIVE_BATCH_SIZE);
+              }}
             />
           </div>
 
@@ -276,99 +337,171 @@ export function CreativeLibrary({
             className="creative-table"
             role="table"
             aria-label="Danh sách creative"
+            aria-busy={query !== deferredQuery}
           >
             <div className="creative-table__head" role="row">
               <span role="columnheader">Creative</span>
               <span role="columnheader">Định dạng</span>
               <span role="columnheader">Nền tảng</span>
-              <span role="columnheader">Liên kết</span>
+              <span role="columnheader">Quảng cáo</span>
               <span role="columnheader">Trạng thái dữ liệu</span>
               <span role="columnheader">Hiệu quả</span>
             </div>
 
-            {filtered.length ? (
-              filtered.map((creative) => (
-                <button
-                  type="button"
-                  role="row"
-                  className={`creative-row${
-                    selectedId === creative.id ? " creative-row--selected" : ""
-                  }`}
-                  key={creative.id}
-                  onClick={() => setSelectedId(creative.id)}
-                  aria-label={`Mở chi tiết ${creative.name}`}
-                >
-                  <span className="creative-identity" role="cell">
-                    <CreativeThumb creative={creative} />
-                    <span>
-                      <strong>{creative.name}</strong>
-                      <small>{creative.assetKey}</small>
-                      {creative.aliases[0] ? (
-                        <em>{creative.aliases[0]}</em>
-                      ) : null}
-                      {creative.duration ? <em>{creative.duration}</em> : null}
+            {visibleCreatives.length ? (
+              visibleCreatives.map((creative) => {
+                const adStatus = getCreativeAdStatusPresentation(creative);
+                return (
+                  <div
+                    role="row"
+                    className={`creative-row${
+                      effectiveSelectedId === creative.id
+                        ? " creative-row--selected"
+                        : ""
+                    }`}
+                    key={creative.id}
+                  >
+                    <span className="creative-identity" role="cell">
+                      <button
+                        type="button"
+                        className="creative-identity__button"
+                        ref={(node) => {
+                          if (node) {
+                            creativeTriggerRefs.current.set(
+                              creative.id,
+                              node,
+                            );
+                          } else {
+                            creativeTriggerRefs.current.delete(creative.id);
+                          }
+                        }}
+                        onClick={() => openCreativeDetail(creative.id)}
+                        aria-label={`Mở chi tiết ${creative.name}`}
+                        aria-expanded={effectiveSelectedId === creative.id}
+                        aria-controls={
+                          effectiveSelectedId === creative.id
+                            ? "creative-detail-panel"
+                            : undefined
+                        }
+                      >
+                        <CreativeThumb
+                          creative={creative}
+                          eager={effectiveSelectedId === creative.id}
+                        />
+                        <span>
+                          <strong>{creative.name}</strong>
+                          <small>{creative.assetKey}</small>
+                          {creative.aliases[0] ? (
+                            <em>{creative.aliases[0]}</em>
+                          ) : null}
+                          {creative.duration ? (
+                            <em>{creative.duration}</em>
+                          ) : null}
+                        </span>
+                      </button>
                     </span>
-                  </span>
-                  <span role="cell" className="format-cell">
-                    {creative.format === "Video" ? (
-                      <Film aria-hidden="true" size={15} />
-                    ) : (
-                      <ImageIcon aria-hidden="true" size={15} />
-                    )}
-                    {creative.format}
-                  </span>
-                  <span role="cell">{creative.platform}</span>
-                  <span className="link-cell" role="cell">
-                    <Link2 aria-hidden="true" size={14} />
-                    {creative.linkLabel}
-                    {creative.linkCount > 1 ? ` (${creative.linkCount})` : ""}
-                  </span>
-                  <span role="cell">
-                    <span
-                      className={`creative-status ${readinessClass(
-                        creative.readiness,
-                      )}`}
-                    >
-                      {creative.readiness}
+                    <span role="cell" className="format-cell">
+                      {creative.format === "Video" ? (
+                        <Film aria-hidden="true" size={15} />
+                      ) : (
+                        <ImageIcon aria-hidden="true" size={15} />
+                      )}
+                      {creative.format}
                     </span>
-                  </span>
-                  <span className="performance-cell" role="cell">
-                    {creative.performance?.rating ? (
+                    <span role="cell">{creative.platform}</span>
+                    <span role="cell">
                       <span
-                        className={`performance-rating ${ratingClass(
-                          creative.performance.rating,
+                        className={`creative-ad-status creative-ad-status--${adStatus.tone}`}
+                        title={`Quảng cáo: ${adStatus.label}; ${creative.linkCount} liên kết Ads`}
+                      >
+                        <Link2 aria-hidden="true" size={13} />
+                        {adStatus.label}
+                      </span>
+                    </span>
+                    <span role="cell">
+                      <span
+                        className={`creative-status ${readinessClass(
+                          creative.readiness,
                         )}`}
                       >
-                        {creative.performance.rating}
+                        {creative.readiness}
                       </span>
-                    ) : (
-                      creative.performanceLabel
-                    )}
-                  </span>
-                </button>
-              ))
+                    </span>
+                    <span className="performance-cell" role="cell">
+                      {creative.performance?.rating ? (
+                        <PerformanceRating
+                          rating={creative.performance.rating}
+                        />
+                      ) : (
+                        creative.performanceLabel
+                      )}
+                    </span>
+                  </div>
+                );
+              })
             ) : (
-              <div className="creative-no-results" role="row">
-                Không có creative phù hợp với bộ lọc hiện tại.
+              <div role="row">
+                <div className="creative-no-results" role="cell">
+                  Không có creative phù hợp với bộ lọc hiện tại.
+                </div>
               </div>
             )}
           </div>
 
           <footer className="creative-list-footer">
-            <span>
-              Hiển thị {filtered.length}/{creatives.length} creative
-            </span>
+            <div className="creative-list-footer__summary">
+              <span>
+                Hiển thị {visibleCreatives.length}/
+                {filtered.length} kết quả ·{" "}
+                {activeCreativeCount.toLocaleString("vi-VN")} creative có Ads
+                đang chạy được ưu tiên trước
+              </span>
+              {remainingCreativeCount > 0 ? (
+                <button
+                  type="button"
+                  className="button button--secondary creative-list-footer__more"
+                  onClick={() =>
+                    setVisibleLimit((current) =>
+                      Math.min(
+                        current + CREATIVE_BATCH_SIZE,
+                        filtered.length,
+                      ),
+                    )
+                  }
+                >
+                  Xem thêm{" "}
+                  {Math.min(
+                    CREATIVE_BATCH_SIZE,
+                    remainingCreativeCount,
+                  ).toLocaleString("vi-VN")}
+                </button>
+              ) : null}
+            </div>
             {truncated ? (
               <span className="creative-list-footer__warning">
                 Library đang giới hạn 5.000 dòng để bảo vệ thời gian phản hồi.
                 Dùng Creative Tracker để tìm kiếm toàn bộ dữ liệu theo trang.
               </span>
             ) : null}
+            <span className="creative-list-footer__scope">
+              Hiệu quả chỉ dùng tài khoản quảng cáo đang vận hành.{" "}
+              <Link href="/tracker">Xem lịch sử trong Tracker</Link>.
+            </span>
           </footer>
         </div>
 
         {selected ? (
-          <aside className="creative-detail" aria-label="Chi tiết creative">
+          <aside
+            className="creative-detail"
+            id="creative-detail-panel"
+            aria-label="Chi tiết creative"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                closeCreativeDetail();
+              }
+            }}
+          >
             <div className="creative-detail__header">
               <div>
                 <small>Chi tiết tài sản</small>
@@ -377,7 +510,7 @@ export function CreativeLibrary({
               <button
                 type="button"
                 aria-label="Đóng chi tiết"
-                onClick={() => setSelectedId(null)}
+                onClick={closeCreativeDetail}
               >
                 <X aria-hidden="true" size={18} />
               </button>
@@ -419,6 +552,16 @@ export function CreativeLibrary({
                 <div>
                   <dt>Trang</dt>
                   <dd>{selected.pageName ?? "Chưa liên kết"}</dd>
+                </div>
+                <div>
+                  <dt>Quảng cáo</dt>
+                  <dd>
+                    {selected.activeAdCount > 0
+                      ? `${selected.activeAdCount} đang chạy / ${selected.linkCount} liên kết`
+                      : selected.linkCount > 0
+                        ? `Không chạy / ${selected.linkCount} liên kết`
+                        : "Chưa gắn Ads"}
+                  </dd>
                 </div>
               </dl>
             </section>
@@ -537,13 +680,9 @@ export function CreativeLibrary({
                     </div>
                   </div>
                   <div className="performance-context">
-                    <span
-                      className={`performance-rating ${ratingClass(
-                        selected.performance.rating,
-                      )}`}
-                    >
-                      {selected.performance.rating ?? "CHƯA XẾP HẠNG"}
-                    </span>
+                    <PerformanceRating
+                      rating={selected.performance.rating}
+                    />
                     <p>
                       {selected.performance.dateFrom} →{" "}
                       {selected.performance.dateTo}

@@ -154,7 +154,19 @@ Install/Registration đã lưu không tự được phân loại lại chỉ b�
 Dashboard và các báo cáo mặc định chỉ dùng tài khoản được thấy trong discovery
 mới nhất và có Meta `account_status=1`. Campaigns/Creative Tracker cho phép hiện
 lại tài khoản không hoạt động để tra cứu lịch sử; khi bật, phạm vi số liệu rộng
-hơn Dashboard mặc định.
+hơn Dashboard mặc định. Nếu người dùng đang chọn một tài khoản không vận hành,
+app tự giữ tài khoản đó trong truy vấn để tránh tạo bảng rỗng giả. Danh sách tài
+sản vẫn giữ trạng thái Meta gần nhất và thời điểm thấy gần nhất khi tài khoản
+không còn xuất hiện trong discovery; trạng thái này không được ghi đè thành một
+nhãn `INACTIVE` chung.
+
+Creative Library vẫn giữ toàn bộ physical asset còn xuất hiện trong snapshot để
+không làm mất lịch sử. Thứ tự mặc định ưu tiên asset có ít nhất một Ads thỏa cả
+ba điều kiện: tài khoản vận hành, Ads còn trong snapshot và
+`coalesce(ad.effective_status, ad.status)='ACTIVE'`. Trạng thái Ads hiện tại chỉ
+dùng để sắp xếp/hiển thị; performance trong khoảng ngày vẫn tính cả Ads đã pause
+sau khi phát sinh delivery, nhưng luôn loại tài khoản quảng cáo không vận hành để
+baseline và rating dùng cùng một phạm vi.
 
 ## Xếp hạng CPI
 

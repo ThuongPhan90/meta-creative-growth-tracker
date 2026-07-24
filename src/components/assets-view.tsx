@@ -8,11 +8,16 @@ import {
   Megaphone,
   Smartphone,
   SearchX,
+  TriangleAlert,
 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { PageHeader } from "@/components/ui/page-header";
 import { SyncButton } from "@/components/sync-button";
+import {
+  isActionableMetaAdAccountStatus,
+  isOperationalMetaAssetAccount,
+} from "@/lib/meta/ad-account-status";
 import type { MetaAssetRow } from "@/types/view-models";
 
 const iconMap = {
@@ -24,7 +29,7 @@ const iconMap = {
 
 type AssetStatusPresentation = {
   label: string;
-  tone: "active" | "inactive" | "neutral";
+  tone: "active" | "attention" | "inactive" | "neutral";
 };
 
 const inactiveAdAccountStatusLabels: Readonly<Record<string, string>> = {
@@ -40,7 +45,7 @@ const inactiveAdAccountStatusLabels: Readonly<Record<string, string>> = {
 export function isInactiveAdAccount(asset: MetaAssetRow) {
   return (
     asset.kind === "Ad Account" &&
-    asset.status.trim().toUpperCase() !== "ACTIVE"
+    !isOperationalMetaAssetAccount(asset)
   );
 }
 
@@ -51,11 +56,15 @@ export function filterMetaAssets(
   const visible: MetaAssetRow[] = [];
   let activeAdAccountCount = 0;
   let inactiveAdAccountCount = 0;
+  let needsAttentionAdAccountCount = 0;
 
   for (const asset of assets) {
     if (asset.kind === "Ad Account") {
       if (isInactiveAdAccount(asset)) {
         inactiveAdAccountCount += 1;
+        if (isActionableMetaAdAccountStatus(asset.status)) {
+          needsAttentionAdAccountCount += 1;
+        }
         if (!showInactiveAdAccounts) continue;
       } else {
         activeAdAccountCount += 1;
@@ -68,7 +77,29 @@ export function filterMetaAssets(
     visible,
     activeAdAccountCount,
     inactiveAdAccountCount,
+    needsAttentionAdAccountCount,
   };
+}
+
+function lastKnownAdAccountStatus(
+  rawStatus: string,
+  normalizedStatus: string,
+) {
+  if (normalizedStatus === "ACTIVE") return "Hoạt động";
+  if (normalizedStatus === "INACTIVE") return "Không hoạt động";
+
+  const knownInactiveLabel =
+    inactiveAdAccountStatusLabels[normalizedStatus];
+  if (knownInactiveLabel) {
+    return knownInactiveLabel.replace("Không hoạt động · ", "");
+  }
+  if (normalizedStatus.startsWith("PENDING")) {
+    return "Đang chờ Meta xử lý";
+  }
+  if (normalizedStatus.startsWith("STATUS ")) {
+    return `Meta ${rawStatus.slice(7).trim() || "không rõ"}`;
+  }
+  return rawStatus ? `Meta ${rawStatus}` : "Chưa xác định";
 }
 
 export function getAssetStatusPresentation(
@@ -77,6 +108,17 @@ export function getAssetStatusPresentation(
   const rawStatus = asset.status.trim();
   const normalizedStatus = rawStatus.toUpperCase();
 
+  if (asset.kind === "Ad Account" && asset.isCurrent === false) {
+    return {
+      label: `Không còn trong dữ liệu mới nhất · Meta gần nhất: ${lastKnownAdAccountStatus(
+        rawStatus,
+        normalizedStatus,
+      )}`,
+      tone: isActionableMetaAdAccountStatus(rawStatus)
+        ? "attention"
+        : "inactive",
+    };
+  }
   if (normalizedStatus === "ACTIVE") {
     return { label: "Hoạt động", tone: "active" };
   }
@@ -87,12 +129,19 @@ export function getAssetStatusPresentation(
     const knownInactiveLabel =
       inactiveAdAccountStatusLabels[normalizedStatus];
     if (knownInactiveLabel) {
-      return { label: knownInactiveLabel, tone: "inactive" };
+      return {
+        label: knownInactiveLabel,
+        tone: isActionableMetaAdAccountStatus(rawStatus)
+          ? "attention"
+          : "inactive",
+      };
     }
     if (normalizedStatus.startsWith("PENDING")) {
       return {
         label: "Không hoạt động · Đang chờ Meta xử lý",
-        tone: "inactive",
+        tone: isActionableMetaAdAccountStatus(rawStatus)
+          ? "attention"
+          : "inactive",
       };
     }
     if (normalizedStatus.startsWith("STATUS ")) {
@@ -129,6 +178,7 @@ export function AssetsView({
     visible,
     activeAdAccountCount,
     inactiveAdAccountCount,
+    needsAttentionAdAccountCount,
   } = filterMetaAssets(assets, showInactiveAdAccounts);
   const hiddenAdAccountCount = showInactiveAdAccounts
     ? 0
@@ -157,9 +207,18 @@ export function AssetsView({
               <span>
                 {activeAdAccountCount} tài khoản quảng cáo hoạt động
                 {inactiveAdAccountCount > 0
-                  ? ` · ${inactiveAdAccountCount} không hoạt động`
+                  ? showInactiveAdAccounts
+                    ? ` · đang hiện ${inactiveAdAccountCount} không hoạt động`
+                    : ` · ${inactiveAdAccountCount} không hoạt động đã ẩn`
                   : ""}
               </span>
+              {needsAttentionAdAccountCount > 0 ? (
+                <span className="assets-controls__attention">
+                  <TriangleAlert aria-hidden="true" size={14} />
+                  {needsAttentionAdAccountCount} tài khoản cần kiểm tra trong
+                  nhóm không hoạt động
+                </span>
+              ) : null}
             </div>
             {inactiveAdAccountCount > 0 ? (
               <button
@@ -177,8 +236,12 @@ export function AssetsView({
                   <Eye aria-hidden="true" size={17} />
                 )}
                 {showInactiveAdAccounts
-                  ? `Ẩn ${inactiveAdAccountCount} tài khoản không hoạt động`
-                  : `Hiện ${inactiveAdAccountCount} tài khoản không hoạt động`}
+                  ? "Ẩn tài khoản không hoạt động"
+                  : `Xem ${inactiveAdAccountCount} tài khoản đã ẩn${
+                      needsAttentionAdAccountCount > 0
+                        ? ` (${needsAttentionAdAccountCount} cần kiểm tra)`
+                        : ""
+                    }`}
               </button>
             ) : activeAdAccountCount > 0 ? (
               <span className="assets-controls__all-active">
@@ -191,7 +254,7 @@ export function AssetsView({
             )}
             <span className="sr-only" aria-live="polite">
               {hiddenAdAccountCount > 0
-                ? `Đang ẩn ${hiddenAdAccountCount} tài khoản quảng cáo không hoạt động.`
+                ? `Đang ẩn ${hiddenAdAccountCount} tài khoản quảng cáo không hoạt động, trong đó có ${needsAttentionAdAccountCount} tài khoản cần kiểm tra.`
                 : "Đang hiển thị tất cả tài khoản quảng cáo."}
             </span>
           </section>
@@ -199,9 +262,10 @@ export function AssetsView({
           <div id="meta-assets-results">
             {visible.length ? (
               <section
-                aria-label="Tài sản Meta"
+                aria-label="Bảng tài sản Meta, có thể cuộn ngang"
                 className="assets-table"
                 role="table"
+                tabIndex={0}
               >
                 <div className="assets-table__head" role="row">
                   <span role="columnheader">Tài sản</span>
@@ -243,7 +307,7 @@ export function AssetsView({
                         <span data-label="Trạng thái" role="cell">
                           <em
                             className={`assets-status assets-status--${status.tone}`}
-                            title={`Trạng thái Meta gốc: ${asset.status || "không có"}`}
+                            title={`${asset.isCurrent === false ? "Không xuất hiện trong lần đồng bộ tài sản mới nhất. " : ""}Trạng thái Meta gần nhất: ${asset.status || "không có"}${asset.lastSeenAt ? `. Lần thấy gần nhất: ${asset.lastSeenAt}` : ""}`}
                           >
                             {status.label}
                           </em>

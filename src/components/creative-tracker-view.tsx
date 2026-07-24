@@ -2,6 +2,7 @@ import { Search, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
 
 import { PageHeader } from "@/components/ui/page-header";
+import { PerformanceRating } from "@/components/ui/performance-rating";
 import type { CreativeTrackerPage } from "@/lib/db";
 import { rateCreativeCpi } from "@/lib/reporting";
 
@@ -162,21 +163,26 @@ export function CreativeTrackerView({
       </div>
 
       {data.items.length ? (
-        <section className="tracker-table" aria-label="Creative tracker">
-          <div className="tracker-table__head">
-            <span>Mã creative</span>
-            <span>OS / Format</span>
-            <span>Spend</span>
-            <span>Impressions</span>
-            <span>Reach*</span>
-            <span>Link CTR</span>
-            <span>Install</span>
-            <span>Registration</span>
-            <span>CPI</span>
-            <span>CPA Reg.</span>
-            <span>Hook</span>
-            <span>Hold</span>
-            <span>Rating</span>
+        <section
+          className="tracker-table"
+          aria-label="Bảng Creative tracker, có thể cuộn ngang"
+          role="table"
+          tabIndex={0}
+        >
+          <div className="tracker-table__head" role="row">
+            <span role="columnheader">Mã creative</span>
+            <span role="columnheader">OS / Format</span>
+            <span role="columnheader">Spend</span>
+            <span role="columnheader">Impressions</span>
+            <span role="columnheader">Reach*</span>
+            <span role="columnheader">Link CTR</span>
+            <span role="columnheader">Install</span>
+            <span role="columnheader">Registration</span>
+            <span role="columnheader">CPI</span>
+            <span role="columnheader">CPA Reg.</span>
+            <span role="columnheader">Hook</span>
+            <span role="columnheader">Hold</span>
+            <span role="columnheader">Rating</span>
           </div>
           {data.items.map((item) => {
             const cpi =
@@ -207,14 +213,15 @@ export function CreativeTrackerView({
               <div
                 className="tracker-table__row"
                 key={`${item.creativeCode}:${item.operatingSystem}:${item.currency}`}
+                role="row"
               >
-                <span>
+                <span role="cell">
                   <strong>{item.creativeCode}</strong>
                   <small>
                     {item.adCount} Ads · {item.assetCount} assets
                   </small>
                 </span>
-                <span>
+                <span role="cell">
                   <strong>{item.operatingSystem}</strong>
                   <small>
                     {item.format}
@@ -223,20 +230,22 @@ export function CreativeTrackerView({
                       : " · asset scope"}
                   </small>
                 </span>
-                <span>{money(item.spend, item.currency)}</span>
-                <span>{number(item.impressions)}</span>
-                <span>{number(item.dailyReachSum)}</span>
-                <span>{percent(linkCtr)}</span>
-                <span>{number(item.installs, 2)}</span>
-                <span>{number(item.registrations, 2)}</span>
-                <span>{cpi === null ? "—" : money(cpi, item.currency)}</span>
-                <span>{cpa === null ? "—" : money(cpa, item.currency)}</span>
-                <span>{percent(hook)}</span>
-                <span>{percent(hold)}</span>
-                <span>
-                  <em className="tracker-rating">
-                    {rating}
-                  </em>
+                <span role="cell">{money(item.spend, item.currency)}</span>
+                <span role="cell">{number(item.impressions)}</span>
+                <span role="cell">{number(item.dailyReachSum)}</span>
+                <span role="cell">{percent(linkCtr)}</span>
+                <span role="cell">{number(item.installs, 2)}</span>
+                <span role="cell">{number(item.registrations, 2)}</span>
+                <span role="cell">
+                  {cpi === null ? "—" : money(cpi, item.currency)}
+                </span>
+                <span role="cell">
+                  {cpa === null ? "—" : money(cpa, item.currency)}
+                </span>
+                <span role="cell">{percent(hook)}</span>
+                <span role="cell">{percent(hold)}</span>
+                <span role="cell">
+                  <PerformanceRating rating={rating} />
                   <small>
                     Baseline{" "}
                     {item.osBaselineCpi === null
@@ -274,30 +283,39 @@ export function CreativeTrackerView({
 
       {data.total > data.limit ? (
         <nav className="table-pagination" aria-label="Phân trang tracker">
-          <Link
-            className={`button button--secondary${
-              currentPage <= 1 ? " button--disabled" : ""
-            }`}
-            aria-disabled={currentPage <= 1}
-            href={trackerHref(filters, Math.max(1, currentPage - 1))}
-          >
-            Trang trước
-          </Link>
+          {currentPage <= 1 ? (
+            <span
+              className="button button--secondary button--disabled"
+              aria-disabled="true"
+            >
+              Trang trước
+            </span>
+          ) : (
+            <Link
+              className="button button--secondary"
+              href={trackerHref(filters, currentPage - 1)}
+            >
+              Trang trước
+            </Link>
+          )}
           <span>
             Trang {currentPage} / {pageCount}
           </span>
-          <Link
-            className={`button button--secondary${
-              currentPage >= pageCount ? " button--disabled" : ""
-            }`}
-            aria-disabled={currentPage >= pageCount}
-            href={trackerHref(
-              filters,
-              Math.min(pageCount, currentPage + 1),
-            )}
-          >
-            Trang sau
-          </Link>
+          {currentPage >= pageCount ? (
+            <span
+              className="button button--secondary button--disabled"
+              aria-disabled="true"
+            >
+              Trang sau
+            </span>
+          ) : (
+            <Link
+              className="button button--secondary"
+              href={trackerHref(filters, currentPage + 1)}
+            >
+              Trang sau
+            </Link>
+          )}
         </nav>
       ) : null}
     </div>

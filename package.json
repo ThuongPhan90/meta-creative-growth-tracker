@@ -1,6 +1,6 @@
 {
   "name": "meta-creative-growth-tracker",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "Self-hosted, read-only Meta creative and app growth tracker for a single owner.",
   "license": "MIT",

@@ -5,6 +5,36 @@ dự án theo Semantic Versioning khi phát hành public.
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-07-24
+
+### Changed
+
+- Thu gọn trạng thái tài khoản quảng cáo không hoạt động: tiếp tục ẩn mặc định,
+  chỉ hiện lại khi người dùng chủ động chọn.
+- Tách hệ màu vận hành quảng cáo khỏi hệ màu đánh giá hiệu quả; campaign đang
+  chạy dùng xanh dương, tạm dừng dùng xám, còn rating dùng xanh lá/vàng/đỏ theo
+  chất lượng.
+- Creative Library ưu tiên creative có ít nhất một Ads đang hoạt động, đồng thời
+  hiển thị riêng trạng thái đang chạy, không chạy, liên kết cũ hoặc chưa gắn Ads.
+- Creative Library chỉ render 100 kết quả mỗi đợt và trì hoãn truy vấn tìm kiếm
+  nặng, giúp thư viện lớn vẫn phản hồi nhanh mà không làm mất khả năng xem thêm.
+- Tài khoản quảng cáo không hoạt động vẫn được thu gọn mặc định, nhưng các trạng
+  thái cần xử lý được đếm riêng và trạng thái Meta gần nhất không còn bị ghi đè.
+
+### Fixed
+
+- Sửa Checklist mobile bị ép chữ và tràn badge do chi tiết dài được lặp lại trong
+  trạng thái.
+- Dùng `effective_status` thay vì cờ discovery `is_active` để trình bày và lọc
+  trạng thái campaign.
+- Giới hạn performance/rating Creative Library vào tài khoản quảng cáo vận hành,
+  đồng nhất với phạm vi baseline Dashboard.
+- Áp đúng màu cho `KÉM`, `KHÔNG INSTALL` và `ÍT DỮ LIỆU` trong Creative Tracker.
+- Đồng bộ panel chi tiết với kết quả lọc hiện tại, không còn hiển thị một
+  creative đã bị bộ lọc loại khỏi bảng.
+- Khi URL đang chọn một tài khoản quảng cáo cũ, Campaigns và Tracker tự mở đúng
+  phạm vi lịch sử thay vì trả về bảng rỗng giả.
+
 ## [1.0.1] - 2026-07-24
 
 ### Changed

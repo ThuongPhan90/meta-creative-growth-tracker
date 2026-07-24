@@ -105,6 +105,28 @@ describe("Repository JSONB parameters", () => {
 });
 
 describe("Ad account activity filters", () => {
+  it("sorts Meta ad accounts by operational state before discovery freshness", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await repository.listMetaAssets("connection-1");
+
+    const accountQuery = unsafe.mock.calls
+      .map(([query]) => query)
+      .find((query) => query.includes("from tracker.meta_ad_accounts"));
+    expect(accountQuery).toContain(
+      "coalesce(is_active and account_status = 1, false) desc",
+    );
+  });
+
   it("filters dashboard delivery performance to operational accounts", async () => {
     const unsafe = vi.fn(
       async (_query: string, _parameters?: unknown[]) => {
@@ -168,6 +190,16 @@ describe("Ad account activity filters", () => {
     expect(defaultQuery).toContain("$2::boolean");
     expect(defaultQuery).toContain(
       "or (account.is_active and account.account_status = 1)",
+    );
+    expect(defaultQuery).toContain(
+      "coalesce(campaign.effective_status, campaign.status) = $4",
+    );
+    expect(defaultQuery).not.toContain("or campaign.status = $4");
+    expect(defaultQuery).toContain(
+      "coalesce(\n            filtered.is_active",
+    );
+    expect(defaultQuery).toContain(
+      "coalesce(filtered.effective_status, filtered.status) = 'ACTIVE'",
     );
     expect(defaultParameters).toEqual([
       "connection-1",
@@ -256,6 +288,85 @@ describe("Ad account activity filters", () => {
       40,
       20,
     ]);
+  });
+
+  it("prioritizes creative linked to active Ads in operational accounts", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await repository.listCreativeLibrary({
+      connectionId: "connection-1",
+      limit: 50,
+      offset: 0,
+    });
+
+    const [query, parameters] = unsafe.mock.calls[0];
+    expect(query).toContain("account.account_status = 1");
+    expect(query).toContain(
+      "coalesce(ad.effective_status, ad.status) = 'ACTIVE'",
+    );
+    expect(query).toContain(
+      "(coalesce(ad_usage.active_ad_count, 0) > 0) desc",
+    );
+    expect(parameters).toEqual(["connection-1", null, null, 50, 0]);
+  });
+
+  it("bounds one complete creative-library snapshot at 5,001 rows", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await repository.listCreativeLibrary({
+      connectionId: "connection-1",
+      limit: 9_000,
+      offset: 0,
+    });
+
+    expect(unsafe.mock.calls[0]?.[1]).toEqual([
+      "connection-1",
+      null,
+      null,
+      5_001,
+      0,
+    ]);
+  });
+
+  it("keeps creative performance and its baseline on operational accounts", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await repository.listCreativePerformance({
+      connectionId: "connection-1",
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-24",
+    });
+
+    const [query] = unsafe.mock.calls[0];
+    expect(query).toContain("and account.is_active");
+    expect(query).toContain("and account.account_status = 1");
   });
 });
 

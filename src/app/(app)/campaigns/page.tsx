@@ -4,6 +4,10 @@ import {
   type CampaignInventoryPage,
 } from "@/lib/db";
 import { getApplicationSnapshot } from "@/lib/app-data";
+import {
+  isOperationalMetaAssetAccount,
+  shouldIncludeInactiveMetaAdAccounts,
+} from "@/lib/meta";
 
 export const dynamic = "force-dynamic";
 
@@ -40,11 +44,17 @@ export default async function CampaignsPage({
     snapshot.authenticated &&
     snapshot.connection?.status === "connected";
   const pageNumber = validPage(query.page);
+  const account = query.account?.trim().slice(0, 128) ?? "";
+  const showInactive = shouldIncludeInactiveMetaAdAccounts(
+    snapshot.assets,
+    account,
+    query.showInactive === "1",
+  );
   const filters = {
     query: query.q?.trim().slice(0, 200) ?? "",
-    account: query.account?.trim().slice(0, 128) ?? "",
+    account,
     status: query.status?.trim().slice(0, 64) ?? "",
-    showInactive: query.showInactive === "1",
+    showInactive,
     page: pageNumber,
   };
   const data =
@@ -66,13 +76,13 @@ export default async function CampaignsPage({
     .filter(
       (asset) =>
         filters.showInactive ||
-        asset.status === "ACTIVE" ||
+        isOperationalMetaAssetAccount(asset) ||
         asset.id === filters.account,
     )
     .map((asset) => ({
       id: asset.id,
       name: asset.name,
-      active: asset.status === "ACTIVE",
+      active: isOperationalMetaAssetAccount(asset),
     }));
 
   return (

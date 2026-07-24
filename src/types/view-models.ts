@@ -47,6 +47,8 @@ export type MetaAssetRow = {
   kind: MetaAssetKind;
   parentName: string | null;
   status: string;
+  isCurrent?: boolean;
+  lastSeenAt?: string | null;
   currency?: string | null;
   timezone?: string | null;
 };
@@ -58,6 +60,7 @@ export type CreativeReadiness =
   | "Thiếu event mapping"
   | "Chưa gắn Ads"
   | "Chờ phân phối"
+  | "Chưa có dữ liệu"
   | "Không xác định";
 
 export type CreativeRating =
@@ -94,6 +97,8 @@ export type CreativeRow = {
   platform: CreativePlatform;
   linkLabel: string;
   linkCount: number;
+  currentAdCount: number;
+  activeAdCount: number;
   readiness: CreativeReadiness;
   performanceLabel: string;
   imageUrl: string;

@@ -62,6 +62,7 @@ describe("Meta asset visibility", () => {
     ]);
     expect(result.activeAdAccountCount).toBe(1);
     expect(result.inactiveAdAccountCount).toBe(2);
+    expect(result.needsAttentionAdAccountCount).toBe(0);
   });
 
   it("restores all assets when inactive ad accounts are enabled", () => {
@@ -70,6 +71,26 @@ describe("Meta asset visibility", () => {
     expect(result.visible).toEqual(assets);
     expect(result.activeAdAccountCount).toBe(1);
     expect(result.inactiveAdAccountCount).toBe(2);
+    expect(result.needsAttentionAdAccountCount).toBe(0);
+  });
+
+  it("keeps actionable inactive accounts hidden but reports them separately", () => {
+    const result = filterMetaAssets(
+      [
+        ...assets,
+        {
+          ...assets[1],
+          id: "account-unsettled",
+          status: "UNSETTLED",
+        },
+      ],
+      false,
+    );
+
+    expect(result.visible.some((asset) => asset.id === "account-unsettled"))
+      .toBe(false);
+    expect(result.inactiveAdAccountCount).toBe(3);
+    expect(result.needsAttentionAdAccountCount).toBe(1);
   });
 
   it("never hides an inactive non-ad-account asset", () => {
@@ -99,7 +120,8 @@ describe("Meta asset visibility", () => {
     expect(html).not.toContain("Disabled account");
     expect(html).toContain('aria-controls="meta-assets-results"');
     expect(html).toContain('aria-pressed="false"');
-    expect(html).toContain("Hiện 2 tài khoản không hoạt động");
+    expect(html).toContain("2 không hoạt động đã ẩn");
+    expect(html).toContain("Xem 2 tài khoản đã ẩn");
   });
 
   it("shows and hides inactive ad accounts through the toggle", async () => {
@@ -159,16 +181,46 @@ describe("Meta asset status labels", () => {
     });
   });
 
+  it("preserves the last Meta status when an account leaves latest discovery", () => {
+    expect(
+      getAssetStatusPresentation({
+        ...assets[1],
+        isCurrent: false,
+        status: "UNSETTLED",
+      }),
+    ).toEqual({
+      label:
+        "Không còn trong dữ liệu mới nhất · Meta gần nhất: Chưa thanh toán",
+      tone: "attention",
+    });
+  });
+
   it.each([
-    ["CLOSED", "Không hoạt động · Đã đóng"],
-    ["DISABLED", "Không hoạt động · Đã vô hiệu hóa"],
-    ["UNSETTLED", "Không hoạt động · Chưa thanh toán"],
-    ["PENDING_RISK_REVIEW", "Không hoạt động · Chờ đánh giá rủi ro"],
-    ["PENDING_SETTLEMENT", "Không hoạt động · Chờ thanh toán"],
-    ["PENDING_CLOSURE", "Không hoạt động · Chờ đóng"],
-    ["IN_GRACE_PERIOD", "Không hoạt động · Trong thời gian gia hạn"],
-    ["PENDING_OTHER", "Không hoạt động · Đang chờ Meta xử lý"],
-  ])("marks %s as non-operational", (rawStatus, label) => {
+    ["CLOSED", "Không hoạt động · Đã đóng", "inactive"],
+    ["DISABLED", "Không hoạt động · Đã vô hiệu hóa", "attention"],
+    ["UNSETTLED", "Không hoạt động · Chưa thanh toán", "attention"],
+    [
+      "PENDING_RISK_REVIEW",
+      "Không hoạt động · Chờ đánh giá rủi ro",
+      "attention",
+    ],
+    [
+      "PENDING_SETTLEMENT",
+      "Không hoạt động · Chờ thanh toán",
+      "attention",
+    ],
+    ["PENDING_CLOSURE", "Không hoạt động · Chờ đóng", "inactive"],
+    [
+      "IN_GRACE_PERIOD",
+      "Không hoạt động · Trong thời gian gia hạn",
+      "attention",
+    ],
+    [
+      "PENDING_OTHER",
+      "Không hoạt động · Đang chờ Meta xử lý",
+      "attention",
+    ],
+  ] as const)("marks %s as non-operational", (rawStatus, label, tone) => {
     expect(
       getAssetStatusPresentation({
         ...assets[1],
@@ -176,7 +228,7 @@ describe("Meta asset status labels", () => {
       }),
     ).toEqual({
       label,
-      tone: "inactive",
+      tone,
     });
   });
 });
