@@ -8,7 +8,7 @@ import type {
 
 export const demoDashboard: DashboardViewModel = {
   mode: "demo",
-  ownerName: "Donny",
+  ownerName: "Demo Owner",
   connectionLabel: "Chưa kết nối Meta",
   connectionDetail:
     "Kết nối tài khoản Meta để quét tài sản và bắt đầu theo dõi.",
@@ -36,7 +36,7 @@ export const demoDashboard: DashboardViewModel = {
   ],
   checklist: [
     {
-      label: "Meta SDK",
+      label: "App events trong Insights",
       status: "pending",
       detail: "Chưa kiểm tra",
     },
@@ -73,7 +73,7 @@ export const demoCreatives: CreativeRow[] = [
     imageUrl: "/creative-demo/onboarding-motion.webp",
     duration: "00:18",
     ratio: "9:16",
-    pageName: "Donny Growth Lab",
+    pageName: "Demo Growth Lab",
     eventMapping: {
       install: true,
       registration: true,
@@ -93,7 +93,7 @@ export const demoCreatives: CreativeRow[] = [
     imageUrl: "/creative-demo/feature-tour.webp",
     duration: "00:22",
     ratio: "9:16",
-    pageName: "Donny Growth Lab",
+    pageName: "Demo Growth Lab",
     eventMapping: {
       install: true,
       registration: false,
@@ -133,7 +133,7 @@ export const demoCreatives: CreativeRow[] = [
     imageUrl: "/creative-demo/registration-banner.webp",
     duration: null,
     ratio: "1.91:1",
-    pageName: "Donny Growth Lab",
+    pageName: "Demo Growth Lab",
     eventMapping: {
       install: true,
       registration: true,

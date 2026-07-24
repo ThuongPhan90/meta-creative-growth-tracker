@@ -43,6 +43,14 @@ Không dùng chung `META_APP_ID`, `META_APP_SECRET`, token mã hóa hoặc datab
 giữa các học viên/khách hàng. Fork hoặc deploy mới phải tạo Meta App credentials
 và Postgres riêng.
 
+Repo đã bật GitHub Template. Để sở hữu và cập nhật bản sao độc lập, chọn
+**Use this template** hoặc **Fork** trên GitHub, rồi import chính repository mới
+của bạn vào Vercel. Nút **Deploy with Vercel** ở trên cũng tạo một bản triển khai
+mới, nhưng không mang theo Meta credential, token hay database của owner gốc.
+Sau khi tạo bản sao, cập nhật badge/clone/Deploy URL trong README và kênh báo cáo
+bảo mật theo repository của bạn; đây là liên kết tài liệu, không phải phụ thuộc
+runtime.
+
 ## Bắt đầu nhanh ở local
 
 Yêu cầu:

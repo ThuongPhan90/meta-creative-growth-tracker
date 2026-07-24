@@ -3,6 +3,10 @@
 import { Save, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { PageHeader } from "@/components/ui/page-header";
+import {
+  parseActionTypesInput,
+  validateActionTypeMapping,
+} from "@/lib/reporting/action-type-mapping";
 
 export function SettingsView({
   initialTimezone,
@@ -31,11 +35,21 @@ export function SettingsView({
     useState(initialRegistrationActionTypes.join(", "));
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const actionTypeMapping = validateActionTypeMapping({
+    installActionTypes: parseActionTypesInput(installActionTypes),
+    registrationActionTypes: parseActionTypesInput(
+      registrationActionTypes,
+    ),
+  });
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!canSave) {
       setMessage("Kết nối Meta với phiên owner để lưu cài đặt Live.");
+      return;
+    }
+    if (!actionTypeMapping.ok) {
+      setMessage(actionTypeMapping.error);
       return;
     }
     setSaving(true);
@@ -49,14 +63,9 @@ export function SettingsView({
           timezone,
           lookbackDays: lookback,
           minimumInstallThreshold: minimumInstalls,
-          installActionTypes: installActionTypes
-            .split(",")
-            .map((item) => item.trim())
-            .filter(Boolean),
-          registrationActionTypes: registrationActionTypes
-            .split(",")
-            .map((item) => item.trim())
-            .filter(Boolean),
+          installActionTypes: actionTypeMapping.installActionTypes,
+          registrationActionTypes:
+            actionTypeMapping.registrationActionTypes,
         }),
       });
       const result = (await response.json()) as {
@@ -64,6 +73,12 @@ export function SettingsView({
         error?: string;
       };
       if (!response.ok) throw new Error(result.error ?? "Không thể lưu.");
+      setInstallActionTypes(
+        actionTypeMapping.installActionTypes.join(", "),
+      );
+      setRegistrationActionTypes(
+        actionTypeMapping.registrationActionTypes.join(", "),
+      );
       setMessage(result.message ?? "Đã lưu cài đặt.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Có lỗi xảy ra.");
@@ -135,9 +150,16 @@ export function SettingsView({
             <span>Install action types</span>
             <input
               value={installActionTypes}
-              onChange={(event) =>
-                setInstallActionTypes(event.target.value)
+              aria-describedby={
+                actionTypeMapping.ok
+                  ? undefined
+                  : "action-type-mapping-error"
               }
+              aria-invalid={!actionTypeMapping.ok}
+              onChange={(event) => {
+                setInstallActionTypes(event.target.value);
+                setMessage(null);
+              }}
               spellCheck={false}
             />
           </label>
@@ -145,12 +167,28 @@ export function SettingsView({
             <span>Registration action types</span>
             <input
               value={registrationActionTypes}
-              onChange={(event) =>
-                setRegistrationActionTypes(event.target.value)
+              aria-describedby={
+                actionTypeMapping.ok
+                  ? undefined
+                  : "action-type-mapping-error"
               }
+              aria-invalid={!actionTypeMapping.ok}
+              onChange={(event) => {
+                setRegistrationActionTypes(event.target.value);
+                setMessage(null);
+              }}
               spellCheck={false}
             />
           </label>
+          {!actionTypeMapping.ok ? (
+            <p
+              className="inline-notice"
+              id="action-type-mapping-error"
+              role="alert"
+            >
+              {actionTypeMapping.error}
+            </p>
+          ) : null}
         </section>
 
         <section>
@@ -185,7 +223,7 @@ export function SettingsView({
           </span>
           <button
             className="button button--primary"
-            disabled={saving || !canSave}
+            disabled={saving || !canSave || !actionTypeMapping.ok}
           >
             <Save aria-hidden="true" size={16} />
             {saving ? "Đang lưu" : canSave ? "Lưu cài đặt" : "Chưa thể lưu"}

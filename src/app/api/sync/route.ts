@@ -16,6 +16,7 @@ import {
   routeErrorResponse,
 } from "@/lib/server";
 import { runStoredMetaSync } from "@/lib/sync";
+import { syncHttpOutcome } from "@/lib/sync/http-status";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -116,19 +117,22 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    return NextResponse.json({
-      ok: true,
-      message:
-        result.run.status === "partial"
-          ? "Đồng bộ hoàn tất một phần; mở Sức khỏe dữ liệu để xem cảnh báo."
-          : "Đồng bộ Meta đã hoàn tất.",
-      run: {
-        id: result.run.syncRunId,
-        kind: result.run.syncKind,
-        status: result.run.status,
-        warningCount: result.warnings.length,
+    const outcome = syncHttpOutcome(result.run.status);
+    return NextResponse.json(
+      {
+        ok: outcome.ok,
+        message: outcome.message,
+        ...(!outcome.ok ? { error: outcome.message } : {}),
+        ...(outcome.code ? { code: outcome.code } : {}),
+        run: {
+          id: result.run.syncRunId,
+          kind: result.run.syncKind,
+          status: result.run.status,
+          warningCount: result.warnings.length,
+        },
       },
-    });
+      { status: outcome.status },
+    );
   } catch (error) {
     if (error instanceof SyncAlreadyRunningError) {
       return NextResponse.json(

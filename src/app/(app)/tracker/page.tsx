@@ -64,6 +64,7 @@ export default async function TrackerPage({
     account?: string;
     campaign?: string;
     format?: string;
+    showInactive?: string;
     page?: string;
   }>;
 }) {
@@ -96,6 +97,9 @@ export default async function TrackerPage({
     account: query.account?.trim().slice(0, 128) ?? "",
     campaign: query.campaign?.trim().slice(0, 128) ?? "",
     format,
+    showInactive: query.showInactive === "1",
+    dateRangeChanged:
+      dateFrom !== dateFromDefault || dateTo !== dateToDefault,
     page: pageNumber,
   };
   const connected =
@@ -114,13 +118,24 @@ export default async function TrackerPage({
           assetType: format || undefined,
           search: filters.query || undefined,
           currency: snapshot.settings.currency ?? undefined,
+          includeInactiveAccounts: filters.showInactive,
           limit: 50,
           offset: (pageNumber - 1) * 50,
         })
       : EMPTY_PAGE;
   const accounts = snapshot.assets
     .filter((asset) => asset.kind === "Ad Account")
-    .map((asset) => ({ id: asset.id, name: asset.name }));
+    .filter(
+      (asset) =>
+        filters.showInactive ||
+        asset.status === "ACTIVE" ||
+        asset.id === filters.account,
+    )
+    .map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      active: asset.status === "ACTIVE",
+    }));
 
   return (
     <CreativeTrackerView

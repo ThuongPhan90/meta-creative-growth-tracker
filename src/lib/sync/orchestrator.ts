@@ -1,4 +1,3 @@
-import { SyncAlreadyRunningError } from "@/lib/db/errors";
 import type {
   JsonObject,
   JsonValue,
@@ -78,24 +77,27 @@ async function executeStage(
 }
 
 export async function runMetaSync(input: RunSyncInput): Promise<RunSyncResult> {
-  const run = await input.repository.createSyncRun({
-    connectionId: input.connectionId,
-    requestKey: input.requestKey,
-    syncKind: input.syncKind,
-    triggerSource: input.triggerSource,
-    windowStart: input.window?.dateFrom ?? null,
-    windowEnd: input.window?.dateTo ?? null,
-  });
+  return withConnectionSyncLock(
+    input.repository.database,
+    input.connectionId,
+    async () => {
+      const run = await input.repository.createSyncRun({
+        connectionId: input.connectionId,
+        requestKey: input.requestKey,
+        syncKind: input.syncKind,
+        triggerSource: input.triggerSource,
+        windowStart: input.window?.dateFrom ?? null,
+        windowEnd: input.window?.dateTo ?? null,
+      });
 
-  if (run.status !== "queued") {
-    return { run, warnings: [] };
-  }
+      // Owning the connection-scoped advisory lock proves no live sync owns a
+      // persisted `running` row. Re-run that same idempotency key so a client
+      // retry can recover after a serverless process ends unexpectedly.
+      if (run.status !== "queued" && run.status !== "running") {
+        return { run, warnings: [] };
+      }
 
-  try {
-    return await withConnectionSyncLock(
-      input.repository.database,
-      input.connectionId,
-      async () => {
+      try {
         await input.repository.recoverInterruptedSyncRuns(
           input.connectionId,
           run.syncRunId,
@@ -180,24 +182,18 @@ export async function runMetaSync(input: RunSyncInput): Promise<RunSyncResult> {
         });
         const completed = await input.repository.getSyncRun(run.syncRunId);
         return { run: completed ?? run, warnings };
-      },
-    );
-  } catch (error) {
-    if (error instanceof SyncAlreadyRunningError) {
-      await input.repository.finishSyncRun({
-        syncRunId: run.syncRunId,
-        status: "cancelled",
-      });
-      throw error;
+      } catch (error) {
+        const failure = safeError(error);
+        await input.repository.failSyncRun({
+          syncRunId: run.syncRunId,
+          errorCode: failure.code,
+          errorMessage: failure.message,
+          stats: failure.details
+            ? { error_details: failure.details }
+            : undefined,
+        });
+        throw error;
+      }
     }
-
-    const failure = safeError(error);
-    await input.repository.failSyncRun({
-      syncRunId: run.syncRunId,
-      errorCode: failure.code,
-      errorMessage: failure.message,
-      stats: failure.details ? { error_details: failure.details } : undefined,
-    });
-    throw error;
-  }
+  );
 }

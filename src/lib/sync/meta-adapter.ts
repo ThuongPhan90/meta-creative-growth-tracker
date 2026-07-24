@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type {
   AdAccountInput,
   AdCreativeLinkInput,
@@ -123,11 +125,16 @@ const CREATIVE_FIELDS = [
   "call_to_action_type",
   "url_tags",
 ].join(",");
+// Current Ads Insights exposes 3-second views inside actions as
+// action_type=video_view. video_play_actions is requested separately so the
+// raw row retains the distinct video-start signal; it must not be substituted
+// for a 3-second view.
 const INSIGHT_FIELDS = [
   "date_start",
   "date_stop",
   "account_id",
   "account_currency",
+  "attribution_setting",
   "campaign_id",
   "adset_id",
   "ad_id",
@@ -137,6 +144,7 @@ const INSIGHT_FIELDS = [
   "inline_link_clicks",
   "actions",
   "action_values",
+  "video_play_actions",
   "video_p100_watched_actions",
 ].join(",");
 const ASSET_INSIGHT_FIELDS = [
@@ -144,6 +152,7 @@ const ASSET_INSIGHT_FIELDS = [
   "date_stop",
   "account_id",
   "account_currency",
+  "attribution_setting",
   "campaign_id",
   "adset_id",
   "ad_id",
@@ -153,6 +162,7 @@ const ASSET_INSIGHT_FIELDS = [
   "inline_link_clicks",
   "actions",
   "action_values",
+  "video_play_actions",
   "video_p100_watched_actions",
 ].join(",");
 
@@ -1061,6 +1071,62 @@ function normalizeMetaActions(value: unknown): MetaAction[] {
   return actions;
 }
 
+export type ThreeSecondVideoMetricSource =
+  | "actions.video_view"
+  | "legacy.video_3_sec_watched_actions"
+  | "unavailable";
+
+export function resolveThreeSecondVideoActions(
+  row: MetaInsightRow,
+  normalizedActions = normalizeMetaActions(row.actions),
+): {
+  actions: MetaAction[];
+  source: ThreeSecondVideoMetricSource;
+} {
+  const supportedActions = normalizedActions.filter(
+    (action) => action.action_type === "video_view",
+  );
+  if (supportedActions.length > 0) {
+    return {
+      actions: supportedActions,
+      source: "actions.video_view",
+    };
+  }
+
+  const legacyActions = normalizeMetaActions(
+    row.video_3_sec_watched_actions,
+  );
+  if (legacyActions.length > 0) {
+    return {
+      actions: legacyActions,
+      source: "legacy.video_3_sec_watched_actions",
+    };
+  }
+
+  return {
+    actions: [],
+    source: "unavailable",
+  };
+}
+
+export function actionMappingVersion(mapping: MetaActionMapping): string {
+  const canonical = JSON.stringify({
+    installs: {
+      strategy: mapping.installs.strategy,
+      actionTypes: [...mapping.installs.actionTypes],
+    },
+    registrations: {
+      strategy: mapping.registrations.strategy,
+      actionTypes: [...mapping.registrations.actionTypes],
+    },
+  });
+  const digest = createHash("sha256")
+    .update(canonical, "utf8")
+    .digest("hex")
+    .slice(0, 16);
+  return `settings-first-match-v1:${digest}`;
+}
+
 function actionsAsJson(actions: readonly MetaAction[]): JsonValue[] {
   return actions.map((action) => toJsonObject(action));
 }
@@ -1184,13 +1250,7 @@ function coverageTotals(
 ): ExactCoverageTotals {
   const actions = normalizeMetaActions(row.actions);
   const actionValues = normalizeMetaActions(row.action_values);
-  const reportedVideo3s = normalizeMetaActions(
-    row.video_3_sec_watched_actions,
-  );
-  const video3s =
-    reportedVideo3s.length > 0
-      ? reportedVideo3s
-      : actions.filter((action) => action.action_type === "video_view");
+  const video3s = resolveThreeSecondVideoActions(row, actions).actions;
   const video100 = normalizeMetaActions(row.video_p100_watched_actions);
   const parsed = parseInsightMetrics(
     {
@@ -2096,6 +2156,9 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     stats.creativeAssetLinks += creativeAssetLinks.length;
 
     const adCreativeLinks: AdCreativeLinkInput[] = [];
+    // Only replace an ad whose referenced creative was fully resolved in this
+    // snapshot. A partial creative read must preserve its last known link.
+    const replaceableAdIds: DatabaseId[] = [];
     for (const ad of eligibleAds) {
       const adInternalId = adInternalIds.get(ad.id);
       const metaCreativeId = optionalString(ad.creative?.id);
@@ -2103,6 +2166,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         ? creativeInternalIds.get(metaCreativeId)
         : undefined;
       if (adInternalId && creativeInternalId) {
+        replaceableAdIds.push(adInternalId);
         adCreativeLinks.push({
           adId: adInternalId,
           creativeId: creativeInternalId,
@@ -2112,7 +2176,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     }
     throwIfAborted(context.signal);
     await context.repository.replaceAdCreativeLinks(
-      [...adInternalIds.values()],
+      replaceableAdIds,
       adCreativeLinks,
     );
     stats.adCreativeLinks += adCreativeLinks.length;
@@ -2622,6 +2686,8 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         strategy: "first-match" as const,
       },
     };
+    const currentActionMappingVersion =
+      actionMappingVersion(actionMapping);
 
     let accountsSucceeded = 0;
     let rowsFetched = 0;
@@ -2636,6 +2702,11 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     let duplicateRows = 0;
     let conflictingDuplicateRows = 0;
     let accountsSkippedForMapping = 0;
+    const video3sSourceRows: Record<ThreeSecondVideoMetricSource, number> = {
+      "actions.video_view": 0,
+      "legacy.video_3_sec_watched_actions": 0,
+      unavailable: 0,
+    };
     const breakdownModes: JsonObject = {};
     const accountWindows: JsonObject = {};
     const coveredDateTos: string[] = [];
@@ -2852,15 +2923,11 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
 
         const actions = normalizeMetaActions(row.actions);
         const actionValues = normalizeMetaActions(row.action_values);
-        const reportedVideo3sActions = normalizeMetaActions(
-          row.video_3_sec_watched_actions,
+        const video3s = resolveThreeSecondVideoActions(
+          row,
+          actions,
         );
-        const video3sActions =
-          reportedVideo3sActions.length > 0
-            ? reportedVideo3sActions
-            : actions.filter(
-                (action) => action.action_type === "video_view",
-              );
+        video3sSourceRows[video3s.source] += 1;
         const video100Actions = normalizeMetaActions(
           row.video_p100_watched_actions,
         );
@@ -2869,7 +2936,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
             ...row,
             actions,
             action_values: actionValues,
-            video_3_sec_watched_actions: video3sActions,
+            video_3_sec_watched_actions: video3s.actions,
             video_p100_watched_actions: video100Actions,
           },
           actionMapping,
@@ -2909,7 +2976,9 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
           impressionDevice:
             optionalString(row.impression_device) ?? "ALL",
           attributionWindow:
-            optionalString(row.attribution_window) ?? "account_default",
+            optionalString(row.attribution_setting) ??
+            optionalString(row.attribution_window) ??
+            "account_default",
           accountTimezone:
             optionalString(account.graph.timezone_name) ??
             settings.reportingTimezone,
@@ -2931,7 +3000,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
           rawActions: actionsAsJson(actions),
           rawActionValues: actionsAsJson(actionValues),
           rawPayload: toJsonObject(row),
-          actionMappingVersion: "settings-first-match-v1",
+          actionMappingVersion: currentActionMappingVersion,
         });
       }
 
@@ -3044,6 +3113,13 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         unmapped_rows: unmappedRows,
         duplicate_rows: duplicateRows,
         conflicting_duplicate_rows: conflictingDuplicateRows,
+        video_3s_source_rows: {
+          actions_video_view:
+            video3sSourceRows["actions.video_view"],
+          legacy_direct_field:
+            video3sSourceRows["legacy.video_3_sec_watched_actions"],
+          unavailable: video3sSourceRows.unavailable,
+        },
         breakdown_modes: breakdownModes,
         ...(implicitAssetStats
           ? { implicit_asset_sync: implicitAssetStats }

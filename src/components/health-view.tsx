@@ -9,7 +9,16 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusPill } from "@/components/ui/status-pill";
+import { groupSyncWarnings } from "@/lib/sync/warning-groups";
 import type { ChecklistItem, SyncRunView } from "@/types/view-models";
+
+const syncStatusLabels: Record<SyncRunView["status"], string> = {
+  running: "Đang chạy",
+  success: "Hoàn tất",
+  partial: "Một phần",
+  failed: "Thất bại",
+  cancelled: "Đã hủy",
+};
 
 export function HealthView({
   checklist,
@@ -28,7 +37,7 @@ export function HealthView({
       <section className="health-grid">
         {checklist.map((item) => {
           const Icon =
-            item.label === "Meta SDK"
+            item.label === "App events trong Insights"
               ? Activity
               : item.label === "Quyền truy cập"
                 ? ShieldCheck
@@ -60,51 +69,75 @@ export function HealthView({
         </div>
         {syncRuns.length ? (
           <div className="sync-list">
-            {syncRuns.map((run) => (
-              <article key={run.id}>
-                <span aria-hidden="true">
-                  <Database size={16} />
-                </span>
-                <div>
-                  <strong>{run.kind}</strong>
-                  <p>{run.summary}</p>
-                  {run.warnings.length ? (
-                    <details className="sync-warning-details">
-                      <summary>
-                        Xem {run.warnings.length} cảnh báo
-                      </summary>
-                      <ul>
-                        {run.warnings.map((warning, index) => (
-                          <li key={`${warning.code}:${index}`}>
-                            <strong>{warning.code}</strong>
-                            <span>
-                              {warning.resource
-                                ? `${warning.resource} · `
-                                : ""}
-                              {warning.message}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
-                  ) : null}
-                </div>
-                <StatusPill
-                  status={
-                    run.status === "success"
-                      ? "ready"
-                      : run.status === "partial"
-                        ? "warning"
-                      : run.status === "failed"
-                        ? "error"
-                        : "pending"
-                  }
-                  label={run.status}
-                  compact
-                />
-                <time>{run.startedAt}</time>
-              </article>
-            ))}
+            {syncRuns.map((run) => {
+              const warningGroups = groupSyncWarnings(run.warnings);
+              return (
+                <article key={run.id}>
+                  <span aria-hidden="true">
+                    <Database size={16} />
+                  </span>
+                  <div>
+                    <strong>{run.kind}</strong>
+                    <p>{run.summary}</p>
+                    {run.warnings.length ? (
+                      <details className="sync-warning-details">
+                        <summary>
+                          Xem {run.warnings.length} cảnh báo ·{" "}
+                          {warningGroups.length} nhóm
+                        </summary>
+                        <ul>
+                          {warningGroups.map((warning) => {
+                            const visibleResources =
+                              warning.resources.slice(0, 3);
+                            const remainingResources =
+                              warning.resources.length -
+                              visibleResources.length;
+                            return (
+                              <li
+                                key={`${warning.code}:${warning.message}`}
+                              >
+                                <div>
+                                  <strong>{warning.code}</strong>
+                                  <span>
+                                    {warning.count.toLocaleString("vi-VN")}{" "}
+                                    lần
+                                  </span>
+                                </div>
+                                <p>{warning.message}</p>
+                                {visibleResources.length ? (
+                                  <small>
+                                    {visibleResources.join(" · ")}
+                                    {remainingResources > 0
+                                      ? ` · +${remainingResources} tài nguyên`
+                                      : ""}
+                                  </small>
+                                ) : null}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </details>
+                    ) : null}
+                  </div>
+                  <StatusPill
+                    status={
+                      run.status === "success"
+                        ? "ready"
+                        : run.status === "partial"
+                          ? "warning"
+                          : run.status === "failed"
+                            ? "error"
+                            : run.status === "cancelled"
+                              ? "warning"
+                              : "pending"
+                    }
+                    label={syncStatusLabels[run.status]}
+                    compact
+                  />
+                  <time>{run.startedAt}</time>
+                </article>
+              );
+            })}
           </div>
         ) : (
           <div className="sync-empty">

@@ -23,7 +23,11 @@ import {
   computeOsCpiBaselines,
   rateCreativeCpi,
 } from "@/lib/reporting";
-import { evaluateMetaConnectionLifecycle } from "@/lib/meta";
+import {
+  evaluateMetaConnectionLifecycle,
+  isOperationalAdAccount,
+  metaAdAccountStatusLabel,
+} from "@/lib/meta";
 import {
   getRuntimeConfiguration,
   readDatabaseHealth,
@@ -688,9 +692,7 @@ export const getApplicationSnapshot = cache(
         kind: "Ad Account" as const,
         parentName: item.businessName,
         status: item.isActive
-          ? item.accountStatus === 1
-            ? "ACTIVE"
-            : `STATUS ${item.accountStatus ?? "UNKNOWN"}`
+          ? metaAdAccountStatusLabel(item.accountStatus)
           : "INACTIVE",
         currency: item.currency,
         timezone: item.timezoneName,
@@ -735,6 +737,13 @@ export const getApplicationSnapshot = cache(
     const hasDelivery = delivery.some(
       (item) => item.impressions > 0 || item.spend > 0,
     );
+    const hasInstallData = delivery.some((item) => item.installs > 0);
+    const hasRegistrationData = delivery.some(
+      (item) => item.registrations > 0,
+    );
+    const hasAnyConversion = hasInstallData || hasRegistrationData;
+    const hasCompleteEventMapping =
+      hasInstallData && hasRegistrationData;
     const connectionLifecycle =
       evaluateMetaConnectionLifecycle(connection);
     const connectionReady =
@@ -762,8 +771,8 @@ export const getApplicationSnapshot = cache(
       hasDelivery,
       counts: {
         businesses: coverage?.businessCount ?? inventory.businesses.length,
-        adAccounts:
-          coverage?.adAccountCount ?? inventory.adAccounts.length,
+        adAccounts: inventory.adAccounts.filter(isOperationalAdAccount)
+          .length,
         pages: coverage?.pageCount ?? inventory.pages.length,
         creatives:
           coverage?.creativeAssetCount ?? library.length,
@@ -787,9 +796,13 @@ export const getApplicationSnapshot = cache(
       ],
       checklist: [
         {
-          label: "Meta SDK",
-          status: "warning",
-          detail: "Xác nhận thủ công trong Events Manager",
+          label: "App events trong Insights",
+          status: hasAnyConversion ? "ready" : "warning",
+          detail: hasAnyConversion
+            ? "Đã quan sát thấy Install hoặc Registration trong Insights"
+            : delivery.length
+              ? "Chưa quan sát thấy Install/Registration trong Insights"
+              : "Chưa có dữ liệu Insights để xác minh",
         },
         {
           label: "Quyền truy cập",
@@ -810,14 +823,20 @@ export const getApplicationSnapshot = cache(
         },
         {
           label: "Event mapping",
-          status: delivery.some(
-            (item) => item.installs > 0 || item.registrations > 0,
-          )
-            ? "ready"
-            : "pending",
-          detail: delivery.length
-            ? "Đã kiểm tra từ Meta Insights"
-            : "Chưa có Insights để xác minh",
+          status:
+            delivery.length === 0
+              ? "pending"
+              : hasCompleteEventMapping
+                ? "ready"
+                : "warning",
+          detail:
+            delivery.length === 0
+              ? "Chưa có Insights để xác minh"
+              : hasCompleteEventMapping
+                ? "Install và Registration đã có dữ liệu"
+                : hasAnyConversion
+                  ? "Mới nhận một trong hai event đã cấu hình"
+                  : "Chưa nhận Install/Registration",
         },
         {
           label: "Lần đồng bộ cuối",

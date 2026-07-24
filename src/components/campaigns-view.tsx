@@ -7,12 +7,14 @@ import type { CampaignInventoryPage } from "@/lib/db";
 type AccountOption = {
   id: string;
   name: string;
+  active: boolean;
 };
 
 type CampaignFilters = {
   query: string;
   account: string;
   status: string;
+  showInactive: boolean;
   page: number;
 };
 
@@ -21,6 +23,7 @@ function pageHref(filters: CampaignFilters, page: number) {
   if (filters.query) query.set("q", filters.query);
   if (filters.account) query.set("account", filters.account);
   if (filters.status) query.set("status", filters.status);
+  if (filters.showInactive) query.set("showInactive", "1");
   if (page > 1) query.set("page", String(page));
   const suffix = query.toString();
   return suffix ? `/campaigns?${suffix}` : "/campaigns";
@@ -89,6 +92,7 @@ export function CampaignsView({
           {accounts.map((account) => (
             <option key={account.id} value={account.id}>
               {account.name}
+              {account.active ? "" : " · Không hoạt động"}
             </option>
           ))}
         </select>
@@ -107,7 +111,21 @@ export function CampaignsView({
         <button className="button button--primary" type="submit">
           Áp dụng
         </button>
-        {(filters.query || filters.account || filters.status) && (
+        <label className="account-visibility-toggle">
+          <input
+            type="checkbox"
+            name="showInactive"
+            value="1"
+            defaultChecked={filters.showInactive}
+          />
+          <span>Hiện tài khoản không hoạt động</span>
+        </label>
+        {(
+          filters.query ||
+          filters.account ||
+          filters.status ||
+          filters.showInactive
+        ) && (
           <Link className="button button--secondary" href="/campaigns">
             Xóa lọc
           </Link>
