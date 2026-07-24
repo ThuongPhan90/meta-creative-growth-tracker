@@ -1,5 +1,6 @@
 import { ConnectionView } from "@/components/connection-view";
 import { getApplicationSnapshot } from "@/lib/app-data";
+import { evaluateMetaConnectionLifecycle } from "@/lib/meta";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,8 @@ const oauthErrors: Record<string, string> = {
     "Deployment đang ở Demo mode. Đặt DEMO_MODE=false và redeploy trước khi kết nối Meta.",
   LEGAL_CONFIGURATION_REQUIRED:
     "Hãy cấu hình LEGAL_ENTITY_NAME và PRIVACY_CONTACT_EMAIL trước khi kết nối Meta.",
+  META_PERMISSIONS_REQUIRED:
+    "Meta chưa cấp đủ ads_read, business_management và pages_show_list. Hãy kết nối lại và chấp nhận đủ ba quyền chỉ đọc.",
 };
 
 export default async function ConnectPage({
@@ -25,15 +28,25 @@ export default async function ConnectPage({
     searchParams,
   ]);
   const errorMessage = query.error ? oauthErrors[query.error] ?? null : null;
+  const connectionLifecycle = snapshot.connection
+    ? evaluateMetaConnectionLifecycle(snapshot.connection)
+    : null;
   const connected =
     snapshot.authenticated &&
-    snapshot.connection?.status === "connected";
+    snapshot.connection?.status === "connected" &&
+    connectionLifecycle !== "needs_reauth";
   return (
     <ConnectionView
       configured={snapshot.configuredForLive}
       connected={connected}
       ownerName={connected ? snapshot.connection?.metaUserName ?? null : null}
       expiresAt={connected ? snapshot.connection?.tokenExpiresAt ?? null : null}
+      dataAccessExpiresAt={
+        connected
+          ? snapshot.connection?.dataAccessExpiresAt ?? null
+          : null
+      }
+      lifecycle={connectionLifecycle}
       initialMessage={errorMessage}
     />
   );
