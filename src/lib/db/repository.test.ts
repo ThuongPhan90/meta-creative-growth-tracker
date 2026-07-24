@@ -131,3 +131,127 @@ describe("Interrupted sync recovery", () => {
     expect(parameters).toEqual(["connection-1", "current-run"]);
   });
 });
+
+describe("Creative asset link replacement", () => {
+  it("deletes then reinserts in one transaction and collapses duplicate links", async () => {
+    const transactionUnsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const begin = vi.fn(
+      async (
+        callback: (transaction: { unsafe: typeof transactionUnsafe }) =>
+          Promise<unknown>,
+      ) => callback({ unsafe: transactionUnsafe }),
+    );
+    const repository = new TrackerRepository({
+      begin,
+    } as unknown as DatabaseClient);
+
+    await repository.replaceCreativeAssetLinks(
+      ["creative-1", "creative-1"],
+      [
+        {
+          creativeId: "creative-1",
+          creativeAssetId: "asset-1",
+          position: 0,
+          role: "primary",
+          source: "creative",
+        },
+        {
+          creativeId: "creative-1",
+          creativeAssetId: "asset-1",
+          position: 0,
+          role: "primary",
+          source: "object_story_spec",
+        },
+      ],
+    );
+
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(transactionUnsafe).toHaveBeenCalledTimes(2);
+
+    const [deleteQuery, deleteParameters] = transactionUnsafe.mock.calls[0];
+    expect(deleteQuery).toContain(
+      "delete from tracker.creative_asset_links",
+    );
+    expect(deleteQuery).not.toContain("insert into");
+    expect(deleteParameters).toEqual([["creative-1"]]);
+
+    const [insertQuery, insertParameters] = transactionUnsafe.mock.calls[1];
+    expect(insertQuery).toContain(
+      "insert into tracker.creative_asset_links",
+    );
+    expect(insertParameters?.[0]).toEqual([
+      {
+        creative_id: "creative-1",
+        creative_asset_id: "asset-1",
+        position: 0,
+        role: "primary",
+        source: "object_story_spec",
+      },
+    ]);
+  });
+});
+
+describe("Ad creative link replacement", () => {
+  it("deletes then reinserts in one transaction and collapses duplicate links", async () => {
+    const transactionUnsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const begin = vi.fn(
+      async (
+        callback: (transaction: { unsafe: typeof transactionUnsafe }) =>
+          Promise<unknown>,
+      ) => callback({ unsafe: transactionUnsafe }),
+    );
+    const repository = new TrackerRepository({
+      begin,
+    } as unknown as DatabaseClient);
+
+    await repository.replaceAdCreativeLinks(
+      ["ad-1", "ad-1"],
+      [
+        {
+          adId: "ad-1",
+          creativeId: "creative-1",
+          relationship: "secondary",
+        },
+        {
+          adId: "ad-1",
+          creativeId: "creative-1",
+          relationship: "primary",
+        },
+      ],
+    );
+
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(transactionUnsafe).toHaveBeenCalledTimes(2);
+
+    const [deleteQuery, deleteParameters] = transactionUnsafe.mock.calls[0];
+    expect(deleteQuery).toContain(
+      "delete from tracker.ad_creative_links",
+    );
+    expect(deleteQuery).not.toContain("insert into");
+    expect(deleteParameters).toEqual([["ad-1"]]);
+
+    const [insertQuery, insertParameters] = transactionUnsafe.mock.calls[1];
+    expect(insertQuery).toContain(
+      "insert into tracker.ad_creative_links",
+    );
+    expect(insertParameters?.[0]).toEqual([
+      {
+        ad_id: "ad-1",
+        creative_id: "creative-1",
+        relationship: "primary",
+      },
+    ]);
+  });
+});
