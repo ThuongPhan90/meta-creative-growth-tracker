@@ -6,6 +6,7 @@ import {
   SyncAlreadyRunningError,
   type SyncKind,
 } from "@/lib/db";
+import { evaluateMetaConnectionLifecycle } from "@/lib/meta";
 import { getSecurityServerEnv } from "@/lib/security";
 import {
   assertLiveMode,
@@ -63,6 +64,25 @@ export async function POST(request: NextRequest) {
       );
     }
     assertOwnerSessionBinding(session, connection.connectionId);
+    if (evaluateMetaConnectionLifecycle(connection) === "needs_reauth") {
+      if (connection.status !== "needs_reauth") {
+        await repository.updateConnectionHealth({
+          connectionId: connection.connectionId,
+          status: "needs_reauth",
+          errorCode: "META_REAUTH_REQUIRED",
+          errorMessage:
+            "The stored Meta access deadline has expired.",
+        });
+      }
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Kết nối Meta đã hết hạn. Hãy kết nối lại trước khi đồng bộ.",
+          code: "META_REAUTH_REQUIRED",
+        },
+        { status: 409 },
+      );
+    }
 
     const security = getSecurityServerEnv();
     const result = await runStoredMetaSync({
