@@ -115,6 +115,13 @@ Tính từ tổng tử số/mẫu số, không lấy trung bình đơn giản c�
 50%/3 giây. Nếu sản phẩm muốn dùng 50%, phải đặt tên metric mới hoặc version định
 nghĩa; không đổi âm thầm.
 
+Nguồn 3 giây ưu tiên `actions[action_type=video_view]`. Field legacy
+`video_3_sec_watched_actions` chỉ là fallback khi response cũ có trả field này;
+`video_play_actions` là tín hiệu bắt đầu phát và không được thay thế số xem 3
+giây. Meta thường bỏ action có giá trị bằng 0 khỏi mảng `actions`, nên không có
+`video_view` được lưu là 0 và provenance của từng lần sync được ghi trong
+`video_3s_source_rows`.
+
 Khi mẫu số bằng 0, lưu `null` cho tỷ lệ/cost để phân biệt “không có dữ liệu” với
 giá trị thật bằng 0. UI có thể hiển thị `—`.
 
@@ -138,8 +145,16 @@ action mapping từ Vercel env.
 
 Khi nhiều action type cùng xuất hiện, tránh double-count. Lưu `action_type` gốc,
 chọn quy tắc ưu tiên có version và kiểm thử bằng sample thật của từng app.
+Mỗi row metric lưu một `action_mapping_version` có hash từ strategy và thứ tự hai
+danh sách action type; đổi nội dung hoặc thứ tự mapping sẽ tạo lineage khác.
+Hai nhóm Install/Registration không được chứa cùng một `action_type`.
 Sau khi đổi mapping, sync lại khoảng liên quan trước khi so sánh vì các cột
 Install/Registration đã lưu không tự được phân loại lại chỉ bằng thao tác Save.
+
+Dashboard và các báo cáo mặc định chỉ dùng tài khoản được thấy trong discovery
+mới nhất và có Meta `account_status=1`. Campaigns/Creative Tracker cho phép hiện
+lại tài khoản không hoạt động để tra cứu lịch sử; khi bật, phạm vi số liệu rộng
+hơn Dashboard mặc định.
 
 ## Xếp hạng CPI
 

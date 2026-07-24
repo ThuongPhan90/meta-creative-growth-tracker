@@ -8,6 +8,7 @@ import { rateCreativeCpi } from "@/lib/reporting";
 type AccountOption = {
   id: string;
   name: string;
+  active: boolean;
 };
 
 export type TrackerFilters = {
@@ -17,6 +18,8 @@ export type TrackerFilters = {
   account: string;
   campaign: string;
   format: "" | "video" | "image" | "unallocated";
+  showInactive: boolean;
+  dateRangeChanged: boolean;
   page: number;
 };
 
@@ -43,6 +46,7 @@ function trackerHref(filters: TrackerFilters, page: number) {
   if (filters.account) query.set("account", filters.account);
   if (filters.campaign) query.set("campaign", filters.campaign);
   if (filters.format) query.set("format", filters.format);
+  if (filters.showInactive) query.set("showInactive", "1");
   if (page > 1) query.set("page", String(page));
   return `/tracker?${query.toString()}`;
 }
@@ -99,6 +103,7 @@ export function CreativeTrackerView({
             {accounts.map((account) => (
               <option key={account.id} value={account.id}>
                 {account.name}
+                {account.active ? "" : " · Không hoạt động"}
               </option>
             ))}
           </select>
@@ -124,6 +129,27 @@ export function CreativeTrackerView({
           <SlidersHorizontal aria-hidden="true" size={15} />
           Áp dụng
         </button>
+        <label className="account-visibility-toggle">
+          <input
+            type="checkbox"
+            name="showInactive"
+            value="1"
+            defaultChecked={filters.showInactive}
+          />
+          <span>Hiện tài khoản không hoạt động</span>
+        </label>
+        {(
+          filters.query ||
+          filters.account ||
+          filters.campaign ||
+          filters.format ||
+          filters.showInactive ||
+          filters.dateRangeChanged
+        ) && (
+          <Link className="button button--secondary" href="/tracker">
+            Xóa lọc
+          </Link>
+        )}
       </form>
 
       <div className="tracker-disclosure">

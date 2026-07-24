@@ -1,3 +1,4 @@
+export * from "./ad-account-status";
 export * from "./client";
 export * from "./connection-lifecycle";
 export * from "./config";

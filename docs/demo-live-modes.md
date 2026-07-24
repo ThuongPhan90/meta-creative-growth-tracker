@@ -16,7 +16,7 @@ Mục đích:
 - kiểm thử filter, empty state và responsive layout;
 - tránh lộ identifier/dữ liệu quảng cáo thật.
 
-Dữ liệu Demo là fixture minh họa, không phải số của Donny, khách hàng hay kết quả
+Dữ liệu Demo là fixture minh họa, không phải số của owner, khách hàng hay kết quả
 được Meta xác nhận. UI gắn nhãn Demo data. OAuth, Settings ghi dữ liệu và manual
 sync bị khóa; Vercel Cron có thể vẫn gọi route nhưng route trả `skipped` và không
 gọi Meta.

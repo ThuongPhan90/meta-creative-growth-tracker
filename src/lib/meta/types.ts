@@ -61,6 +61,7 @@ export interface MetaInsightRow {
   date_stop?: string;
   account_id?: string;
   account_currency?: string;
+  attribution_setting?: string;
   campaign_id?: string;
   adset_id?: string;
   ad_id?: string;
@@ -73,6 +74,8 @@ export interface MetaInsightRow {
   inline_link_click_ctr?: string | number;
   actions?: MetaAction[];
   action_values?: MetaAction[];
+  video_play_actions?: MetaAction[];
+  /** Legacy response shape retained only as a defensive parser fallback. */
   video_3_sec_watched_actions?: MetaAction[];
   video_p100_watched_actions?: MetaAction[];
   [field: string]: unknown;

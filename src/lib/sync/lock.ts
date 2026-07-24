@@ -49,12 +49,15 @@ export async function withConnectionSyncLock<T>(
 
     return await operation();
   } finally {
-    if (acquired) {
-      await reserved.unsafe(
-        "select pg_advisory_unlock(hashtextextended($1, 0))",
-        [key],
-      );
+    try {
+      if (acquired) {
+        await reserved.unsafe(
+          "select pg_advisory_unlock(hashtextextended($1, 0))",
+          [key],
+        );
+      }
+    } finally {
+      reserved.release();
     }
-    reserved.release();
   }
 }

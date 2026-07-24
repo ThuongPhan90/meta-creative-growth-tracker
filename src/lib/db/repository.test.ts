@@ -82,7 +82,7 @@ describe("Repository JSONB parameters", () => {
     await repository.upsertBusinesses("1", [
       {
         metaBusinessId: "business-1",
-        name: "FOXSCORE",
+        name: "Example Business",
         rawPayload: {
           source: "me/businesses",
         },
@@ -94,7 +94,7 @@ describe("Repository JSONB parameters", () => {
     expect(parameters?.[1]).toEqual([
       {
         meta_business_id: "business-1",
-        name: "FOXSCORE",
+        name: "Example Business",
         verification_status: null,
         raw_payload: {
           source: "me/businesses",
@@ -104,7 +104,184 @@ describe("Repository JSONB parameters", () => {
   });
 });
 
+describe("Ad account activity filters", () => {
+  it("filters dashboard delivery performance to operational accounts", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await repository.getDeliveryPerformance({
+      connectionId: "connection-1",
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-24",
+      adAccountId: "42",
+      currency: "USD",
+    });
+
+    const [query, parameters] = unsafe.mock.calls[0];
+    expect(query).toContain("account.connection_id = $1");
+    expect(query).toContain("and account.is_active");
+    expect(query).toContain("and account.account_status = 1");
+    expect(parameters).toEqual([
+      "connection-1",
+      "2026-07-01",
+      "2026-07-24",
+      "42",
+      "USD",
+    ]);
+  });
+
+  it("filters campaign inventory by active account by default and bypasses it explicitly", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+    const filters = {
+      connectionId: "connection-1",
+      accountMetaId: " act_1 ",
+      status: "ACTIVE",
+      search: "fox",
+      limit: 25,
+      offset: 10,
+    };
+
+    await repository.listCampaignInventory(filters);
+    await repository.listCampaignInventory({
+      ...filters,
+      includeInactiveAccounts: true,
+    });
+
+    const [defaultQuery, defaultParameters] = unsafe.mock.calls[0];
+    expect(defaultQuery).toContain("$2::boolean");
+    expect(defaultQuery).toContain(
+      "or (account.is_active and account.account_status = 1)",
+    );
+    expect(defaultParameters).toEqual([
+      "connection-1",
+      false,
+      "act_1",
+      "ACTIVE",
+      "fox",
+      25,
+      10,
+    ]);
+
+    const [inclusiveQuery, inclusiveParameters] = unsafe.mock.calls[1];
+    expect(inclusiveQuery).toBe(defaultQuery);
+    expect(inclusiveParameters).toEqual([
+      "connection-1",
+      true,
+      "act_1",
+      "ACTIVE",
+      "fox",
+      25,
+      10,
+    ]);
+  });
+
+  it("filters creative tracker by active account by default and bypasses it explicitly", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+    const filters = {
+      connectionId: "connection-1",
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-24",
+      accountMetaId: " act_1 ",
+      campaignMetaId: " campaign-1 ",
+      currency: " USD ",
+      assetType: "video" as const,
+      search: "creative",
+      limit: 40,
+      offset: 20,
+    };
+
+    await repository.listCreativeTracker(filters);
+    await repository.listCreativeTracker({
+      ...filters,
+      includeInactiveAccounts: true,
+    });
+
+    const [defaultQuery, defaultParameters] = unsafe.mock.calls[0];
+    expect(defaultQuery).toContain("$4::boolean");
+    expect(defaultQuery).toContain(
+      "or (account.is_active and account.account_status = 1)",
+    );
+    expect(defaultParameters).toEqual([
+      "connection-1",
+      "2026-07-01",
+      "2026-07-24",
+      false,
+      "act_1",
+      "campaign-1",
+      "USD",
+      "video",
+      "creative",
+      40,
+      20,
+    ]);
+
+    const [inclusiveQuery, inclusiveParameters] = unsafe.mock.calls[1];
+    expect(inclusiveQuery).toBe(defaultQuery);
+    expect(inclusiveParameters).toEqual([
+      "connection-1",
+      "2026-07-01",
+      "2026-07-24",
+      true,
+      "act_1",
+      "campaign-1",
+      "USD",
+      "video",
+      "creative",
+      40,
+      20,
+    ]);
+  });
+});
+
 describe("Interrupted sync recovery", () => {
+  it("resets stale progress when restarting a persisted running row", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await repository.startSyncRun("run-1", "validate");
+
+    const [query, parameters] = unsafe.mock.calls[0];
+    expect(query).toContain("started_at = now()");
+    expect(query).toContain("finished_at = null");
+    expect(query).toContain("progress = '{}'::jsonb");
+    expect(query).toContain("stats = '{}'::jsonb");
+    expect(parameters).toEqual(["run-1", "validate"]);
+  });
+
   it("fails only older active rows for the same connection", async () => {
     const unsafe = vi.fn(
       async (_query: string, _parameters?: unknown[]) => {

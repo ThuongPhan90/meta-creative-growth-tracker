@@ -22,17 +22,32 @@ Repo dùng lockfile v9 tương thích pnpm 10. Vercel sẽ tự nhận diện pn
 import project mới; không bật Install Command override và không cần
 `ENABLE_EXPERIMENTAL_COREPACK`.
 
-## 1. Đưa repo lên GitHub
+## 1. Tạo repository thuộc tài khoản của bạn
 
-Từ thư mục dự án:
+Cách khuyến nghị là mở repository gốc trên GitHub rồi chọn **Use this template**
+hoặc **Fork**. Xác nhận repository mới nằm trong đúng tài khoản/organization mà
+Vercel của bạn được phép truy cập.
+
+Nếu tải source về máy hoặc nhận một thư mục không còn Git history, hãy tạo một
+repository trống trong tài khoản GitHub của bạn rồi chạy:
 
 ```bash
 git init
 git add .
 git commit -m "chore: initialize meta creative tracker"
 git branch -M main
-git remote add origin https://github.com/ThuongPhan90/meta-creative-growth-tracker.git
+git remote add origin https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPOSITORY.git
 git push -u origin main
+```
+
+Thay `YOUR_GITHUB_USERNAME` và `YOUR_REPOSITORY` bằng repository bạn sở hữu.
+Không đặt `origin` về repository gốc trừ khi bạn là maintainer và thực sự muốn
+đóng góp vào repository đó. Nếu đã clone repository gốc để tạo một bản độc lập,
+đổi remote trước khi push:
+
+```bash
+git remote set-url origin https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPOSITORY.git
+git remote -v
 ```
 
 Trước khi push:

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { createTrackerRepository } from "@/lib/db";
+import { validateActionTypeMapping } from "@/lib/reporting/action-type-mapping";
 import {
   assertLiveMode,
   assertOwnerSessionBinding,
@@ -12,6 +13,10 @@ import {
 
 export const dynamic = "force-dynamic";
 
+const rawActionTypesSchema = z
+  .array(z.string().max(256))
+  .max(100);
+
 const settingsSchema = z.object({
   timezone: z.enum(["Asia/Ho_Chi_Minh", "UTC", "Asia/Singapore"]),
   lookbackDays: z.union([
@@ -21,14 +26,8 @@ const settingsSchema = z.object({
     z.literal(90),
   ]),
   minimumInstallThreshold: z.number().int().min(1).max(10_000),
-  installActionTypes: z
-    .array(z.string().regex(/^[a-z0-9._]+$/).max(128))
-    .min(1)
-    .max(25),
-  registrationActionTypes: z
-    .array(z.string().regex(/^[a-z0-9._]+$/).max(128))
-    .min(1)
-    .max(25),
+  installActionTypes: rawActionTypesSchema,
+  registrationActionTypes: rawActionTypesSchema,
 });
 
 export async function POST(request: NextRequest) {
@@ -37,6 +36,22 @@ export async function POST(request: NextRequest) {
     assertLiveMode();
     const session = requireOwnerSession(request);
     const input = settingsSchema.parse(await request.json());
+    const actionTypeMapping = validateActionTypeMapping({
+      installActionTypes: input.installActionTypes,
+      registrationActionTypes: input.registrationActionTypes,
+    });
+
+    if (!actionTypeMapping.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: actionTypeMapping.error,
+          code: actionTypeMapping.code,
+        },
+        { status: 400 },
+      );
+    }
+
     const repository = await createTrackerRepository();
     const connection = await repository.getConnection();
     assertOwnerSessionBinding(session, connection?.connectionId);
@@ -44,10 +59,9 @@ export async function POST(request: NextRequest) {
       reportingTimezone: input.timezone,
       syncLookbackDays: input.lookbackDays,
       minimumInstallThreshold: input.minimumInstallThreshold,
-      installActionTypes: [...new Set(input.installActionTypes)],
-      registrationActionTypes: [
-        ...new Set(input.registrationActionTypes),
-      ],
+      installActionTypes: actionTypeMapping.installActionTypes,
+      registrationActionTypes:
+        actionTypeMapping.registrationActionTypes,
     });
 
     return NextResponse.json({
@@ -63,11 +77,20 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
+      const hasActionTypeIssue = error.issues.some((issue) =>
+        ["installActionTypes", "registrationActionTypes"].includes(
+          String(issue.path[0]),
+        ),
+      );
       return NextResponse.json(
         {
           ok: false,
-          error: "Timezone hoặc khoảng dữ liệu không hợp lệ.",
-          code: "INVALID_SETTINGS",
+          error: hasActionTypeIssue
+            ? "Danh sách action type không hợp lệ. Mỗi nhóm phải là danh sách các giá trị văn bản."
+            : "Timezone, khoảng dữ liệu hoặc ngưỡng install không hợp lệ.",
+          code: hasActionTypeIssue
+            ? "INVALID_ACTION_TYPES"
+            : "INVALID_SETTINGS",
         },
         { status: 400 },
       );

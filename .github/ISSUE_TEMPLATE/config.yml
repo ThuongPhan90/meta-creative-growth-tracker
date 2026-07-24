@@ -1,5 +1,1 @@
 blank_issues_enabled: false
-contact_links:
-  - name: Báo cáo bảo mật riêng
-    url: https://github.com/ThuongPhan90/meta-creative-growth-tracker/security/advisories/new
-    about: Không mở public issue cho lỗ hổng hoặc credential bị lộ.

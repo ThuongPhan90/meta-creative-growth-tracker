@@ -64,7 +64,7 @@ const navItems = [
 
 export function AppShell({
   children,
-  ownerName = "Donny",
+  ownerName = "Owner",
   isConnected = false,
   demoMode = false,
   reportingCurrency = null,

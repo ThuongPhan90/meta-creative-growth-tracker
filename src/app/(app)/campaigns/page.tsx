@@ -28,6 +28,7 @@ export default async function CampaignsPage({
     q?: string;
     account?: string;
     status?: string;
+    showInactive?: string;
     page?: string;
   }>;
 }) {
@@ -43,6 +44,7 @@ export default async function CampaignsPage({
     query: query.q?.trim().slice(0, 200) ?? "",
     account: query.account?.trim().slice(0, 128) ?? "",
     status: query.status?.trim().slice(0, 64) ?? "",
+    showInactive: query.showInactive === "1",
     page: pageNumber,
   };
   const data =
@@ -54,13 +56,24 @@ export default async function CampaignsPage({
           accountMetaId: filters.account || undefined,
           status: filters.status || undefined,
           search: filters.query || undefined,
+          includeInactiveAccounts: filters.showInactive,
           limit: 50,
           offset: (pageNumber - 1) * 50,
         })
       : EMPTY_PAGE;
   const accounts = snapshot.assets
     .filter((asset) => asset.kind === "Ad Account")
-    .map((asset) => ({ id: asset.id, name: asset.name }));
+    .filter(
+      (asset) =>
+        filters.showInactive ||
+        asset.status === "ACTIVE" ||
+        asset.id === filters.account,
+    )
+    .map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      active: asset.status === "ACTIVE",
+    }));
 
   return (
     <CampaignsView

@@ -1,5 +1,6 @@
 import type { TrackerRepository } from "@/lib/db/repository";
 import type {
+  AdCreativeLinkInput,
   DailyMetricInput,
   DatabaseId,
   MetaConnectionSecretRecord,
@@ -15,11 +16,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { MetaSyncStageContext } from "./contracts";
 import {
+  actionMappingVersion,
   chooseInsightAllocation,
   createStoredMetaSyncAdapter,
   exactCoverageMatches,
   extractPhysicalCreativeAssets,
   MetaMarketingApiSyncAdapter,
+  resolveThreeSecondVideoActions,
   type MetaGraphReadClient,
 } from "./meta-adapter";
 
@@ -135,13 +138,76 @@ describe("exactCoverageMatches", () => {
   });
 });
 
+describe("resolveThreeSecondVideoActions", () => {
+  it("uses actions.video_view even when legacy and video-start fields are present", () => {
+    expect(
+      resolveThreeSecondVideoActions({
+        actions: [{ action_type: "video_view", value: "11" }],
+        video_play_actions: [
+          { action_type: "video_view", value: "15" },
+        ],
+        video_3_sec_watched_actions: [
+          { action_type: "video_view", value: "99" },
+        ],
+      }),
+    ).toEqual({
+      actions: [{ action_type: "video_view", value: "11" }],
+      source: "actions.video_view",
+    });
+  });
+
+  it("falls back to the legacy field but never treats video starts as 3-second views", () => {
+    expect(
+      resolveThreeSecondVideoActions({
+        video_3_sec_watched_actions: [
+          { action_type: "video_view", value: "7" },
+        ],
+      }),
+    ).toMatchObject({
+      source: "legacy.video_3_sec_watched_actions",
+    });
+    expect(
+      resolveThreeSecondVideoActions({
+        video_play_actions: [
+          { action_type: "video_view", value: "15" },
+        ],
+      }),
+    ).toEqual({
+      actions: [],
+      source: "unavailable",
+    });
+  });
+});
+
+describe("actionMappingVersion", () => {
+  it("is deterministic and changes when first-match precedence changes", () => {
+    const version = actionMappingVersion(actionMapping);
+
+    expect(actionMappingVersion(actionMapping)).toBe(version);
+    expect(version).toMatch(/^settings-first-match-v1:[a-f0-9]{16}$/);
+    expect(
+      actionMappingVersion({
+        ...actionMapping,
+        installs: {
+          ...actionMapping.installs,
+          actionTypes: ["omni_app_install", "mobile_app_install"],
+        },
+      }),
+    ).not.toBe(version);
+  });
+});
+
 function repositoryHarness(): {
   repository: TrackerRepository;
   metricBatches: DailyMetricInput[][];
   reconciledAccounts: DatabaseId[];
+  adCreativeReplacementScopes: DatabaseId[][];
+  adCreativeReplacementLinks: AdCreativeLinkInput[][];
 } {
   const metricBatches: DailyMetricInput[][] = [];
   const reconciledAccounts: DatabaseId[] = [];
+  const adCreativeReplacementScopes: DatabaseId[][] = [];
+  const adCreativeReplacementLinks: AdCreativeLinkInput[][] = [];
   const repository = {
     getSettings: async () => settings(),
     updateConnectionHealth: async () => undefined,
@@ -192,7 +258,13 @@ function repositoryHarness(): {
       values: readonly { assetKey: string }[],
     ) => idMap(values, (value) => value.assetKey, "asset"),
     replaceCreativeAssetLinks: async () => undefined,
-    replaceAdCreativeLinks: async () => undefined,
+    replaceAdCreativeLinks: async (
+      adIds: readonly DatabaseId[],
+      links: readonly AdCreativeLinkInput[],
+    ) => {
+      adCreativeReplacementScopes.push([...adIds]);
+      adCreativeReplacementLinks.push([...links]);
+    },
     replaceDailyMetricsWindow: async (input: {
       metrics: readonly DailyMetricInput[];
     }) => {
@@ -204,6 +276,8 @@ function repositoryHarness(): {
     repository: repository as unknown as TrackerRepository,
     metricBatches,
     reconciledAccounts,
+    adCreativeReplacementScopes,
+    adCreativeReplacementLinks,
   };
 }
 
@@ -525,6 +599,72 @@ describe("MetaMarketingApiSyncAdapter", () => {
     expect(harness.reconciledAccounts).not.toContain("account:act_100");
   });
 
+  it("preserves an ad's previous creative link when the referenced creative is inaccessible", async () => {
+    const client: MetaGraphReadClient = {
+      request: async <T>(path: string) => {
+        if (path === "creative-missing") {
+          throw new Error("Creative detail is temporarily inaccessible.");
+        }
+        throw new Error(`Unexpected request path: ${path}`) as never as T;
+      },
+      getAll: async <T>(path: string) => {
+        const values: Record<string, unknown[]> = {
+          "me/businesses": [],
+          "me/adaccounts": [
+            {
+              id: "act_100",
+              account_id: "100",
+              name: "Account",
+              currency: "USD",
+              timezone_name: "Asia/Ho_Chi_Minh",
+            },
+          ],
+          "me/accounts": [],
+          "act_100/campaigns": [
+            { id: "campaign-1", name: "Campaign" },
+          ],
+          "act_100/adsets": [
+            {
+              id: "adset-1",
+              campaign_id: "campaign-1",
+              name: "Ad set",
+            },
+          ],
+          "act_100/ads": [
+            {
+              id: "ad-1",
+              campaign_id: "campaign-1",
+              adset_id: "adset-1",
+              name: "Ad",
+              creative: { id: "creative-missing" },
+            },
+          ],
+          "act_100/adcreatives": [],
+        };
+        if (!(path in values)) {
+          throw new Error(`Unexpected collection path: ${path}`);
+        }
+        return values[path] as T[];
+      },
+    };
+    const harness = repositoryHarness();
+    const adapter = new MetaMarketingApiSyncAdapter({ client });
+
+    const result = await adapter.syncAssets(context(harness.repository));
+
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "META_CREATIVE_INACCESSIBLE",
+          resource: "creative:creative-missing",
+        }),
+      ]),
+    );
+    expect(harness.adCreativeReplacementScopes).toEqual([[]]);
+    expect(harness.adCreativeReplacementLinks).toEqual([[]]);
+    expect(harness.reconciledAccounts).not.toContain("account:act_100");
+  });
+
   it("does not start account persistence after the sync signal aborts", async () => {
     const abortController = new AbortController();
     const client: MetaGraphReadClient = {
@@ -581,6 +721,7 @@ describe("MetaMarketingApiSyncAdapter", () => {
         date_start: "2026-07-20",
         account_id: "100",
         account_currency: "USD",
+        attribution_setting: "7d_click_1d_view",
         campaign_id: "campaign-1",
         adset_id: "adset-1",
         ad_id: "ad-static",
@@ -594,6 +735,9 @@ describe("MetaMarketingApiSyncAdapter", () => {
           { action_type: "mobile_app_install", value: "5" },
           { action_type: "omni_app_install", value: "5" },
           { action_type: "video_view", value: "11" },
+        ],
+        video_play_actions: [
+          { action_type: "video_view", value: "15" },
         ],
       },
       {
@@ -773,6 +917,18 @@ describe("MetaMarketingApiSyncAdapter", () => {
         "impression_device",
       ],
     });
+    const requestedInsightFields = String(insightCalls[0].fields).split(",");
+    expect(requestedInsightFields).toEqual(
+      expect.arrayContaining([
+        "actions",
+        "attribution_setting",
+        "video_play_actions",
+        "video_p100_watched_actions",
+      ]),
+    );
+    expect(requestedInsightFields).not.toContain(
+      "video_3_sec_watched_actions",
+    );
     expect(
       insightCalls.some(
         (query) =>
@@ -790,6 +946,11 @@ describe("MetaMarketingApiSyncAdapter", () => {
     expect(insights.stats).toMatchObject({
       asset_breakdown_rows_fetched: 4,
       exact_asset_coverage_groups: 0,
+      video_3s_source_rows: {
+        actions_video_view: 1,
+        legacy_direct_field: 0,
+        unavailable: 1,
+      },
     });
 
     const metrics = harness.metricBatches.flat();
@@ -801,6 +962,18 @@ describe("MetaMarketingApiSyncAdapter", () => {
       spend: 10,
       installs: 5,
       video3sViews: 11,
+      attributionWindow: "7d_click_1d_view",
+      actionMappingVersion:
+        actionMappingVersion({
+          installs: {
+            actionTypes: settings().installActionTypes,
+            strategy: "first-match",
+          },
+          registrations: {
+            actionTypes: settings().registrationActionTypes,
+            strategy: "first-match",
+          },
+        }),
     });
     expect(metrics.find((metric) => metric.adId === "ad:ad-dynamic")).toMatchObject({
       metricScope: "ad",

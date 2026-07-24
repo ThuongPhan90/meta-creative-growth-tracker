@@ -391,6 +391,7 @@ export interface DeliveryPerformanceItem {
 export interface CampaignInventoryFilters {
   connectionId: DatabaseId;
   accountMetaId?: string;
+  includeInactiveAccounts?: boolean;
   status?: string;
   search?: string;
   limit?: number;
@@ -425,6 +426,7 @@ export interface CreativeTrackerFilters {
   dateFrom: string;
   dateTo: string;
   accountMetaId?: string;
+  includeInactiveAccounts?: boolean;
   campaignMetaId?: string;
   assetType?: "video" | "image" | "unallocated";
   search?: string;

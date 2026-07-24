@@ -5,6 +5,50 @@ dự án theo Semantic Versioning khi phát hành public.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-24
+
+### Changed
+
+- Hoàn tất Setup Wizard khi lần đồng bộ mới nhất ở trạng thái `partial` nhưng đã
+  lưu được dữ liệu sử dụng được.
+- Mặc định Dashboard, Campaigns và Creative Tracker chỉ tổng hợp tài khoản quảng
+  cáo còn được discovery và có `account_status=1`; người dùng có thể chủ động
+  hiện lại tài khoản không hoạt động ở các màn hình tra cứu.
+- Đổi checklist “Meta SDK” thành “App events trong Insights” để không suy diễn
+  nguồn SDK/MMP từ dữ liệu conversion đã được Meta attribution.
+- Gom cảnh báo sync trùng nhau theo loại/tài nguyên và Việt hóa trạng thái run.
+- Tối ưu Assets, bộ lọc và lịch sử sync cho desktop, tablet, mobile và trình đọc
+  màn hình.
+- Làm rõ luồng tạo bản sao public bằng GitHub Template/Fork hoặc repository riêng;
+  không hướng dẫn người dùng push vào repository gốc.
+
+### Fixed
+
+- Cho phép Meta OAuth chuyển hướng qua Content Security Policy đã giới hạn đúng
+  đích.
+- Serialize tham số JSONB đúng một lần trước khi ghi dữ liệu đồng bộ.
+- Giữ Meta sync trong giới hạn thời gian serverless và xử lý run cũ bị treo.
+- Lấy advisory lock trước khi tạo sync run, không còn hủy nhầm run đang chạy khi
+  hai request đến đồng thời; retry cùng idempotency key cũng phục hồi row
+  `running` bị bỏ lại.
+- Thay thế liên kết creative theo transaction để các lần sync lặp lại không tạo
+  trạng thái thiếu hoặc trùng liên kết.
+- Giữ liên kết ad–creative đã biết khi Meta tạm thời không trả được creative.
+- Chặn một Meta `action_type` bị gán đồng thời cho Install và Registration; trim,
+  bỏ trùng và kiểm tra định dạng trước khi lưu.
+- Ghi lineage có hash cho từng action mapping và lưu `attribution_setting` từ
+  Insights để lần sync có thể đối soát.
+- Dùng `actions.video_view` làm nguồn Hook 3 giây, chỉ fallback field legacy và
+  không dùng `video_play_actions` thay thế.
+- Trả đúng HTTP 202 cho sync đang xử lý và non-2xx cho run thất bại/đã hủy.
+
+### Security
+
+- Tăng kiểm tra cấu hình Live, vòng đời kết nối Meta và khả năng giữ dữ liệu cũ
+  an toàn khi một tài nguyên Meta tạm thời không truy cập được.
+- Loại nhận diện owner khỏi fixture Demo và liên kết báo cáo bảo mật cố định khỏi
+  template copy.
+
 ## [1.0.0] - 2026-07-24
 
 ### Added

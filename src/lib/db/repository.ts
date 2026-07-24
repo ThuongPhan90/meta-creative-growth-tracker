@@ -1957,6 +1957,8 @@ export class TrackerRepository {
     const search = filters.search?.trim() || null;
     const status = filters.status?.trim() || null;
     const accountMetaId = filters.accountMetaId?.trim() || null;
+    const includeInactiveAccounts =
+      filters.includeInactiveAccounts === true;
     const rows = await this.query<DatabaseRow>(
       `
         with campaign_counts as (
@@ -1993,19 +1995,23 @@ export class TrackerRepository {
             on counts.campaign_id = campaign.campaign_id
           where account.connection_id = $1
             and (
-              $2::text is null
-              or account.meta_ad_account_id = $2
+              $2::boolean
+              or (account.is_active and account.account_status = 1)
             )
             and (
               $3::text is null
-              or campaign.effective_status = $3
-              or campaign.status = $3
+              or account.meta_ad_account_id = $3
             )
             and (
               $4::text is null
-              or campaign.name ilike '%' || $4 || '%'
-              or campaign.meta_campaign_id ilike '%' || $4 || '%'
-              or account.name ilike '%' || $4 || '%'
+              or campaign.effective_status = $4
+              or campaign.status = $4
+            )
+            and (
+              $5::text is null
+              or campaign.name ilike '%' || $5 || '%'
+              or campaign.meta_campaign_id ilike '%' || $5 || '%'
+              or account.name ilike '%' || $5 || '%'
             )
         )
         select filtered.*, count(*) over () as total_count
@@ -2014,11 +2020,12 @@ export class TrackerRepository {
           filtered.is_active desc,
           filtered.last_seen_at desc,
           filtered.name
-        limit $5
-        offset $6
+        limit $6
+        offset $7
       `,
       [
         filters.connectionId,
+        includeInactiveAccounts,
         accountMetaId,
         status,
         search,
@@ -2290,8 +2297,8 @@ export class TrackerRepository {
   }
 
   /**
-   * Account-wide delivery totals include exact asset rows, single-asset rows
-   * and intentionally unallocated dynamic rows exactly once. This is the
+   * Operational-account delivery totals include exact asset rows, single-asset
+   * rows and intentionally unallocated dynamic rows exactly once. This is the
    * authoritative source for dashboard totals and OS CPI baselines.
    */
   async getDeliveryPerformance(
@@ -2324,6 +2331,8 @@ export class TrackerRepository {
           on account.ad_account_id = metric.ad_account_id
         where metric.metric_date between $2::date and $3::date
           and account.connection_id = $1
+          and account.is_active
+          and account.account_status = 1
           and ($4::bigint is null or metric.ad_account_id = $4)
           and ($5::text is null or metric.currency = $5)
         group by operating_system, metric.currency
@@ -2358,6 +2367,8 @@ export class TrackerRepository {
   ): Promise<CreativeTrackerPage> {
     const limit = Math.min(Math.max(filters.limit ?? 50, 1), 200);
     const offset = Math.max(filters.offset ?? 0, 0);
+    const includeInactiveAccounts =
+      filters.includeInactiveAccounts === true;
     const rows = await this.query<DatabaseRow>(
       `
         with base_metrics as (
@@ -2395,19 +2406,23 @@ export class TrackerRepository {
           where metric.metric_date between $2::date and $3::date
             and account.connection_id = $1
             and (
-              $4::text is null
-              or account.meta_ad_account_id = $4
+              $4::boolean
+              or (account.is_active and account.account_status = 1)
             )
             and (
               $5::text is null
-              or campaign.meta_campaign_id = $5
+              or account.meta_ad_account_id = $5
             )
-            and ($6::text is null or metric.currency = $6)
             and (
-              $7::text is null
-              or asset.asset_type = $7
+              $6::text is null
+              or campaign.meta_campaign_id = $6
+            )
+            and ($7::text is null or metric.currency = $7)
+            and (
+              $8::text is null
+              or asset.asset_type = $8
               or (
-                $7 = 'unallocated'
+                $8 = 'unallocated'
                 and metric.allocation_method = 'unallocated'
               )
             )
@@ -2449,11 +2464,11 @@ export class TrackerRepository {
             count(distinct metric_date) as metric_days
           from base_metrics
           where (
-            $8::text is null
-            or creative_code ilike '%' || $8 || '%'
-            or ad_name ilike '%' || $8 || '%'
-            or campaign_name ilike '%' || $8 || '%'
-            or ad_account_name ilike '%' || $8 || '%'
+            $9::text is null
+            or creative_code ilike '%' || $9 || '%'
+            or ad_name ilike '%' || $9 || '%'
+            or campaign_name ilike '%' || $9 || '%'
+            or ad_account_name ilike '%' || $9 || '%'
           )
           group by creative_code, operating_system, currency
         )
@@ -2464,13 +2479,14 @@ export class TrackerRepository {
         from aggregate
         join baselines using (operating_system, currency)
         order by aggregate.spend desc, aggregate.impressions desc
-        limit $9
-        offset $10
+        limit $10
+        offset $11
       `,
       [
         filters.connectionId,
         filters.dateFrom,
         filters.dateTo,
+        includeInactiveAccounts,
         filters.accountMetaId?.trim() || null,
         filters.campaignMetaId?.trim() || null,
         filters.currency?.trim() || null,
@@ -2611,8 +2627,11 @@ export class TrackerRepository {
         update tracker.sync_runs
         set
           status = 'running',
-          started_at = coalesce(started_at, now()),
+          started_at = now(),
+          finished_at = null,
           current_stage = $2,
+          progress = '{}'::jsonb,
+          stats = '{}'::jsonb,
           error_code = null,
           error_message = null
         where sync_run_id = $1
