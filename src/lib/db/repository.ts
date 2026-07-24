@@ -90,8 +90,18 @@ function asJsonObject(value: unknown): JsonObject {
   return {};
 }
 
-function jsonPayload(value: unknown): string {
-  return JSON.stringify(value);
+function jsonPayload(
+  value: unknown,
+): postgres.ParameterOrJSON<never> {
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) {
+    throw new TypeError("Database JSON payload must be serializable.");
+  }
+
+  // postgres.js applies the JSON/JSONB serializer selected by PostgreSQL for
+  // `$n::jsonb` parameters. Passing an already-stringified value would make
+  // that serializer encode it a second time as a JSON string.
+  return JSON.parse(serialized) as postgres.ParameterOrJSON<never>;
 }
 
 function mapConnection(
