@@ -14,6 +14,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { PageHeader } from "@/components/ui/page-header";
+import type { MetaConnectionLifecycle } from "@/lib/meta";
 
 function formatExpiry(value: string | null) {
   if (!value) return null;
@@ -31,12 +32,16 @@ export function ConnectionView({
   connected,
   ownerName,
   expiresAt,
+  dataAccessExpiresAt,
+  lifecycle,
   initialMessage,
 }: {
   configured: boolean;
   connected: boolean;
   ownerName: string | null;
   expiresAt: string | null;
+  dataAccessExpiresAt: string | null;
+  lifecycle: MetaConnectionLifecycle | null;
   initialMessage?: string | null;
 }) {
   const router = useRouter();
@@ -45,6 +50,7 @@ export function ConnectionView({
     initialMessage ?? null,
   );
   const expiryLabel = formatExpiry(expiresAt);
+  const dataAccessExpiryLabel = formatExpiry(dataAccessExpiresAt);
 
   async function disconnect() {
     setDisconnecting(true);
@@ -99,6 +105,14 @@ export function ConnectionView({
             <p>
               Chủ sở hữu: <strong>{ownerName ?? "Meta user"}</strong>
               {expiryLabel ? ` · Token hết hạn ${expiryLabel}` : ""}
+              {dataAccessExpiryLabel
+                ? ` · Quyền dữ liệu hết hạn ${dataAccessExpiryLabel}`
+                : ""}
+              {lifecycle === "expiring_soon"
+                ? " · Nên kết nối lại trong 7 ngày"
+                : lifecycle === "unknown"
+                  ? " · Meta chưa trả thời hạn truy cập"
+                  : ""}
             </p>
           </div>
           <button
