@@ -849,7 +849,10 @@ export const getApplicationSnapshot = cache(
         securityConfigured: configuration.securityConfigured,
         legalConfigured: configuration.legalConfigured,
         connection,
-        lastInitialSyncAt: settings.lastInitialSyncAt,
+        // A terminal partial sync has still completed discovery and produced
+        // usable coverage. Do not leave setup locked solely because Meta
+        // returned non-fatal per-resource warnings.
+        lastInitialSyncAt: settings.lastInitialSyncAt ?? lastSyncAt,
         reportingTimezone: settings.reportingTimezone,
       }),
       settings: {
