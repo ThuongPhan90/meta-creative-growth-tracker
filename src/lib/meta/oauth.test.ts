@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildMetaAuthorizationUrl,
   exchangeMetaAuthorizationCode,
+  missingMetaOAuthScopes,
   revokeMetaAuthorization,
 } from "./oauth";
 
@@ -30,6 +31,23 @@ describe("Meta OAuth helpers", () => {
         scopes: ["ads_read", "ads_management"],
       }),
     ).toThrow(/read-only mode/);
+  });
+
+  it("fails closed when any required read permission is missing", () => {
+    expect(
+      missingMetaOAuthScopes([
+        "ads_read",
+        "pages_show_list",
+      ]),
+    ).toEqual(["business_management"]);
+
+    expect(
+      missingMetaOAuthScopes([
+        "business_management",
+        "pages_show_list",
+        "ads_read",
+      ]),
+    ).toEqual([]);
   });
 
   it("exchanges a code without putting the app secret in the URL", async () => {
