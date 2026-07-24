@@ -35,7 +35,7 @@ const securityHeaders = [
       "object-src 'none'",
       "frame-ancestors 'none'",
       "base-uri 'self'",
-      "form-action 'self'",
+      "form-action 'self' https://www.facebook.com",
     ].join("; "),
   },
 ];
