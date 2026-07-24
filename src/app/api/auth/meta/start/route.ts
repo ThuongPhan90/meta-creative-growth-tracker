@@ -50,7 +50,13 @@ export async function POST(request: NextRequest) {
       rerequestDeclinedPermissions: true,
     });
 
-    const response = NextResponse.redirect(authorizationUrl, 303);
+    const response = NextResponse.redirect(authorizationUrl, {
+      status: 303,
+      headers: {
+        "Cache-Control": "no-store",
+        "Referrer-Policy": "no-referrer",
+      },
+    });
     response.cookies.set(
       META_OAUTH_NONCE_COOKIE,
       nonce,
@@ -71,7 +77,13 @@ export async function POST(request: NextRequest) {
         process.env.APP_URL ?? request.nextUrl.origin,
       );
       url.searchParams.set("error", error.code);
-      return NextResponse.redirect(url, 303);
+      return NextResponse.redirect(url, {
+        status: 303,
+        headers: {
+          "Cache-Control": "no-store",
+          "Referrer-Policy": "no-referrer",
+        },
+      });
     }
     return routeErrorResponse(error);
   }
