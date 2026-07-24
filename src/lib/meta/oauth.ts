@@ -21,6 +21,16 @@ export const DEFAULT_META_OAUTH_SCOPES = [
   "pages_show_list",
 ] as const;
 
+export function missingMetaOAuthScopes(
+  grantedScopes: readonly string[],
+  requiredScopes: readonly string[] = DEFAULT_META_OAUTH_SCOPES,
+): string[] {
+  const granted = new Set(
+    grantedScopes.map((scope) => scope.trim()).filter(Boolean),
+  );
+  return requiredScopes.filter((scope) => !granted.has(scope));
+}
+
 const KNOWN_WRITE_SCOPES = new Set([
   "ads_management",
   "pages_manage_ads",
