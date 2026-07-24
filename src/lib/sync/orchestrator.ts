@@ -96,6 +96,10 @@ export async function runMetaSync(input: RunSyncInput): Promise<RunSyncResult> {
       input.repository.database,
       input.connectionId,
       async () => {
+        await input.repository.recoverInterruptedSyncRuns(
+          input.connectionId,
+          run.syncRunId,
+        );
         const stages = stagesForSyncKind(input.syncKind);
         const warnings: SyncWarning[] = [];
         const aggregateStats: JsonObject = {};

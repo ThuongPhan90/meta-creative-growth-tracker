@@ -103,3 +103,31 @@ describe("Repository JSONB parameters", () => {
     ]);
   });
 });
+
+describe("Interrupted sync recovery", () => {
+  it("fails only older active rows for the same connection", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [
+          { sync_run_id: "stale-run-1" },
+          { sync_run_id: "stale-run-2" },
+        ];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.recoverInterruptedSyncRuns("connection-1", "current-run"),
+    ).resolves.toBe(2);
+
+    const [query, parameters] = unsafe.mock.calls[0];
+    expect(query).toContain("status in ('queued', 'running')");
+    expect(query).toContain("sync_run_id < $2");
+    expect(query).toContain("STALE_SYNC_RUN_RECOVERED");
+    expect(parameters).toEqual(["connection-1", "current-run"]);
+  });
+});
