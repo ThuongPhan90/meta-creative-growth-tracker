@@ -104,6 +104,69 @@ function jsonPayload(
   return JSON.parse(serialized) as postgres.ParameterOrJSON<never>;
 }
 
+function creativeAssetLinkPayload(
+  links: readonly CreativeAssetLinkInput[],
+) {
+  const uniqueLinks = new Map<
+    string,
+    {
+      creative_id: DatabaseId;
+      creative_asset_id: DatabaseId;
+      position: number;
+      role: string;
+      source: string;
+    }
+  >();
+
+  for (const link of links) {
+    const normalized = {
+      creative_id: link.creativeId,
+      creative_asset_id: link.creativeAssetId,
+      position: link.position ?? 0,
+      role: link.role ?? "primary",
+      source: link.source ?? "creative",
+    };
+    uniqueLinks.set(
+      JSON.stringify([
+        normalized.creative_id,
+        normalized.creative_asset_id,
+        normalized.position,
+        normalized.role,
+      ]),
+      normalized,
+    );
+  }
+
+  return [...uniqueLinks.values()];
+}
+
+function adCreativeLinkPayload(
+  links: readonly AdCreativeLinkInput[],
+) {
+  const uniqueLinks = new Map<
+    string,
+    {
+      ad_id: DatabaseId;
+      creative_id: DatabaseId;
+      relationship: string;
+    }
+  >();
+
+  for (const link of links) {
+    const normalized = {
+      ad_id: link.adId,
+      creative_id: link.creativeId,
+      relationship: link.relationship ?? "primary",
+    };
+    uniqueLinks.set(
+      JSON.stringify([normalized.ad_id, normalized.creative_id]),
+      normalized,
+    );
+  }
+
+  return [...uniqueLinks.values()];
+}
+
 function mapConnection(
   row: DatabaseRow,
   includeToken: false,
@@ -1392,13 +1455,7 @@ export class TrackerRepository {
       return;
     }
 
-    const payload = links.map((link) => ({
-      creative_id: link.creativeId,
-      creative_asset_id: link.creativeAssetId,
-      position: link.position ?? 0,
-      role: link.role ?? "primary",
-      source: link.source ?? "creative",
-    }));
+    const payload = creativeAssetLinkPayload(links);
 
     await this.query(
       `
@@ -1443,55 +1500,29 @@ export class TrackerRepository {
     links: readonly CreativeAssetLinkInput[],
   ): Promise<void> {
     if (creativeIds.length === 0) return;
-    const allowed = new Set(creativeIds);
+    const uniqueCreativeIds = [...new Set(creativeIds)];
+    const allowed = new Set(uniqueCreativeIds);
     if (links.some((link) => !allowed.has(link.creativeId))) {
       throw new TypeError("Creative asset links exceed replacement scope.");
     }
-    const payload = links.map((link) => ({
-      creative_id: link.creativeId,
-      creative_asset_id: link.creativeAssetId,
-      position: link.position ?? 0,
-      role: link.role ?? "primary",
-      source: link.source ?? "creative",
-    }));
 
-    await this.query(
-      `
-        with targets as (
-          select unnest($1::bigint[]) as creative_id
-        ),
-        deleted as (
-          delete from tracker.creative_asset_links link
-          using targets
-          where link.creative_id = targets.creative_id
-        ),
-        input as (
-          select *
-          from jsonb_to_recordset($2::jsonb) as item(
-            creative_id bigint,
-            creative_asset_id bigint,
-            position integer,
-            role text,
-            source text
-          )
-        )
-        insert into tracker.creative_asset_links (
-          creative_id,
-          creative_asset_id,
-          position,
-          role,
-          source
-        )
-        select
-          creative_id,
-          creative_asset_id,
-          position,
-          role,
-          source
-        from input
-      `,
-      [[...creativeIds], jsonPayload(payload)],
-    );
+    // PostgreSQL data-modifying CTEs share one snapshot, so deleting and
+    // reinserting an unchanged primary key in the same statement can still
+    // collide. Use two ordered statements inside one transaction instead.
+    await this.database.begin(async (transaction) => {
+      await transaction.unsafe(
+        `
+          delete from tracker.creative_asset_links
+          where creative_id = any($1::bigint[])
+        `,
+        [uniqueCreativeIds],
+      );
+
+      const transactionRepository = new TrackerRepository(
+        transaction as unknown as DatabaseClient,
+      );
+      await transactionRepository.linkCreativeAssets(links);
+    });
   }
 
   async linkAdsToCreatives(
@@ -1501,11 +1532,7 @@ export class TrackerRepository {
       return;
     }
 
-    const payload = links.map((link) => ({
-      ad_id: link.adId,
-      creative_id: link.creativeId,
-      relationship: link.relationship ?? "primary",
-    }));
+    const payload = adCreativeLinkPayload(links);
 
     await this.query(
       `
@@ -1542,45 +1569,26 @@ export class TrackerRepository {
     links: readonly AdCreativeLinkInput[],
   ): Promise<void> {
     if (adIds.length === 0) return;
-    const allowed = new Set(adIds);
+    const uniqueAdIds = [...new Set(adIds)];
+    const allowed = new Set(uniqueAdIds);
     if (links.some((link) => !allowed.has(link.adId))) {
       throw new TypeError("Ad creative links exceed replacement scope.");
     }
-    const payload = links.map((link) => ({
-      ad_id: link.adId,
-      creative_id: link.creativeId,
-      relationship: link.relationship ?? "primary",
-    }));
 
-    await this.query(
-      `
-        with targets as (
-          select unnest($1::bigint[]) as ad_id
-        ),
-        deleted as (
-          delete from tracker.ad_creative_links link
-          using targets
-          where link.ad_id = targets.ad_id
-        ),
-        input as (
-          select *
-          from jsonb_to_recordset($2::jsonb) as item(
-            ad_id bigint,
-            creative_id bigint,
-            relationship text
-          )
-        )
-        insert into tracker.ad_creative_links (
-          ad_id,
-          creative_id,
-          relationship,
-          last_seen_at
-        )
-        select ad_id, creative_id, relationship, now()
-        from input
-      `,
-      [[...adIds], jsonPayload(payload)],
-    );
+    await this.database.begin(async (transaction) => {
+      await transaction.unsafe(
+        `
+          delete from tracker.ad_creative_links
+          where ad_id = any($1::bigint[])
+        `,
+        [uniqueAdIds],
+      );
+
+      const transactionRepository = new TrackerRepository(
+        transaction as unknown as DatabaseClient,
+      );
+      await transactionRepository.linkAdsToCreatives(links);
+    });
   }
 
   async upsertDailyMetrics(
