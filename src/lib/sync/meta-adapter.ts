@@ -28,6 +28,7 @@ import {
   extractActionMetric,
   parseInsightMetrics,
 } from "@/lib/meta/metrics";
+import { missingMetaOAuthScopes } from "@/lib/meta/oauth";
 import type { MetaActionMapping } from "@/lib/meta/config";
 import type {
   MetaAction,
@@ -1460,8 +1461,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       });
     }
 
-    const warnings: SyncWarning[] = [];
-    let permissions: GraphPermission[] = [];
+    let permissions: GraphPermission[];
     try {
       permissions = await this.client.getAll<GraphPermission>(
         "me/permissions",
@@ -1470,26 +1470,43 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       );
     } catch (error) {
       throwIfAborted(context.signal);
-      warnings.push(warning("META_PERMISSIONS_UNAVAILABLE", "me/permissions", error));
+      await context.repository.updateConnectionHealth({
+        connectionId: context.connectionId,
+        status: "error",
+        errorCode: "META_PERMISSIONS_UNAVAILABLE",
+        errorMessage: describeReadError(error),
+      });
+      throw new SyncStageError({
+        code: "META_PERMISSIONS_UNAVAILABLE",
+        message: describeReadError(error),
+        retryable:
+          error instanceof MetaGraphApiError
+            ? error.isTransient
+            : error instanceof MetaGraphRequestError,
+      });
     }
 
-    const granted = new Set(
-      permissions
-        .filter((permission) => permission.status === "granted")
-        .map((permission) => permission.permission),
-    );
-    for (const requiredPermission of [
-      "ads_read",
-      "business_management",
-      "pages_show_list",
-    ]) {
-      if (permissions.length > 0 && !granted.has(requiredPermission)) {
-        warnings.push({
-          code: "META_PERMISSION_MISSING",
-          resource: requiredPermission,
-          message: `Meta permission ${requiredPermission} is not granted; related assets may be skipped.`,
-        });
-      }
+    const grantedScopes = permissions
+      .filter((permission) => permission.status === "granted")
+      .map((permission) => permission.permission);
+    const granted = new Set(grantedScopes);
+    const missingScopes = missingMetaOAuthScopes(grantedScopes);
+    if (missingScopes.length > 0) {
+      const errorMessage =
+        `Meta no longer grants required read permissions: ${missingScopes.join(
+          ", ",
+        )}.`;
+      await context.repository.updateConnectionHealth({
+        connectionId: context.connectionId,
+        status: "needs_reauth",
+        errorCode: "META_PERMISSIONS_REQUIRED",
+        errorMessage,
+      });
+      throw new SyncStageError({
+        code: "META_PERMISSIONS_REQUIRED",
+        message: errorMessage,
+        retryable: false,
+      });
     }
 
     await context.repository.updateConnectionHealth({
@@ -1508,7 +1525,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
           (permission) => permission.status !== "granted",
         ).length,
       },
-      warnings,
+      warnings: [],
     };
   }
 
