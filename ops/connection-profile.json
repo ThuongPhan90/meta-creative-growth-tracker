@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "github": {
+    "host": "github.com",
+    "owner": "ThuongPhan90",
+    "repository": "meta-creative-growth-tracker",
+    "remote": "https://github.com/ThuongPhan90/meta-creative-growth-tracker.git",
+    "defaultBranch": "main"
+  },
+  "vercel": {
+    "teamSlug": "mrphanthuong2112-1637s-projects",
+    "projectSlug": "meta-creative-growth-tracker",
+    "orgId": null,
+    "projectId": null,
+    "productionUrl": "https://meta-creative-growth-tracker.vercel.app",
+    "healthPath": "/api/health",
+    "cronPath": "/api/cron/sync"
+  },
+  "meta": {
+    "appId": "1340474971049571",
+    "appDomain": "meta-creative-growth-tracker.vercel.app",
+    "oauthCallback": "https://meta-creative-growth-tracker.vercel.app/api/auth/meta/callback",
+    "requiredReadScopes": [
+      "ads_read",
+      "business_management",
+      "pages_show_list"
+    ]
+  },
+  "requiredEnvironmentVariables": [
+    "APP_URL",
+    "LEGAL_ENTITY_NAME",
+    "PRIVACY_CONTACT_EMAIL",
+    "META_APP_ID",
+    "META_APP_SECRET",
+    "META_GRAPH_VERSION",
+    "TOKEN_ENCRYPTION_KEY",
+    "SESSION_SECRET",
+    "OWNER_SETUP_SECRET",
+    "DATABASE_URL",
+    "CRON_SECRET",
+    "DEMO_MODE"
+  ],
+  "serverSecrets": [
+    "META_APP_SECRET",
+    "TOKEN_ENCRYPTION_KEY",
+    "SESSION_SECRET",
+    "OWNER_SETUP_SECRET",
+    "DATABASE_URL",
+    "CRON_SECRET"
+  ]
+}

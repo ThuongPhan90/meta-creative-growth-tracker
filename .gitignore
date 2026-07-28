@@ -1,5 +1,6 @@
 # dependencies
 node_modules/
+.pnpm-store/
 
 # Next.js
 .next/
@@ -10,6 +11,8 @@ out/
 .env*
 !.env.example
 .vercel/
+ops/private/
+*.secrets.local.json
 
 # tests and coverage
 coverage/
