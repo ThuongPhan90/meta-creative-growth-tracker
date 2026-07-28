@@ -137,6 +137,7 @@ pnpm check
 | [docs/meta-app-setup.md](docs/meta-app-setup.md) | Tạo Meta App, OAuth, quyền và App Review |
 | [docs/vercel-deployment.md](docs/vercel-deployment.md) | Deploy bằng GitHub + Vercel + Marketplace Postgres |
 | [docs/environment-variables.md](docs/environment-variables.md) | Bảng biến môi trường và cách tạo secret |
+| [docs/connection-recovery.md](docs/connection-recovery.md) | Bộ asset và runbook tái kết nối GitHub, Vercel và Meta |
 | [docs/demo-live-modes.md](docs/demo-live-modes.md) | Sự khác nhau giữa dữ liệu mẫu và dữ liệu Meta |
 | [docs/privacy-data-deletion.md](docs/privacy-data-deletion.md) | URL pháp lý, contract disconnect/callback và checklist xóa dữ liệu |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Lỗi OAuth, quyền, sync, database và cron |
@@ -164,7 +165,9 @@ pnpm check
 ## Bảo mật
 
 Không commit `.env.local`, App Secret, access token, connection string hoặc dữ
-liệu export từ Meta. Báo cáo lỗ hổng theo [SECURITY.md](SECURITY.md).
+liệu export từ Meta. Dùng
+[bộ khôi phục kết nối](docs/connection-recovery.md) để reconnect mà không đưa
+secret vào Git. Báo cáo lỗ hổng theo [SECURITY.md](SECURITY.md).
 
 ## Đóng góp
 

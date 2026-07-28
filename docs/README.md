@@ -24,6 +24,11 @@
 Đọc [course-guide.md](course-guide.md) để biết checkpoint, phạm vi bài tập và
 quy tắc không chia sẻ credential.
 
+### Người cần tái kết nối
+
+Đọc [connection-recovery.md](connection-recovery.md) để kiểm tra và khôi phục
+GitHub, Vercel hoặc Meta mà không lưu secret trong repo.
+
 ## Nguyên tắc nguồn chuẩn
 
 - Meta Marketing API là nguồn dữ liệu vận hành.
