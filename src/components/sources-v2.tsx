@@ -11,10 +11,12 @@ import {
 import Link from "next/link";
 
 import { CopyIdButton } from "@/components/ui/copy-id-button";
+import { ContextualEntityLink } from "@/components/ui/contextual-entity-link";
 import { EntityDrawer } from "@/components/ui/entity-drawer";
 import { StatusPill } from "@/components/ui/status-pill";
 import { SyncButton } from "@/components/sync-button";
 import { buildNavigationHref } from "@/lib/navigation";
+import { formatMetaVerificationStatus } from "@/lib/presentation/source-status";
 import type {
   DashboardViewModel,
   MetaAssetKind,
@@ -167,27 +169,26 @@ function SourceAssetPanel({
               return (
                 <div className="v2-source-table__row" role="row" key={asset.id}>
                   <span role="cell">
-                    <Link
+                    <ContextualEntityLink
                       className="v2-source-identity"
-                      href={href(query, {
+                      href={detailHref(tab, asset.id, query)}
+                      drawerHref={href(query, {
                         tab,
                         selected: asset.id,
                       })}
-                      aria-haspopup="dialog"
+                      entityId={asset.id}
                     >
                       <strong>{asset.name}</strong>
                       <small>{asset.id}</small>
-                    </Link>
+                    </ContextualEntityLink>
                   </span>
                   <span role="cell">
                     {tab === "pages"
                       ? asset.category ?? "Chưa có danh mục"
                       : tab === "businesses"
-                        ? asset.verificationStatus
-                          ? asset.verificationStatus
-                              .toLocaleLowerCase("vi-VN")
-                              .replaceAll("_", " ")
-                          : "Meta chưa trả trạng thái xác minh"
+                        ? formatMetaVerificationStatus(
+                            asset.verificationStatus,
+                          )
                         : asset.parentName ?? "Không thuộc Business đã đồng bộ"}
                   </span>
                   <span role="cell">{asset.currency ?? "—"}</span>
@@ -247,7 +248,11 @@ function SourceAssetPanel({
                 </div>
                 <div>
                   <dt>Trạng thái xác minh</dt>
-                  <dd>{selected.verificationStatus ?? "—"}</dd>
+                  <dd>
+                    {formatMetaVerificationStatus(
+                      selected.verificationStatus,
+                    )}
+                  </dd>
                 </div>
                 <div>
                   <dt>Tiền tệ</dt>
@@ -378,31 +383,50 @@ export function SourcesV2({
         )}
       </header>
       <section className="v2-source-summary">
-        <article>
+        <Link
+          href={buildNavigationHref("/sources?tab=connection", query)}
+          aria-label="Mở trạng thái kết nối Meta"
+          aria-current={activeTab === "connection" ? "page" : undefined}
+        >
           <Link2 aria-hidden="true" size={18} />
           <span>Kết nối</span>
           <strong>{connected ? "Đang hoạt động" : "Chưa sẵn sàng"}</strong>
-        </article>
-        <article>
+        </Link>
+        <Link
+          href={buildNavigationHref("/sources?tab=businesses", query)}
+          aria-label={`Mở ${dashboard.counts.businesses} Business`}
+          aria-current={activeTab === "businesses" ? "page" : undefined}
+        >
           <Building2 aria-hidden="true" size={18} />
           <span>Business</span>
           <strong>{dashboard.counts.businesses}</strong>
-        </article>
-        <article>
+        </Link>
+        <Link
+          href={buildNavigationHref("/sources?tab=ad-accounts", query)}
+          aria-label={`Mở ${dashboard.counts.adAccounts} tài khoản quảng cáo`}
+          aria-current={activeTab === "ad-accounts" ? "page" : undefined}
+        >
           <Megaphone aria-hidden="true" size={18} />
           <span>Tài khoản quảng cáo</span>
           <strong>{dashboard.counts.adAccounts}</strong>
-        </article>
-        <article>
+        </Link>
+        <Link
+          href={buildNavigationHref("/sources?tab=pages", query)}
+          aria-label={`Mở ${dashboard.counts.pages} Pages`}
+          aria-current={activeTab === "pages" ? "page" : undefined}
+        >
           <Flag aria-hidden="true" size={18} />
           <span>Pages</span>
           <strong>{dashboard.counts.pages}</strong>
-        </article>
-        <article>
+        </Link>
+        <Link
+          href={buildNavigationHref("/data-health", query)}
+          aria-label="Mở lịch sử đồng bộ trong Chất lượng dữ liệu"
+        >
           <CalendarClock aria-hidden="true" size={18} />
           <span>Lần đồng bộ cuối</span>
           <strong>{dashboard.lastSyncAt ?? "Chưa có"}</strong>
-        </article>
+        </Link>
       </section>
       <nav className="v2-tabs" aria-label="Nhóm nguồn dữ liệu">
         {TABS.map((tab) => (

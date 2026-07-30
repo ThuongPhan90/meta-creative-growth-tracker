@@ -23,6 +23,8 @@ describe("navigation query contract", () => {
       tab: "performance",
       compare_ids:
         "cf_111111111111111111111111,cf_222222222222222222222222",
+      metric: "cpi",
+      sort: "asc",
       ignored: "value",
     });
 
@@ -41,6 +43,8 @@ describe("navigation query contract", () => {
       tab: "performance",
       compare_ids:
         "cf_111111111111111111111111,cf_222222222222222222222222",
+      metric: "cpi",
+      sort: "asc",
     });
   });
 
@@ -53,8 +57,27 @@ describe("navigation query contract", () => {
     query.append("currency", "US dollars");
     query.append("compare", "cf_111111111111111111111111");
     query.append("compare_ids", "not-a-family");
+    query.append("metric", "javascript:alert(1)");
+    query.append("sort", "sideways");
 
     expect(parseNavigationQuery(query)).toEqual({ account: "act_1" });
+  });
+
+  it("keeps validated Creative drill-down state only inside the current screen", () => {
+    const current = new URLSearchParams({
+      from: "2026-07-01",
+      metric: "registrations",
+      sort: "desc",
+    });
+
+    expect(
+      buildContextHref("/creatives?view=table", current),
+    ).toBe(
+      "/creatives?view=table&from=2026-07-01&metric=registrations&sort=desc",
+    );
+    expect(buildNavigationHref("/sources", current)).toBe(
+      "/sources?from=2026-07-01",
+    );
   });
 
   it("keeps reporting context across primary navigation", () => {

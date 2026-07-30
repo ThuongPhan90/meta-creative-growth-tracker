@@ -28,6 +28,16 @@ export type DataHealthIssueDetail = {
   occurrences: DataHealthIssueOccurrenceDetail[];
 };
 
+export type DataHealthRunEvidence = {
+  /** Count of structured warning entries that can be assigned to issue IDs. */
+  warningEntryCount: number;
+  /**
+   * Aggregate row count reported by the sync run. It cannot be distributed
+   * across warning codes unless the source supplies that relationship.
+   */
+  reportedRowCount: number | null;
+};
+
 const SEVERITY_RANK: Record<DataHealthSeverity, number> = {
   info: 0,
   warning: 1,
@@ -375,4 +385,19 @@ export function buildDataHealthIssuesFromRuns(
   return buildDataHealthIssueDetailsFromRuns(runs).map(
     (detail) => detail.issue,
   );
+}
+
+export function dataHealthRunEvidence(
+  run: Pick<SyncRunView, "warnings" | "errorCount">,
+): DataHealthRunEvidence {
+  const reportedRowCount =
+    typeof run.errorCount === "number" &&
+    Number.isFinite(run.errorCount) &&
+    run.errorCount >= 0
+      ? run.errorCount
+      : null;
+  return {
+    warningEntryCount: run.warnings.length,
+    reportedRowCount,
+  };
 }

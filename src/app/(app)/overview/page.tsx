@@ -132,7 +132,11 @@ export default async function OverviewPage({
             restoreFocusId={selected.id}
             width="wide"
           >
-            <CreativeDrawerContent family={selected} query={query} />
+            <CreativeDrawerContent
+              family={selected}
+              query={query}
+              originPathname="/overview"
+            />
           </EntityDrawer>
         ) : null
       }

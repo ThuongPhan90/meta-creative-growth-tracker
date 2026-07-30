@@ -15,7 +15,20 @@ export const DETAIL_NAVIGATION_KEYS = [
   "selected",
   "tab",
   "compare_ids",
+  "metric",
+  "sort",
 ] as const;
+
+export const CREATIVE_DRILLDOWN_METRICS = [
+  "spend",
+  "installs",
+  "registrations",
+  "cpi",
+  "cpa",
+  "conversion",
+] as const;
+
+export const SORT_DIRECTIONS = ["asc", "desc"] as const;
 
 export const NAVIGATION_QUERY_KEYS = [
   ...SHARED_NAVIGATION_KEYS,
@@ -28,18 +41,32 @@ export type DetailNavigationKey =
   (typeof DETAIL_NAVIGATION_KEYS)[number];
 export type NavigationQueryKey =
   (typeof NAVIGATION_QUERY_KEYS)[number];
+export type CreativeDrilldownMetric =
+  (typeof CREATIVE_DRILLDOWN_METRICS)[number];
+export type SortDirection = (typeof SORT_DIRECTIONS)[number];
+
+type StringNavigationKey = Exclude<
+  NavigationQueryKey,
+  "metric" | "sort"
+>;
 
 export type NavigationQuery = Partial<
-  Record<NavigationQueryKey, string>
->;
+  Record<StringNavigationKey, string>
+> & {
+  metric?: CreativeDrilldownMetric;
+  sort?: SortDirection;
+};
 
 export type NavigationQueryInput =
   | Pick<URLSearchParams, "entries">
   | Record<string, string | string[] | undefined>;
 
 export type NavigationQueryOverrides = Partial<
-  Record<NavigationQueryKey, string | null | undefined>
->;
+  Record<StringNavigationKey, string | null | undefined>
+> & {
+  metric?: CreativeDrilldownMetric | null;
+  sort?: SortDirection | null;
+};
 
 const DATE_KEYS = new Set<NavigationQueryKey>(["from", "to"]);
 const MAX_VALUE_LENGTH: Record<NavigationQueryKey, number> = {
@@ -56,6 +83,8 @@ const MAX_VALUE_LENGTH: Record<NavigationQueryKey, number> = {
   selected: 160,
   tab: 64,
   compare_ids: 500,
+  metric: 24,
+  sort: 4,
 };
 
 function isDate(value: string) {
@@ -81,6 +110,18 @@ function sanitizeNavigationValue(
   }
   if (key === "compare") {
     return normalized === "previous_period" || normalized === "none"
+      ? normalized
+      : undefined;
+  }
+  if (key === "metric") {
+    return (
+      CREATIVE_DRILLDOWN_METRICS as readonly string[]
+    ).includes(normalized)
+      ? normalized
+      : undefined;
+  }
+  if (key === "sort") {
+    return (SORT_DIRECTIONS as readonly string[]).includes(normalized)
       ? normalized
       : undefined;
   }
@@ -124,7 +165,12 @@ export function parseNavigationQuery(
   for (const [key, rawValue] of queryEntries(input)) {
     if (!navigationKey(key) || parsed[key] !== undefined) continue;
     const value = sanitizeNavigationValue(key, rawValue);
-    if (value !== undefined) parsed[key] = value;
+    if (value !== undefined) {
+      const writable = parsed as Partial<
+        Record<NavigationQueryKey, string>
+      >;
+      writable[key] = value;
+    }
   }
 
   return parsed;

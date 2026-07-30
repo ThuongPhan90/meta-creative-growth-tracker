@@ -13,12 +13,19 @@ import Image from "next/image";
 import Link from "next/link";
 
 import {
+  creativeFullDetailHref,
+  creativeScatterPointStyle,
   groupCreativeFamiliesForView,
   type CreativeFamilyViewItem,
 } from "@/components/creative-performance-v2";
 import { ContextualEntityLink } from "@/components/ui/contextual-entity-link";
 import { PerformanceRating } from "@/components/ui/performance-rating";
 import { ReportingContext } from "@/components/ui/reporting-context";
+import {
+  buildContextHref,
+  type CreativeDrilldownMetric,
+  type SortDirection,
+} from "@/lib/navigation/query";
 import {
   formatCompactNumber,
   formatMoney,
@@ -61,6 +68,20 @@ function href(
     else params.set(key, value);
   }
   return `${pathname}${params.size ? `?${params.toString()}` : ""}`;
+}
+
+function creativeDrilldownHref(
+  query: Query,
+  metric: CreativeDrilldownMetric,
+  sort: SortDirection,
+) {
+  return `${buildContextHref("/creatives?view=table", query, {
+    metric,
+    sort,
+    selected: null,
+    tab: null,
+    compare_ids: null,
+  })}#creative-results`;
 }
 
 function group(family: CreativeFamilyViewItem) {
@@ -113,7 +134,12 @@ function TopCreative({
         unoptimized
       />
       <ContextualEntityLink
-        href={href(`/creatives/${family.id}`, query)}
+        href={creativeFullDetailHref({
+          familyId: family.id,
+          query,
+          tab: "performance",
+          originPathname: "/overview",
+        })}
         drawerHref={href("/overview", query, {
           selected: family.id,
           tab: "performance",
@@ -398,7 +424,7 @@ export function OverviewV2({
           <section className="v2-kpi-grid" aria-label="KPI hiệu quả">
             <Link
               className="v2-kpi"
-              href={href("/creatives", query, { view: "table" })}
+              href={creativeDrilldownHref(query, "spend", "desc")}
             >
               <span className="v2-kpi__label">
                 Spend <CircleDollarSign aria-hidden="true" size={16} />
@@ -423,7 +449,7 @@ export function OverviewV2({
             </Link>
             <Link
               className="v2-kpi"
-              href={href("/creatives", query, { view: "table" })}
+              href={creativeDrilldownHref(query, "installs", "desc")}
             >
               <span className="v2-kpi__label">
                 Install <MousePointer2 aria-hidden="true" size={16} />
@@ -437,7 +463,11 @@ export function OverviewV2({
             </Link>
             <Link
               className="v2-kpi"
-              href={href("/creatives", query, { view: "table" })}
+              href={creativeDrilldownHref(
+                query,
+                "registrations",
+                "desc",
+              )}
             >
               <span className="v2-kpi__label">
                 Registration <UserRoundCheck aria-hidden="true" size={16} />
@@ -451,7 +481,7 @@ export function OverviewV2({
             </Link>
             <Link
               className="v2-kpi"
-              href={href("/creatives", query, { view: "table" })}
+              href={creativeDrilldownHref(query, "cpi", "asc")}
             >
               <span className="v2-kpi__label">
                 CPI <Target aria-hidden="true" size={16} />
@@ -470,7 +500,7 @@ export function OverviewV2({
             </Link>
             <Link
               className="v2-kpi"
-              href={href("/creatives", query, { view: "table" })}
+              href={creativeDrilldownHref(query, "cpa", "asc")}
             >
               <span className="v2-kpi__label">CPA Registration</span>
               <strong>
@@ -487,7 +517,11 @@ export function OverviewV2({
             </Link>
             <Link
               className="v2-kpi"
-              href={href("/creatives", query, { view: "table" })}
+              href={creativeDrilldownHref(
+                query,
+                "conversion",
+                "desc",
+              )}
             >
               <span className="v2-kpi__label">
                 Install → Registration
@@ -567,9 +601,11 @@ export function OverviewV2({
                         className={`v2-scatter__point v2-scatter__point--${group(
                           family,
                         )}`}
-                        href={href(`/creatives/${family.id}`, query, {
-                          selected: null,
+                        href={creativeFullDetailHref({
+                          familyId: family.id,
+                          query,
                           tab: "performance",
+                          originPathname: "/overview",
                         })}
                         drawerHref={href("/overview", query, {
                           selected: family.id,
@@ -583,12 +619,11 @@ export function OverviewV2({
                           performance.cpi,
                           performance.currency,
                         )}, ${formatNumber(performance.installs)} installs`}
-                        style={{
-                          left: `${left}%`,
-                          top: `${top}%`,
-                          width: `${pointSize}px`,
-                          height: `${pointSize}px`,
-                        }}
+                        style={creativeScatterPointStyle(
+                          left,
+                          top,
+                          pointSize,
+                        )}
                       >
                         <span>{family.name}</span>
                       </ContextualEntityLink>
@@ -701,7 +736,12 @@ export function OverviewV2({
                         unoptimized
                       />
                       <ContextualEntityLink
-                        href={href(`/creatives/${family.id}`, query)}
+                        href={creativeFullDetailHref({
+                          familyId: family.id,
+                          query,
+                          tab: "rating",
+                          originPathname: "/overview",
+                        })}
                         drawerHref={href("/overview", query, {
                           selected: family.id,
                           tab: "rating",

@@ -4,6 +4,8 @@ import { notFound } from "next/navigation";
 
 import {
   CreativeDrawerContent,
+  creativeDetailBackHref,
+  creativeDetailBackLabel,
   groupCreativeFamiliesForView,
 } from "@/components/creative-performance-v2";
 import { CopyIdButton } from "@/components/ui/copy-id-button";
@@ -62,20 +64,13 @@ export default async function CreativeFamilyPage({
   );
   if (!family) notFound();
 
-  const backParams = new URLSearchParams();
-  for (const [key, raw] of Object.entries(query)) {
-    const value = Array.isArray(raw) ? raw[0] : raw;
-    if (value && key !== "tab") backParams.set(key, value);
-  }
-  const backHref = `/creatives${
-    backParams.size ? `?${backParams.toString()}` : ""
-  }`;
+  const backHref = creativeDetailBackHref(query);
 
   return (
     <div className="v2-page v2-full-detail">
       <Link className="v2-back-link" href={backHref}>
         <ArrowLeft aria-hidden="true" size={17} />
-        Quay lại Hiệu quả Creative
+        {creativeDetailBackLabel(query)}
       </Link>
       <header className="v2-page-header">
         <div>

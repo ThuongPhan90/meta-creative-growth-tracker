@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 
 import { CopyIdButton } from "@/components/ui/copy-id-button";
 import { getApplicationSnapshot } from "@/lib/app-data";
+import { formatMetaVerificationStatus } from "@/lib/presentation/source-status";
 import type { MetaAssetKind, MetaAssetRow } from "@/types/view-models";
 
 export const dynamic = "force-dynamic";
@@ -122,7 +123,7 @@ export default async function SourceEntityPage({
             </div>
             <div>
               <dt>Trạng thái xác minh</dt>
-              <dd>{asset.verificationStatus ?? "—"}</dd>
+              <dd>{formatMetaVerificationStatus(asset.verificationStatus)}</dd>
             </div>
             <div>
               <dt>Tiền tệ</dt>

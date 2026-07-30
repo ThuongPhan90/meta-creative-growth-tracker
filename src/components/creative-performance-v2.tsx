@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
+import type { CSSProperties } from "react";
 
 import { ContextualEntityLink } from "@/components/ui/contextual-entity-link";
 import { CopyIdButton } from "@/components/ui/copy-id-button";
@@ -27,6 +28,11 @@ import {
   formatNumber,
   formatPercent,
 } from "@/lib/presentation/formatters";
+import {
+  parseNavigationQuery,
+  type CreativeDrilldownMetric,
+  type SortDirection,
+} from "@/lib/navigation/query";
 import type {
   CreativePerformanceSummary,
   CreativePlatform,
@@ -37,6 +43,10 @@ import type {
 } from "@/types/view-models";
 
 type Query = Record<string, string | string[] | undefined>;
+export type CreativeDrawerOrigin =
+  | "/creatives"
+  | "/library"
+  | "/overview";
 
 export type CreativeFamilyViewItem = {
   id: string;
@@ -58,6 +68,15 @@ export type CreativeFamilyViewItem = {
 };
 
 type FamilyView = CreativeFamilyViewItem;
+
+const METRIC_LABELS: Record<CreativeDrilldownMetric, string> = {
+  spend: "Spend",
+  installs: "Install",
+  registrations: "Registration",
+  cpi: "CPI",
+  cpa: "CPA Registration",
+  conversion: "Install → Registration",
+};
 
 const DETAIL_TABS = [
   { value: "preview", label: "Preview" },
@@ -90,6 +109,87 @@ function href(
   }
   const suffix = params.toString();
   return `${pathname}${suffix ? `?${suffix}` : ""}`;
+}
+
+export function creativeDrawerTabHref({
+  familyId,
+  query,
+  tab,
+  fullPage = false,
+  originPathname = "/creatives",
+}: {
+  familyId: string;
+  query: Query;
+  tab: string;
+  fullPage?: boolean;
+  originPathname?: CreativeDrawerOrigin;
+}) {
+  return href(
+    fullPage ? `/creatives/${familyId}` : originPathname,
+    query,
+    {
+      selected: fullPage ? null : familyId,
+      tab,
+    },
+  );
+}
+
+function creativeOriginValue(originPathname: CreativeDrawerOrigin) {
+  return originPathname.slice(1);
+}
+
+export function creativeFullDetailHref({
+  familyId,
+  query,
+  tab,
+  originPathname,
+}: {
+  familyId: string;
+  query: Query;
+  tab: string;
+  originPathname: CreativeDrawerOrigin;
+}) {
+  return href(`/creatives/${familyId}`, query, {
+    selected: null,
+    tab,
+    origin: creativeOriginValue(originPathname),
+  });
+}
+
+function creativeOriginPathname(
+  value: string | string[] | undefined,
+): CreativeDrawerOrigin {
+  const origin = first(value);
+  if (origin === "overview") return "/overview";
+  if (origin === "library") return "/library";
+  return "/creatives";
+}
+
+export function creativeDetailBackHref(query: Query) {
+  return href(creativeOriginPathname(query.origin), query, {
+    origin: null,
+    selected: null,
+    tab: null,
+  });
+}
+
+export function creativeDetailBackLabel(query: Query) {
+  const origin = creativeOriginPathname(query.origin);
+  if (origin === "/overview") return "Quay lại Tổng quan";
+  if (origin === "/library") return "Quay lại Thư viện Creative";
+  return "Quay lại Hiệu quả Creative";
+}
+
+export function creativeScatterPointStyle(
+  left: number,
+  top: number,
+  visualSize: number,
+): CSSProperties {
+  return {
+    left: `${left}%`,
+    top: `${top}%`,
+    "--bubble-size": `${visualSize}px`,
+  } as CSSProperties;
 }
 
 function legacyFamilyId(row: CreativeRow) {
@@ -223,6 +323,100 @@ function performanceGroup(rating: CreativeRating | null | undefined) {
   return "stable";
 }
 
+function metricValue(
+  family: FamilyView,
+  metric: CreativeDrilldownMetric,
+) {
+  const performance = family.performance;
+  if (!performance) return null;
+
+  switch (metric) {
+    case "spend":
+      return performance.spend;
+    case "installs":
+      return performance.installs;
+    case "registrations":
+      return performance.registrations;
+    case "cpi":
+      return performance.cpi;
+    case "cpa":
+      return performance.costPerRegistration;
+    case "conversion":
+      return performance.installs > 0
+        ? performance.registrations / performance.installs
+        : null;
+  }
+}
+
+export function sortCreativeFamiliesForMetric(
+  families: readonly CreativeFamilyViewItem[],
+  metric: CreativeDrilldownMetric,
+  direction: SortDirection,
+) {
+  return families
+    .map((family, index) => ({ family, index }))
+    .sort((left, right) => {
+      const leftValue = metricValue(left.family, metric);
+      const rightValue = metricValue(right.family, metric);
+      if (leftValue === null && rightValue === null) {
+        return left.index - right.index;
+      }
+      if (leftValue === null) return 1;
+      if (rightValue === null) return -1;
+      const difference = leftValue - rightValue;
+      if (difference === 0) return left.index - right.index;
+      return direction === "asc" ? difference : -difference;
+    })
+    .map(({ family }) => family);
+}
+
+function defaultSortDirection(
+  metric: CreativeDrilldownMetric,
+): SortDirection {
+  return metric === "cpi" || metric === "cpa" ? "asc" : "desc";
+}
+
+function metricCellClass(
+  activeMetric: CreativeDrilldownMetric | undefined,
+  cellMetric: CreativeDrilldownMetric,
+) {
+  return activeMetric === cellMetric
+    ? "v2-creative-metric--active"
+    : undefined;
+}
+
+function MetricColumnHeader({
+  activeMetric,
+  direction,
+  metric,
+}: {
+  activeMetric?: CreativeDrilldownMetric;
+  direction: SortDirection;
+  metric: CreativeDrilldownMetric;
+}) {
+  const active = activeMetric === metric;
+  return (
+    <span
+      role="columnheader"
+      className={metricCellClass(activeMetric, metric)}
+      aria-sort={
+        active
+          ? direction === "asc"
+            ? "ascending"
+            : "descending"
+          : undefined
+      }
+    >
+      {METRIC_LABELS[metric]}
+      {active ? (
+        <small aria-hidden="true">
+          {direction === "asc" ? " ↑" : " ↓"}
+        </small>
+      ) : null}
+    </span>
+  );
+}
+
 function matchesFilters(
   family: FamilyView,
   filters: {
@@ -318,19 +512,23 @@ export function CreativeDrawerContent({
   family,
   query,
   fullPage = false,
+  originPathname = "/creatives",
 }: {
   family: FamilyView;
   query: Query;
   fullPage?: boolean;
+  originPathname?: CreativeDrawerOrigin;
 }) {
   const tab = DETAIL_TABS.some((item) => item.value === first(query.tab))
     ? first(query.tab)!
     : "preview";
   const performance = family.performance;
   const explanation = performance?.ratingExplanation;
-  const fullPageHref = href(`/creatives/${family.id}`, query, {
-    selected: null,
+  const fullPageHref = creativeFullDetailHref({
+    familyId: family.id,
+    query,
     tab,
+    originPathname,
   });
 
   return (
@@ -372,14 +570,13 @@ export function CreativeDrawerContent({
           <Link
             key={item.value}
             className="v2-tab"
-            href={href(
-              fullPage ? `/creatives/${family.id}` : "/creatives",
+            href={creativeDrawerTabHref({
+              familyId: family.id,
               query,
-              {
-              selected: fullPage ? null : family.id,
               tab: item.value,
-              },
-            )}
+              fullPage,
+              originPathname,
+            })}
             aria-current={tab === item.value ? "page" : undefined}
             scroll={false}
           >
@@ -539,7 +736,34 @@ export function CreativeDrawerContent({
               </div>
               <div>
                 <dt>Tổng Ads liên kết</dt>
-                <dd>{formatNumber(family.adCount)}</dd>
+                <dd>
+                  {formatNumber(family.adCount)}
+                  {family.entityLinks?.adIds.length
+                    ? ` · ${formatNumber(
+                        family.entityLinks.adIds.length,
+                      )} ID canonical có sẵn`
+                    : ""}
+                </dd>
+              </div>
+              <div>
+                <dt>Ads</dt>
+                <dd>
+                  {family.entityLinks?.adIds.length ? (
+                    <span className="v2-canonical-id-list">
+                      {family.entityLinks.adIds.map((id) => (
+                        <span className="v2-canonical-id" key={id}>
+                          <code>{id}</code>
+                          <CopyIdButton
+                            value={id}
+                            label="Sao chép Ad ID"
+                          />
+                        </span>
+                      ))}
+                    </span>
+                  ) : (
+                    "Chưa có Ad ID canonical trong snapshot này"
+                  )}
+                </dd>
               </div>
               <div>
                 <dt>Campaigns</dt>
@@ -616,6 +840,34 @@ export function CreativeDrawerContent({
                   )}
                 </dd>
               </div>
+              <div>
+                <dt>Ad Set → Ads</dt>
+                <dd>
+                  {family.entityLinks?.campaignIds.length ? (
+                    <span className="v2-entity-links">
+                      {family.entityLinks.campaignIds.map((id) => (
+                        <Link
+                          className="v2-link v2-usage-structure-link"
+                          href={href(
+                            `/campaigns/${encodeURIComponent(id)}`,
+                            query,
+                            {
+                              selected: null,
+                              tab: "structure",
+                            },
+                          )}
+                          key={id}
+                        >
+                          Mở cấu trúc Campaign {id}
+                          <ArrowUpRight aria-hidden="true" size={14} />
+                        </Link>
+                      ))}
+                    </span>
+                  ) : (
+                    "Cần đồng bộ Campaign để tra Ad Set của các Ads này"
+                  )}
+                </dd>
+              </div>
             </dl>
           </section>
         ) : null}
@@ -660,26 +912,62 @@ export function CreativeDrawerContent({
 function CreativeTable({
   families,
   query,
+  metric,
+  direction,
 }: {
   families: FamilyView[];
   query: Query;
+  metric?: CreativeDrilldownMetric;
+  direction: SortDirection;
 }) {
   return (
     <section
       className="v2-creative-table"
       role="table"
-      aria-label="Bảng hiệu quả Creative Family, có thể cuộn ngang"
+      aria-label={`Bảng hiệu quả Creative Family, có thể cuộn ngang${
+        metric
+          ? `, đang sắp xếp theo ${METRIC_LABELS[metric]} ${
+              direction === "asc" ? "tăng dần" : "giảm dần"
+            }`
+          : ""
+      }`}
+      id="creative-results"
       tabIndex={0}
     >
       <div className="v2-creative-table__head" role="row">
         <span role="columnheader">Creative Family</span>
         <span role="columnheader">Định dạng / OS</span>
         <span role="columnheader">Campaign / Ads</span>
-        <span role="columnheader">Spend</span>
-        <span role="columnheader">Install</span>
-        <span role="columnheader">Registration</span>
-        <span role="columnheader">CPI</span>
-        <span role="columnheader">CPA</span>
+        <MetricColumnHeader
+          activeMetric={metric}
+          direction={direction}
+          metric="spend"
+        />
+        <MetricColumnHeader
+          activeMetric={metric}
+          direction={direction}
+          metric="installs"
+        />
+        <MetricColumnHeader
+          activeMetric={metric}
+          direction={direction}
+          metric="registrations"
+        />
+        <MetricColumnHeader
+          activeMetric={metric}
+          direction={direction}
+          metric="conversion"
+        />
+        <MetricColumnHeader
+          activeMetric={metric}
+          direction={direction}
+          metric="cpi"
+        />
+        <MetricColumnHeader
+          activeMetric={metric}
+          direction={direction}
+          metric="cpa"
+        />
         <span role="columnheader">Link CTR</span>
         <span role="columnheader">Hook</span>
         <span role="columnheader">Hold</span>
@@ -694,6 +982,14 @@ function CreativeTable({
         const drawer = href("/creatives", query, {
           selected: family.id,
           tab: "performance",
+        });
+        const usageDrawer = href("/creatives", query, {
+          selected: family.id,
+          tab: "usage",
+        });
+        const ratingDrawer = href("/creatives", query, {
+          selected: family.id,
+          tab: "rating",
         });
         return (
           <div className="v2-creative-table__row" role="row" key={family.id}>
@@ -748,35 +1044,66 @@ function CreativeTable({
               ) : null}
             </span>
             <span role="cell">
-              <Link
-                className="v2-link"
-                href={href("/creatives", query, {
-                  selected: family.id,
-                  tab: "usage",
-                })}
-                scroll={false}
-              >
-                {family.entityLinks?.campaignIds.length ?? 0} chiến dịch
-              </Link>
-              <small>{family.adCount} Ads</small>
+              <span className="v2-table-usage-links">
+                <Link
+                  className="v2-link"
+                  href={usageDrawer}
+                  scroll={false}
+                >
+                  {family.entityLinks?.campaignIds.length ?? 0} chiến dịch
+                </Link>
+                <Link
+                  className="v2-link"
+                  href={usageDrawer}
+                  aria-label={`Xem ${family.adCount} Ads đang dùng ${family.name}`}
+                  scroll={false}
+                >
+                  {family.adCount} Ads
+                </Link>
+              </span>
             </span>
-            <span role="cell">
+            <span
+              role="cell"
+              className={metricCellClass(metric, "spend")}
+            >
               {performance
                 ? formatMoney(performance.spend, performance.currency)
                 : "—"}
             </span>
-            <span role="cell">
+            <span
+              role="cell"
+              className={metricCellClass(metric, "installs")}
+            >
               {performance ? formatNumber(performance.installs) : "—"}
             </span>
-            <span role="cell">
+            <span
+              role="cell"
+              className={metricCellClass(metric, "registrations")}
+            >
               {performance ? formatNumber(performance.registrations) : "—"}
             </span>
-            <span role="cell">
+            <span
+              role="cell"
+              className={metricCellClass(metric, "conversion")}
+            >
+              {formatPercent(
+                performance && performance.installs > 0
+                  ? (performance.registrations / performance.installs) * 100
+                  : null,
+              )}
+            </span>
+            <span
+              role="cell"
+              className={metricCellClass(metric, "cpi")}
+            >
               {performance
                 ? formatMoney(performance.cpi, performance.currency)
                 : "—"}
             </span>
-            <span role="cell">
+            <span
+              role="cell"
+              className={metricCellClass(metric, "cpa")}
+            >
               {performance
                 ? formatMoney(
                     performance.costPerRegistration,
@@ -794,7 +1121,14 @@ function CreativeTable({
               {formatPercent(performance?.holdRate ?? null)}
             </span>
             <span role="cell">
-              <PerformanceRating rating={performance?.rating ?? null} />
+              <Link
+                className="v2-rating-detail-link"
+                href={ratingDrawer}
+                aria-label={`Mở chi tiết đánh giá ${family.name}`}
+                scroll={false}
+              >
+                <PerformanceRating rating={performance?.rating ?? null} />
+              </Link>
               <small>
                 Tin cậy {confidenceLabel(performance?.confidence)}
               </small>
@@ -952,12 +1286,11 @@ function CreativeOverview({
                   performance.cpi,
                   performance.currency,
                 )}`}
-                style={{
-                  left: `${left}%`,
-                  top: `${top}%`,
-                  width: `${pointSize}px`,
-                  height: `${pointSize}px`,
-                }}
+                style={creativeScatterPointStyle(
+                  left,
+                  top,
+                  pointSize,
+                )}
               >
                 <span>{family.name}</span>
               </ContextualEntityLink>
@@ -1206,10 +1539,22 @@ export function CreativePerformanceV2({
   const view = ["overview", "table", "compare"].includes(first(query.view) ?? "")
     ? first(query.view)!
     : "overview";
+  const navigationQuery = parseNavigationQuery(query);
+  const activeMetric = navigationQuery.metric;
+  const metricSort = activeMetric
+    ? navigationQuery.sort ?? defaultSortDirection(activeMetric)
+    : "desc";
   const allFamilies = groupFamilies(creatives);
   const families = allFamilies.filter((family) =>
     matchesFilters(family, filters),
   );
+  const orderedFamilies = activeMetric
+    ? sortCreativeFamiliesForMetric(
+        families,
+        activeMetric,
+        metricSort,
+      )
+    : families;
   const performances = families.flatMap((family) =>
     family.performance ? [family.performance] : [],
   );
@@ -1265,6 +1610,9 @@ export function CreativePerformanceV2({
             ? { data_status: filters.dataStatus }
             : {}),
           ...(filters.delivery ? { delivery: filters.delivery } : {}),
+          ...(activeMetric
+            ? { metric: activeMetric, sort: metricSort }
+            : {}),
           view,
         }}
       />
@@ -1277,6 +1625,12 @@ export function CreativePerformanceV2({
           <input type="hidden" name="currency" value={reportingCurrency} />
         ) : null}
         <input type="hidden" name="view" value={view} />
+        {activeMetric ? (
+          <>
+            <input type="hidden" name="metric" value={activeMetric} />
+            <input type="hidden" name="sort" value={metricSort} />
+          </>
+        ) : null}
         <label className="v2-filter-search">
           <Search aria-hidden="true" size={16} />
           <span className="sr-only">Tìm Creative</span>
@@ -1482,7 +1836,12 @@ export function CreativePerformanceV2({
           </div>
         </section>
       ) : view === "table" ? (
-        <CreativeTable families={families} query={query} />
+        <CreativeTable
+          families={orderedFamilies}
+          query={query}
+          metric={activeMetric}
+          direction={metricSort}
+        />
       ) : view === "compare" ? (
         <CompareView families={families} query={query} />
       ) : (

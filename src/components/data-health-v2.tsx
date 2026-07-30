@@ -14,12 +14,16 @@ import Link from "next/link";
 import { CopyIdButton } from "@/components/ui/copy-id-button";
 import { EntityDrawer } from "@/components/ui/entity-drawer";
 import { StatusPill } from "@/components/ui/status-pill";
-import { buildDataHealthIssuesFromRuns } from "@/lib/data-contract";
+import {
+  buildDataHealthIssuesFromRuns,
+  dataHealthRunEvidence,
+} from "@/lib/data-contract";
 import {
   formatNumber,
   formatPercent,
 } from "@/lib/presentation/formatters";
 import { buildDataHealthCoverage } from "@/lib/presentation/data-health-coverage";
+import { formatDataHealthEntityType } from "@/lib/presentation/data-health-entity-label";
 import { dataHealthEntityHref } from "@/lib/presentation/data-health-links";
 import type {
   CreativeRow,
@@ -127,9 +131,11 @@ function duration(seconds: number | null | undefined) {
 function IssueDrawer({
   issue,
   query,
+  creatives,
 }: {
   issue: DataHealthIssue;
   query: Query;
+  creatives: CreativeRow[];
 }) {
   return (
     <EntityDrawer
@@ -155,7 +161,7 @@ function IssueDrawer({
           <p className="v2-muted">{issue.impact}</p>
           <dl className="v2-detail-list">
             <div>
-              <dt>Số lần xuất hiện</dt>
+              <dt>Bản ghi cảnh báo</dt>
               <dd>{formatNumber(issue.occurrenceCount)}</dd>
             </div>
             <div>
@@ -176,16 +182,25 @@ function IssueDrawer({
           <h3>Thực thể bị ảnh hưởng</h3>
           <ul className="v2-affected-entities">
             {issue.affectedEntities.map((entity) => {
-              const entityHref = dataHealthEntityHref(entity, query);
+              const entityHref = dataHealthEntityHref(entity, {
+                query,
+                creatives,
+              });
               return (
                 <li key={`${entity.entityType}:${entity.entityId}`}>
-                  <span className="v2-chip">{entity.entityType}</span>
+                  <span className="v2-chip">
+                    {formatDataHealthEntityType(entity.entityType)}
+                  </span>
                   <strong>{entity.label ?? entity.entityId}</strong>
                   {entityHref ? (
                     <Link className="v2-link" href={entityHref}>
                       Mở thực thể
                     </Link>
-                  ) : null}
+                  ) : (
+                    <small>
+                      Chưa có đủ quan hệ canonical để mở đúng thực thể
+                    </small>
+                  )}
                 </li>
               );
             })}
@@ -347,8 +362,8 @@ export function DataHealthV2({
           <div>
             <h2>Vấn đề cần kiểm tra</h2>
             <p>
-              Gộp theo mã ổn định và đúng tập thực thể bị ảnh hưởng qua nhiều lần
-              đồng bộ.
+              Gộp các bản ghi cảnh báo theo mã ổn định và đúng tập thực thể bị
+              ảnh hưởng qua nhiều lần đồng bộ.
             </p>
           </div>
           <span className="v2-chip v2-chip--warning">
@@ -375,7 +390,8 @@ export function DataHealthV2({
                   <small>{issue.impact}</small>
                 </div>
                 <span>
-                  {issue.occurrenceCount} lần · {issue.affectedGroupCount} nhóm
+                  {issue.occurrenceCount} bản ghi cảnh báo ·{" "}
+                  {issue.affectedGroupCount} nhóm
                 </span>
               </Link>
             ))}
@@ -391,7 +407,10 @@ export function DataHealthV2({
         <div className="v2-panel__header">
           <div>
             <h2>Lịch sử đồng bộ</h2>
-            <p>Trạng thái, thời lượng, số bản ghi và lỗi theo từng lần chạy.</p>
+            <p>
+              Dòng cần kiểm tra do sync run báo cáo và số bản ghi cảnh báo là
+              hai số độc lập; hệ thống không tự phân bổ dòng vào từng issue.
+            </p>
           </div>
           <CircleDot aria-hidden="true" size={18} />
         </div>
@@ -408,56 +427,67 @@ export function DataHealthV2({
               <span role="columnheader">Hoàn tất</span>
               <span role="columnheader">Thời lượng</span>
               <span role="columnheader">Bản ghi</span>
-              <span role="columnheader">Lỗi / thiếu</span>
+              <span role="columnheader">Dòng cần kiểm tra / cảnh báo</span>
               <span role="columnheader">Trạng thái</span>
             </div>
-            {syncRuns.map((run) => (
-              <div className="v2-sync-table__row" role="row" key={run.id}>
-                <span role="cell">
-                  <strong>{run.kind}</strong>
-                  <small>{run.summary}</small>
-                </span>
-                <span role="cell">{run.startedAt}</span>
-                <span role="cell">{run.finishedAt ?? "Đang chạy"}</span>
-                <span role="cell">{duration(run.durationSeconds)}</span>
-                <span role="cell">
-                  {run.recordCount === null ||
-                  run.recordCount === undefined
-                    ? "Không có trong run này"
-                    : formatNumber(run.recordCount)}
-                </span>
-                <span role="cell">
-                  {run.errorCount === null || run.errorCount === undefined
-                    ? run.warnings.length
-                      ? `${run.warnings.length} cảnh báo`
-                      : "0"
-                    : formatNumber(run.errorCount)}
-                </span>
-                <span role="cell">
-                  <span
-                    className={`v2-chip ${
-                      run.status === "success"
-                        ? "v2-chip--success"
-                        : run.status === "partial"
-                          ? "v2-chip--warning"
-                          : run.status === "failed"
-                            ? "v2-chip--danger"
-                            : ""
-                    }`}
-                  >
-                    {run.status === "success"
-                      ? "Hoàn tất"
-                      : run.status === "partial"
-                        ? "Hoàn thành có cảnh báo"
-                        : run.status === "failed"
-                          ? "Thất bại"
-                          : run.status === "running"
-                            ? "Đang chạy"
-                            : "Đã hủy"}
+            {syncRuns.map((run) => {
+              const evidence = dataHealthRunEvidence(run);
+              return (
+                <div className="v2-sync-table__row" role="row" key={run.id}>
+                  <span role="cell">
+                    <strong>{run.kind}</strong>
+                    <small>{run.summary}</small>
+                    {run.technicalSummary ? (
+                      <small>{run.technicalSummary}</small>
+                    ) : null}
                   </span>
-                </span>
-              </div>
-            ))}
+                  <span role="cell">{run.startedAt}</span>
+                  <span role="cell">{run.finishedAt ?? "Đang chạy"}</span>
+                  <span role="cell">{duration(run.durationSeconds)}</span>
+                  <span role="cell">
+                    {run.recordCount === null ||
+                    run.recordCount === undefined
+                      ? "Không có trong run này"
+                      : formatNumber(run.recordCount)}
+                  </span>
+                  <span role="cell">
+                    <strong>
+                      {evidence.reportedRowCount === null
+                        ? "Nguồn không báo số dòng"
+                        : `${formatNumber(
+                            evidence.reportedRowCount,
+                          )} dòng`}
+                    </strong>
+                    <small>
+                      {formatNumber(evidence.warningEntryCount)} bản ghi cảnh báo
+                    </small>
+                  </span>
+                  <span role="cell">
+                    <span
+                      className={`v2-chip ${
+                        run.status === "success"
+                          ? "v2-chip--success"
+                          : run.status === "partial"
+                            ? "v2-chip--warning"
+                            : run.status === "failed"
+                              ? "v2-chip--danger"
+                              : ""
+                      }`}
+                    >
+                      {run.status === "success"
+                        ? "Hoàn tất"
+                        : run.status === "partial"
+                          ? "Hoàn thành có cảnh báo"
+                          : run.status === "failed"
+                            ? "Thất bại"
+                            : run.status === "running"
+                              ? "Đang chạy"
+                              : "Đã hủy"}
+                    </span>
+                  </span>
+                </div>
+              );
+            })}
           </div>
         ) : (
           <div className="v2-compact-empty">
@@ -466,7 +496,13 @@ export function DataHealthV2({
           </div>
         )}
       </section>
-      {selected ? <IssueDrawer issue={selected} query={query} /> : null}
+      {selected ? (
+        <IssueDrawer
+          issue={selected}
+          query={query}
+          creatives={creatives}
+        />
+      ) : null}
     </div>
   );
 }

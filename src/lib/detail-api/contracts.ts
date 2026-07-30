@@ -181,6 +181,7 @@ export function dataHealthIssueContract(
     user_message: detail.issue.userMessage,
     technical_code: detail.issue.technicalCode,
     occurrence_count: detail.issue.occurrenceCount,
+    occurrence_basis: "sync_warning_entries",
     affected_group_count: detail.issue.affectedGroupCount,
     impact: detail.issue.impact,
     affected_entities: detail.issue.affectedEntities.map((entity) => ({

@@ -9,6 +9,7 @@ import Link from "next/link";
 
 import {
   CreativeDrawerContent,
+  creativeFullDetailHref,
   groupCreativeFamiliesForView,
   type CreativeFamilyViewItem,
 } from "@/components/creative-performance-v2";
@@ -114,9 +115,11 @@ function CreativeCard({
   query: Query;
   priority?: boolean;
 }) {
-  const detailHref = href(`/creatives/${family.id}`, query, {
-    selected: null,
+  const detailHref = creativeFullDetailHref({
+    familyId: family.id,
+    query,
     tab: "preview",
+    originPathname: "/library",
   });
   const drawerHref = href("/library", query, {
     selected: family.id,
@@ -256,13 +259,19 @@ function LibraryTable({
         <span role="columnheader">Đánh giá</span>
       </div>
       {families.map((family) => {
-        const detail = href(`/creatives/${family.id}`, query, {
-          selected: null,
+        const detail = creativeFullDetailHref({
+          familyId: family.id,
+          query,
           tab: "preview",
+          originPathname: "/library",
         });
         const drawer = href("/library", query, {
           selected: family.id,
           tab: "preview",
+        });
+        const ratingDrawer = href("/library", query, {
+          selected: family.id,
+          tab: "rating",
         });
         return (
           <div className="v2-library-table__row" role="row" key={family.id}>
@@ -338,9 +347,16 @@ function LibraryTable({
                 : "—"}
             </span>
             <span role="cell">
-              <PerformanceRating
-                rating={family.performance?.rating ?? null}
-              />
+              <Link
+                className="v2-rating-detail-link"
+                href={ratingDrawer}
+                aria-label={`Mở chi tiết đánh giá ${family.name}`}
+                scroll={false}
+              >
+                <PerformanceRating
+                  rating={family.performance?.rating ?? null}
+                />
+              </Link>
             </span>
           </div>
         );
@@ -627,7 +643,11 @@ export function CreativeLibraryV2({
           restoreFocusId={selected.id}
           width="wide"
         >
-          <CreativeDrawerContent family={selected} query={query} />
+          <CreativeDrawerContent
+            family={selected}
+            query={query}
+            originPathname="/library"
+          />
         </EntityDrawer>
       ) : null}
     </div>

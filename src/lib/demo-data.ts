@@ -419,7 +419,8 @@ export const demoSyncRuns: SyncRunView[] = [
     recordCount: 18_420,
     errorCount: 42,
     summary: "Hoàn thành có 1 cảnh báo cần kiểm tra",
-    technicalSummary: null,
+    technicalSummary:
+      "Nguồn sync báo cáo 42 dòng cần kiểm tra và 1 bản ghi cảnh báo; không phân bổ 42 dòng đó cho từng issue.",
     warnings: [
       {
         code: "INSIGHTS_ROWS_PARTIAL",

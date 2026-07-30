@@ -5,6 +5,7 @@ import {
   buildDataHealthIssueId,
   buildDataHealthIssueDetailsFromRuns,
   buildDataHealthIssuesFromRuns,
+  dataHealthRunEvidence,
   normalizeDataHealthResource,
 } from "./data-health";
 
@@ -127,5 +128,35 @@ describe("Data Health issue identity and grouping", () => {
         resource: "act_123/ads",
       }),
     ]);
+  });
+
+  it("keeps source-reported rows separate from assignable warning entries", () => {
+    const evidence = dataHealthRunEvidence({
+      errorCount: 42,
+      warnings: [
+        {
+          code: "INSIGHTS_ROWS_PARTIAL",
+          resource: "act_123/ads",
+          message: "A grouped warning",
+        },
+      ],
+    });
+
+    expect(evidence).toEqual({
+      reportedRowCount: 42,
+      warningEntryCount: 1,
+    });
+    expect(
+      aggregateDataHealthIssues([
+        {
+          technicalCode: "INSIGHTS_ROWS_PARTIAL",
+          severity: "warning",
+          userMessage: "Một nhóm dữ liệu cần kiểm tra",
+          impact: "Có thể thiếu một số chiều phân tích",
+          affectedEntities:
+            normalizeDataHealthResource("act_123/ads"),
+        },
+      ])[0]?.occurrenceCount,
+    ).toBe(1);
   });
 });
