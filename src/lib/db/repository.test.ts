@@ -30,6 +30,43 @@ describe("Meta connection owner claim", () => {
   });
 });
 
+describe("Settings audit log", () => {
+  it("returns the complete owner-scoped history in deterministic order", async () => {
+    const changedAt = new Date("2026-07-29T09:42:00.000Z");
+    const unsafe = vi.fn(async (query: string) => {
+      void query;
+      return [
+        {
+          settings_audit_id: 7n,
+          changed_at: changedAt,
+          changed_by: "owner",
+          before_state: { reportingCurrency: null },
+          after_state: { reportingCurrency: "VND" },
+        },
+      ];
+    });
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await expect(repository.listSettingsAuditLog()).resolves.toEqual([
+      {
+        settingsAuditId: "7",
+        changedAt: changedAt.toISOString(),
+        changedBy: "owner",
+        beforeState: { reportingCurrency: null },
+        afterState: { reportingCurrency: "VND" },
+      },
+    ]);
+    expect(unsafe).toHaveBeenCalledOnce();
+    expect(unsafe.mock.calls[0]?.[0]).toContain("where owner_id = 1");
+    expect(unsafe.mock.calls[0]?.[0]).toContain(
+      "order by changed_at desc, settings_audit_id desc",
+    );
+    expect(unsafe.mock.calls[0]?.[0]).not.toContain("limit");
+  });
+});
+
 describe("Repository JSONB parameters", () => {
   it("passes structured JSON values instead of double-encoded strings", async () => {
     const unsafe = vi.fn(
@@ -157,7 +194,105 @@ describe("Ad account activity filters", () => {
       "2026-07-24",
       "42",
       "USD",
+      null,
+      null,
     ]);
+  });
+
+  it("returns daily Overview trend as separate currency series", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [
+          {
+            metric_date: "2026-07-01",
+            currency: "USD",
+            spend: 100,
+            impressions: 1_000,
+            link_clicks: 50,
+            installs: 10,
+            registrations: 5,
+            video_3s_views: 200,
+            video_100_views: 100,
+          },
+          {
+            metric_date: "2026-07-01",
+            currency: "VND",
+            spend: 250_000,
+            impressions: 2_000,
+            link_clicks: 80,
+            installs: 5,
+            registrations: 2,
+            video_3s_views: 300,
+            video_100_views: 120,
+          },
+        ];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    const result = await repository.getDeliveryTrend({
+      connectionId: "connection-1",
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-24",
+      adAccountId: "42",
+      accountMetaId: " act_123 ",
+      campaignMetaId: " campaign_456 ",
+    });
+
+    const [query, parameters] = unsafe.mock.calls[0];
+    expect(query).toContain(
+      "group by metric.metric_date, metric.currency",
+    );
+    expect(query).toContain("account.meta_ad_account_id = $6");
+    expect(query).toContain("selected_campaign.meta_campaign_id = $7");
+    expect(parameters).toEqual([
+      "connection-1",
+      "2026-07-01",
+      "2026-07-24",
+      "42",
+      null,
+      "act_123",
+      "campaign_456",
+    ]);
+    expect(result).toHaveLength(2);
+    expect(result[0]).toMatchObject({
+      metricDate: "2026-07-01",
+      currency: "USD",
+      cpi: 10,
+      costPerRegistration: 20,
+    });
+    expect(result[1]).toMatchObject({
+      metricDate: "2026-07-01",
+      currency: "VND",
+      cpi: 50_000,
+      costPerRegistration: 125_000,
+    });
+  });
+
+  it("passes a normalized currency filter to daily trend", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await repository.getDeliveryTrend({
+      connectionId: "connection-1",
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-24",
+      currency: " USD ",
+    });
+
+    expect(unsafe.mock.calls[0]?.[1]?.[4]).toBe("USD");
   });
 
   it("filters campaign inventory by active account by default and bypasses it explicitly", async () => {
@@ -207,6 +342,9 @@ describe("Ad account activity filters", () => {
       "act_1",
       "ACTIVE",
       "fox",
+      null,
+      null,
+      null,
       25,
       10,
     ]);
@@ -219,6 +357,9 @@ describe("Ad account activity filters", () => {
       "act_1",
       "ACTIVE",
       "fox",
+      null,
+      null,
+      null,
       25,
       10,
     ]);
@@ -316,7 +457,14 @@ describe("Ad account activity filters", () => {
     expect(query).toContain(
       "(coalesce(ad_usage.active_ad_count, 0) > 0) desc",
     );
-    expect(parameters).toEqual(["connection-1", null, null, 50, 0]);
+    expect(parameters).toEqual([
+      "connection-1",
+      null,
+      null,
+      50,
+      0,
+      null,
+    ]);
   });
 
   it("bounds one complete creative-library snapshot at 5,001 rows", async () => {
@@ -343,7 +491,75 @@ describe("Ad account activity filters", () => {
       null,
       5_001,
       0,
+      null,
     ]);
+  });
+
+  it("looks up one Creative Family before applying the list limit", async () => {
+    const familyId = "cf_0123456789abcdef01234567";
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [
+          {
+            creative_asset_id: "asset-7001",
+            creative_family_id: familyId,
+            asset_key: "video:7001",
+            asset_type: "video",
+            meta_video_id: "7001",
+            meta_image_hash: null,
+            name: "Family beyond snapshot cap",
+            thumbnail_url: null,
+            preview_url: null,
+            width: 1080,
+            height: 1920,
+            duration_seconds: 15,
+            creative_codes: ["V7001-VA"],
+            page_names: [],
+            creative_container_count: 1,
+            ad_count: 1,
+            current_ad_count: 1,
+            active_ad_count: 1,
+            ad_account_count: 1,
+            page_count: 0,
+            meta_creative_ids: ["creative-7001"],
+            ad_ids: ["ad-7001"],
+            campaign_ids: ["campaign-7001"],
+            ad_account_ids: ["act_1"],
+            page_ids: [],
+            last_used_at: "2026-07-30T00:00:00.000Z",
+            last_seen_at: "2026-07-30T00:00:00.000Z",
+          },
+        ];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    const result = await repository.getCreativeFamilyById(
+      "connection-1",
+      familyId,
+    );
+
+    const [query, parameters] = unsafe.mock.calls[0];
+    expect(query).toContain("asset.creative_family_id = $6");
+    expect(query.indexOf("asset.creative_family_id = $6")).toBeLessThan(
+      query.indexOf("limit $4"),
+    );
+    expect(parameters).toEqual([
+      "connection-1",
+      null,
+      null,
+      1,
+      0,
+      familyId,
+    ]);
+    expect(result).toMatchObject({
+      creativeAssetId: "asset-7001",
+      creativeFamilyId: familyId,
+    });
   });
 
   it("keeps creative performance and its baseline on operational accounts", async () => {
@@ -367,6 +583,38 @@ describe("Ad account activity filters", () => {
     const [query] = unsafe.mock.calls[0];
     expect(query).toContain("and account.is_active");
     expect(query).toContain("and account.account_status = 1");
+  });
+
+  it("filters Creative Family performance by canonical ID and context", async () => {
+    const familyId = "cf_0123456789abcdef01234567";
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await repository.listCreativePerformance({
+      connectionId: "connection-1",
+      creativeFamilyId: familyId,
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-30",
+      currency: "VND",
+      accountMetaId: "act_1",
+      campaignMetaId: "campaign_1",
+    });
+
+    const [query, parameters] = unsafe.mock.calls[0];
+    expect(query).toContain("asset.creative_family_id = $11");
+    expect(parameters?.slice(8)).toEqual([
+      "act_1",
+      "campaign_1",
+      familyId,
+    ]);
   });
 });
 

@@ -10,6 +10,7 @@ import type {
   AssetRelationshipInput,
   BusinessInput,
   CampaignInventoryFilters,
+  CampaignHierarchy,
   CampaignInventoryItem,
   CampaignInventoryPage,
   CampaignInput,
@@ -30,13 +31,17 @@ import type {
   DatabaseId,
   DeliveryPerformanceFilters,
   DeliveryPerformanceItem,
+  DeliveryTrendFilters,
+  DeliveryTrendItem,
   JsonObject,
+  InsightsFreshnessRecord,
   MetaAppInput,
   MetaAssetInventory,
   MetaConnectionInput,
   MetaConnectionRecord,
   MetaConnectionSecretRecord,
   PageInput,
+  SettingsAuditRecord,
   SyncRunRecord,
   TrackerSettings,
   TrackerSettingsUpdate,
@@ -403,7 +408,19 @@ export class TrackerRepository {
           reporting_currency = null,
           sync_lookback_days = 30,
           minimum_install_threshold = 20,
+          minimum_registration_threshold = 10,
           benchmark_mode = 'os',
+          benchmark_window_days = 30,
+          benchmark_by_os = true,
+          benchmark_by_format = true,
+          number_format = 'vi-VN',
+          compare_default = 'previous_period',
+          scoring_weight_cpi = 40,
+          scoring_weight_cpa = 40,
+          scoring_weight_hook = 10,
+          scoring_weight_hold = 10,
+          sync_cadence = 'deployment',
+          alert_channel = 'none',
           install_action_types = array[
             'mobile_app_install',
             'omni_app_install',
@@ -435,12 +452,55 @@ export class TrackerRepository {
         row.reporting_currency === null ? null : String(row.reporting_currency),
       syncLookbackDays: asNumber(row.sync_lookback_days),
       minimumInstallThreshold: asNumber(row.minimum_install_threshold),
+      minimumRegistrationThreshold: asNumber(
+        row.minimum_registration_threshold,
+      ),
       benchmarkMode: row.benchmark_mode as TrackerSettings["benchmarkMode"],
+      benchmarkWindowDays: asNumber(row.benchmark_window_days),
+      benchmarkByOs: Boolean(row.benchmark_by_os),
+      benchmarkByFormat: Boolean(row.benchmark_by_format),
+      numberFormat: row.number_format as TrackerSettings["numberFormat"],
+      compareDefault:
+        row.compare_default as TrackerSettings["compareDefault"],
+      scoringWeights: {
+        cpi: asNumber(row.scoring_weight_cpi),
+        cpa: asNumber(row.scoring_weight_cpa),
+        hook: asNumber(row.scoring_weight_hook),
+        hold: asNumber(row.scoring_weight_hold),
+      },
+      syncCadence:
+        row.sync_cadence as TrackerSettings["syncCadence"],
+      alertChannel:
+        row.alert_channel as TrackerSettings["alertChannel"],
       installActionTypes: asStringArray(row.install_action_types),
       registrationActionTypes: asStringArray(row.registration_action_types),
       lastInitialSyncAt: asNullableIso(row.last_initial_sync_at),
       updatedAt: asIso(row.updated_at),
     };
+  }
+
+  async listSettingsAuditLog(): Promise<SettingsAuditRecord[]> {
+    const rows = await this.query<DatabaseRow>(
+      `
+        select
+          settings_audit_id,
+          changed_at,
+          changed_by,
+          before_state,
+          after_state
+        from tracker.settings_audit_log
+        where owner_id = 1
+        order by changed_at desc, settings_audit_id desc
+      `,
+    );
+
+    return rows.map((row) => ({
+      settingsAuditId: asId(row.settings_audit_id),
+      changedAt: asIso(row.changed_at),
+      changedBy: String(row.changed_by),
+      beforeState: asJsonObject(row.before_state),
+      afterState: asJsonObject(row.after_state),
+    }));
   }
 
   async updateSettings(
@@ -449,32 +509,70 @@ export class TrackerRepository {
     const current = await this.getSettings();
     const next = { ...current, ...update };
 
-    const rows = await this.query<DatabaseRow>(
-      `
-        update tracker.app_settings
-        set
-          reporting_timezone = $1,
-          reporting_currency = $2,
-          sync_lookback_days = $3,
-          minimum_install_threshold = $4,
-          benchmark_mode = $5,
-          install_action_types = $6::text[],
-          registration_action_types = $7::text[],
-          last_initial_sync_at = $8::timestamptz
-        where owner_id = 1
-        returning *
-      `,
-      [
-        next.reportingTimezone,
-        next.reportingCurrency,
-        next.syncLookbackDays,
-        next.minimumInstallThreshold,
-        next.benchmarkMode,
-        next.installActionTypes,
-        next.registrationActionTypes,
-        next.lastInitialSyncAt,
-      ],
-    );
+    const rows = await this.database.begin(async (transaction) => {
+      const updated = (await transaction.unsafe(
+        `
+          update tracker.app_settings
+          set
+            reporting_timezone = $1,
+            reporting_currency = $2,
+            sync_lookback_days = $3,
+            minimum_install_threshold = $4,
+            minimum_registration_threshold = $5,
+            benchmark_mode = $6,
+            benchmark_window_days = $7,
+            benchmark_by_os = $8,
+            benchmark_by_format = $9,
+            number_format = $10,
+            compare_default = $11,
+            scoring_weight_cpi = $12,
+            scoring_weight_cpa = $13,
+            scoring_weight_hook = $14,
+            scoring_weight_hold = $15,
+            sync_cadence = $16,
+            alert_channel = $17,
+            install_action_types = $18::text[],
+            registration_action_types = $19::text[],
+            last_initial_sync_at = $20::timestamptz
+          where owner_id = 1
+          returning *
+        `,
+        [
+          next.reportingTimezone,
+          next.reportingCurrency,
+          next.syncLookbackDays,
+          next.minimumInstallThreshold,
+          next.minimumRegistrationThreshold,
+          next.benchmarkMode,
+          next.benchmarkWindowDays,
+          next.benchmarkByOs,
+          next.benchmarkByFormat,
+          next.numberFormat,
+          next.compareDefault,
+          next.scoringWeights.cpi,
+          next.scoringWeights.cpa,
+          next.scoringWeights.hook,
+          next.scoringWeights.hold,
+          next.syncCadence,
+          next.alertChannel,
+          next.installActionTypes,
+          next.registrationActionTypes,
+          next.lastInitialSyncAt,
+        ],
+      )) as unknown as DatabaseRow[];
+      await transaction.unsafe(
+        `
+          insert into tracker.settings_audit_log (
+            owner_id,
+            changed_by,
+            before_state,
+            after_state
+          ) values (1, 'owner', $1::jsonb, $2::jsonb)
+        `,
+        [jsonPayload(current), jsonPayload(next)],
+      );
+      return updated;
+    });
 
     const row = rows[0];
     return {
@@ -484,7 +582,26 @@ export class TrackerRepository {
         row.reporting_currency === null ? null : String(row.reporting_currency),
       syncLookbackDays: asNumber(row.sync_lookback_days),
       minimumInstallThreshold: asNumber(row.minimum_install_threshold),
+      minimumRegistrationThreshold: asNumber(
+        row.minimum_registration_threshold,
+      ),
       benchmarkMode: row.benchmark_mode as TrackerSettings["benchmarkMode"],
+      benchmarkWindowDays: asNumber(row.benchmark_window_days),
+      benchmarkByOs: Boolean(row.benchmark_by_os),
+      benchmarkByFormat: Boolean(row.benchmark_by_format),
+      numberFormat: row.number_format as TrackerSettings["numberFormat"],
+      compareDefault:
+        row.compare_default as TrackerSettings["compareDefault"],
+      scoringWeights: {
+        cpi: asNumber(row.scoring_weight_cpi),
+        cpa: asNumber(row.scoring_weight_cpa),
+        hook: asNumber(row.scoring_weight_hook),
+        hold: asNumber(row.scoring_weight_hold),
+      },
+      syncCadence:
+        row.sync_cadence as TrackerSettings["syncCadence"],
+      alertChannel:
+        row.alert_channel as TrackerSettings["alertChannel"],
       installActionTypes: asStringArray(row.install_action_types),
       registrationActionTypes: asStringArray(row.registration_action_types),
       lastInitialSyncAt: asNullableIso(row.last_initial_sync_at),
@@ -1860,6 +1977,54 @@ export class TrackerRepository {
     };
   }
 
+  async getInsightsFreshness(
+    connectionId: DatabaseId,
+  ): Promise<InsightsFreshnessRecord> {
+    const rows = await this.query<DatabaseRow>(
+      `
+        select
+          checkpoint.last_successful_sync_at,
+          checkpoint.high_water_mark,
+          run.status as latest_status,
+          run.trigger_source
+        from (select $1::bigint as connection_id) input
+        left join tracker.sync_checkpoints checkpoint
+          on checkpoint.connection_id = input.connection_id
+         and checkpoint.resource_key = 'meta:insights'
+        left join lateral (
+          select status, trigger_source
+          from tracker.sync_runs
+          where connection_id = input.connection_id
+            and sync_kind in ('insights', 'incremental', 'full')
+            and status in ('succeeded', 'partial', 'failed')
+          order by coalesce(finished_at, created_at) desc
+          limit 1
+        ) run on true
+      `,
+      [connectionId],
+    );
+    const row = rows[0] ?? {};
+    const latestStatus =
+      row.latest_status === null || row.latest_status === undefined
+        ? null
+        : String(row.latest_status);
+    const syncStatus: InsightsFreshnessRecord["syncStatus"] =
+      latestStatus === "partial"
+        ? "partial"
+        : latestStatus === "failed"
+          ? "error"
+          : row.high_water_mark
+            ? "healthy"
+            : "warning";
+    const trigger = String(row.trigger_source ?? "manual");
+    return {
+      lastSyncedAt: asNullableIso(row.last_successful_sync_at),
+      dataThroughAt: asNullableIso(row.high_water_mark),
+      syncStatus,
+      syncMode: trigger === "cron" ? "scheduled" : "manual",
+    };
+  }
+
   async listMetaAssets(
     connectionId: DatabaseId,
   ): Promise<MetaAssetInventory> {
@@ -1983,6 +2148,39 @@ export class TrackerRepository {
             on asset_link.creative_id = ad_link.creative_id
           group by campaign.campaign_id
         ),
+        campaign_performance_rows as (
+          select
+            metric.campaign_id,
+            metric.currency,
+            sum(metric.spend) as spend,
+            sum(metric.impressions) as impressions,
+            sum(metric.installs) as installs,
+            sum(metric.registrations) as registrations
+          from tracker.daily_metrics metric
+          join tracker.meta_ad_accounts performance_account
+            on performance_account.ad_account_id = metric.ad_account_id
+          where performance_account.connection_id = $1
+            and ($6::date is null or metric.metric_date >= $6::date)
+            and ($7::date is null or metric.metric_date <= $7::date)
+            and ($8::text is null or metric.currency = $8)
+          group by metric.campaign_id, metric.currency
+        ),
+        campaign_performance as (
+          select
+            campaign_id,
+            jsonb_agg(
+              jsonb_build_object(
+                'currency', currency,
+                'spend', spend,
+                'impressions', impressions,
+                'installs', installs,
+                'registrations', registrations
+              )
+              order by currency
+            ) as performance
+          from campaign_performance_rows
+          group by campaign_id
+        ),
         filtered as (
           select
             campaign.*,
@@ -1991,12 +2189,16 @@ export class TrackerRepository {
             coalesce(counts.ad_set_count, 0) as ad_set_count,
             coalesce(counts.ad_count, 0) as ad_count,
             coalesce(counts.creative_asset_count, 0)
-              as creative_asset_count
+              as creative_asset_count,
+            coalesce(performance.performance, '[]'::jsonb)
+              as performance
           from tracker.meta_campaigns campaign
           join tracker.meta_ad_accounts account
             on account.ad_account_id = campaign.ad_account_id
           left join campaign_counts counts
             on counts.campaign_id = campaign.campaign_id
+          left join campaign_performance performance
+            on performance.campaign_id = campaign.campaign_id
           where account.connection_id = $1
             and (
               $2::boolean
@@ -2028,8 +2230,8 @@ export class TrackerRepository {
           filtered.is_active desc,
           filtered.last_seen_at desc,
           filtered.name
-        limit $6
-        offset $7
+        limit $9
+        offset $10
       `,
       [
         filters.connectionId,
@@ -2037,12 +2239,40 @@ export class TrackerRepository {
         accountMetaId,
         status,
         search,
+        filters.dateFrom ?? null,
+        filters.dateTo ?? null,
+        filters.currency?.trim() || null,
         limit,
         offset,
       ],
     );
 
-    const items: CampaignInventoryItem[] = rows.map((row) => ({
+    const items: CampaignInventoryItem[] = rows.map((row) => {
+      const rawPerformance = Array.isArray(row.performance)
+        ? row.performance
+        : [];
+      const performance = rawPerformance.flatMap((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+          return [];
+        }
+        const source = item as DatabaseRow;
+        const spend = asNumber(source.spend);
+        const installs = asNumber(source.installs);
+        const registrations = asNumber(source.registrations);
+        return [
+          {
+            currency: String(source.currency),
+            spend,
+            impressions: asNumber(source.impressions),
+            installs,
+            registrations,
+            cpi: installs > 0 ? spend / installs : null,
+            costPerRegistration:
+              registrations > 0 ? spend / registrations : null,
+          },
+        ];
+      });
+      return {
       campaignId: asId(row.campaign_id),
       metaCampaignId: String(row.meta_campaign_id),
       name: String(row.name),
@@ -2058,14 +2288,120 @@ export class TrackerRepository {
       adSetCount: asNumber(row.ad_set_count),
       adCount: asNumber(row.ad_count),
       creativeAssetCount: asNumber(row.creative_asset_count),
+      performance,
       lastSeenAt: asIso(row.last_seen_at),
-    }));
+      };
+    });
 
     return {
       items,
       total: rows[0] ? asNumber(rows[0].total_count) : 0,
       limit,
       offset,
+    };
+  }
+
+  async getCampaignHierarchy(
+    connectionId: DatabaseId,
+    metaCampaignId: string,
+  ): Promise<CampaignHierarchy | null> {
+    const rows = await this.query<DatabaseRow>(
+      `
+        select
+          campaign.campaign_id,
+          campaign.meta_campaign_id,
+          ad_set.ad_set_id,
+          ad_set.meta_ad_set_id,
+          ad_set.name as ad_set_name,
+          ad_set.status as ad_set_status,
+          ad_set.effective_status as ad_set_effective_status,
+          ad.ad_id,
+          ad.meta_ad_id,
+          ad.name as ad_name,
+          ad.status as ad_status,
+          ad.effective_status as ad_effective_status,
+          coalesce(
+            array_agg(distinct asset.creative_family_id)
+              filter (where asset.creative_family_id is not null),
+            '{}'::text[]
+          ) as creative_family_ids
+        from tracker.meta_campaigns campaign
+        join tracker.meta_ad_accounts account
+          on account.ad_account_id = campaign.ad_account_id
+        left join tracker.meta_ad_sets ad_set
+          on ad_set.campaign_id = campaign.campaign_id
+        left join tracker.meta_ads ad
+          on ad.ad_set_id = ad_set.ad_set_id
+        left join tracker.ad_creative_links ad_link
+          on ad_link.ad_id = ad.ad_id
+        left join tracker.creative_asset_links asset_link
+          on asset_link.creative_id = ad_link.creative_id
+        left join tracker.creative_assets asset
+          on asset.creative_asset_id = asset_link.creative_asset_id
+        where account.connection_id = $1
+          and campaign.meta_campaign_id = $2
+        group by
+          campaign.campaign_id,
+          campaign.meta_campaign_id,
+          ad_set.ad_set_id,
+          ad_set.meta_ad_set_id,
+          ad_set.name,
+          ad_set.status,
+          ad_set.effective_status,
+          ad.ad_id,
+          ad.meta_ad_id,
+          ad.name,
+          ad.status,
+          ad.effective_status
+        order by ad_set.name nulls last, ad.name nulls last
+      `,
+      [connectionId, metaCampaignId.trim()],
+    );
+    if (!rows.length) return null;
+
+    const adSets = new Map<
+      string,
+      CampaignHierarchy["adSets"][number]
+    >();
+    for (const row of rows) {
+      if (row.ad_set_id === null) continue;
+      const adSetId = asId(row.ad_set_id);
+      const adSet =
+        adSets.get(adSetId) ??
+        {
+          adSetId,
+          metaAdSetId: String(row.meta_ad_set_id),
+          name: String(row.ad_set_name),
+          status:
+            row.ad_set_status === null
+              ? null
+              : String(row.ad_set_status),
+          effectiveStatus:
+            row.ad_set_effective_status === null
+              ? null
+              : String(row.ad_set_effective_status),
+          ads: [],
+        };
+      if (row.ad_id !== null) {
+        adSet.ads.push({
+          adId: asId(row.ad_id),
+          metaAdId: String(row.meta_ad_id),
+          name: String(row.ad_name),
+          status: row.ad_status === null ? null : String(row.ad_status),
+          effectiveStatus:
+            row.ad_effective_status === null
+              ? null
+              : String(row.ad_effective_status),
+          creativeFamilyIds: asStringArray(row.creative_family_ids),
+        });
+      }
+      adSets.set(adSetId, adSet);
+    }
+
+    return {
+      campaignId: asId(rows[0].campaign_id),
+      metaCampaignId: String(rows[0].meta_campaign_id),
+      adSets: [...adSets.values()],
     };
   }
 
@@ -2105,13 +2441,27 @@ export class TrackerRepository {
         )
         select
           usage.*,
+          asset.creative_family_id,
+          entity_links.meta_creative_ids,
+          entity_links.ad_ids,
+          entity_links.campaign_ids,
+          entity_links.ad_account_ids,
+          entity_links.page_ids,
           coalesce(ad_usage.current_ad_count, 0) as current_ad_count,
           coalesce(ad_usage.active_ad_count, 0) as active_ad_count
         from tracker.creative_asset_usage usage
+        join tracker.creative_assets asset
+          on asset.creative_asset_id = usage.creative_asset_id
+        left join tracker.creative_family_entity_links entity_links
+          on entity_links.creative_asset_id = usage.creative_asset_id
         left join current_ad_usage ad_usage
           on ad_usage.creative_asset_id = usage.creative_asset_id
         where usage.connection_id = $1
           and ($2::text is null or usage.asset_type = $2)
+          and (
+            $6::text is null
+            or asset.creative_family_id = $6
+          )
           and (
             $3::text is null
             or usage.name ilike '%' || $3 || '%'
@@ -2135,11 +2485,16 @@ export class TrackerRepository {
         filters.search?.trim() || null,
         limit,
         offset,
+        filters.creativeFamilyId?.trim() || null,
       ],
     );
 
     return rows.map((row) => ({
       creativeAssetId: asId(row.creative_asset_id),
+      creativeFamilyId:
+        row.creative_family_id === null
+          ? undefined
+          : asId(row.creative_family_id),
       assetKey: String(row.asset_key),
       assetType: row.asset_type as CreativeLibraryItem["assetType"],
       metaVideoId:
@@ -2161,9 +2516,27 @@ export class TrackerRepository {
       activeAdCount: asNumber(row.active_ad_count),
       adAccountCount: asNumber(row.ad_account_count),
       pageCount: asNumber(row.page_count),
+      metaCreativeIds: asStringArray(row.meta_creative_ids),
+      adIds: asStringArray(row.ad_ids),
+      campaignIds: asStringArray(row.campaign_ids),
+      adAccountIds: asStringArray(row.ad_account_ids),
+      pageIds: asStringArray(row.page_ids),
       lastUsedAt: asNullableIso(row.last_used_at),
       lastSeenAt: asIso(row.last_seen_at),
     }));
+  }
+
+  async getCreativeFamilyById(
+    connectionId: DatabaseId,
+    creativeFamilyId: DatabaseId,
+  ): Promise<CreativeLibraryItem | null> {
+    const [item] = await this.listCreativeLibrary({
+      connectionId,
+      creativeFamilyId,
+      limit: 1,
+      offset: 0,
+    });
+    return item ?? null;
   }
 
   async listCreativePerformance(
@@ -2257,6 +2630,19 @@ export class TrackerRepository {
             and account.account_status = 1
             and ($4::bigint is null or metric.ad_account_id = $4)
             and ($5::text is null or metric.currency = $5)
+            and (
+              $9::text is null
+              or account.meta_ad_account_id = $9
+            )
+            and (
+              $10::text is null
+              or exists (
+                select 1
+                from tracker.meta_campaigns selected_campaign
+                where selected_campaign.campaign_id = metric.campaign_id
+                  and selected_campaign.meta_campaign_id = $10
+              )
+            )
           group by
             metric.attributed_asset_id,
             metric.operating_system,
@@ -2264,6 +2650,7 @@ export class TrackerRepository {
         )
         select
           asset.creative_asset_id,
+          asset.creative_family_id,
           asset.asset_key,
           asset.asset_type,
           asset.name,
@@ -2283,6 +2670,10 @@ export class TrackerRepository {
         join tracker.creative_assets asset
           on asset.creative_asset_id = aggregate.attributed_asset_id
         where ($6::text is null or asset.asset_type = $6)
+          and (
+            $11::text is null
+            or asset.creative_family_id = $11
+          )
         order by aggregate.spend desc, aggregate.impressions desc
         limit $7
         offset $8
@@ -2296,6 +2687,9 @@ export class TrackerRepository {
         filters.assetType ?? null,
         limit,
         offset,
+        filters.accountMetaId?.trim() || null,
+        filters.campaignMetaId?.trim() || null,
+        filters.creativeFamilyId?.trim() || null,
       ],
     );
 
@@ -2312,6 +2706,10 @@ export class TrackerRepository {
 
       return {
         creativeAssetId: asId(row.creative_asset_id),
+        creativeFamilyId:
+          row.creative_family_id === null
+            ? undefined
+            : asId(row.creative_family_id),
         assetKey: String(row.asset_key),
         assetType: row.asset_type as CreativePerformanceItem["assetType"],
         name: row.name === null ? null : String(row.name),
@@ -2384,6 +2782,19 @@ export class TrackerRepository {
           and account.account_status = 1
           and ($4::bigint is null or metric.ad_account_id = $4)
           and ($5::text is null or metric.currency = $5)
+          and (
+            $6::text is null
+            or account.meta_ad_account_id = $6
+          )
+          and (
+            $7::text is null
+            or exists (
+              select 1
+              from tracker.meta_campaigns selected_campaign
+              where selected_campaign.campaign_id = metric.campaign_id
+                and selected_campaign.meta_campaign_id = $7
+            )
+          )
         group by operating_system, metric.currency
         order by metric.currency, operating_system
       `,
@@ -2393,6 +2804,8 @@ export class TrackerRepository {
         filters.dateTo,
         filters.adAccountId ?? null,
         filters.currency ?? null,
+        filters.accountMetaId?.trim() || null,
+        filters.campaignMetaId?.trim() || null,
       ],
     );
 
@@ -2409,6 +2822,86 @@ export class TrackerRepository {
       video100Views: asNumber(row.video_100_views),
       metricDays: asNumber(row.metric_days),
     }));
+  }
+
+  /**
+   * Daily Overview trend grouped by currency. Keeping currency in both the
+   * grouping key and the returned DTO prevents mixed-currency CPI/CPA.
+   */
+  async getDeliveryTrend(
+    filters: DeliveryTrendFilters,
+  ): Promise<DeliveryTrendItem[]> {
+    const rows = await this.query<DatabaseRow>(
+      `
+        select
+          metric.metric_date,
+          metric.currency,
+          sum(metric.spend) as spend,
+          sum(metric.impressions) as impressions,
+          sum(metric.link_clicks) as link_clicks,
+          sum(metric.installs) as installs,
+          sum(metric.registrations) as registrations,
+          sum(metric.video_3s_views) as video_3s_views,
+          sum(metric.video_100_views) as video_100_views
+        from tracker.daily_metrics metric
+        join tracker.meta_ad_accounts account
+          on account.ad_account_id = metric.ad_account_id
+        where metric.metric_date between $2::date and $3::date
+          and account.connection_id = $1
+          and account.is_active
+          and account.account_status = 1
+          and ($4::bigint is null or metric.ad_account_id = $4)
+          and ($5::text is null or metric.currency = $5)
+          and (
+            $6::text is null
+            or account.meta_ad_account_id = $6
+          )
+          and (
+            $7::text is null
+            or exists (
+              select 1
+              from tracker.meta_campaigns selected_campaign
+              where selected_campaign.campaign_id = metric.campaign_id
+                and selected_campaign.meta_campaign_id = $7
+            )
+          )
+        group by metric.metric_date, metric.currency
+        order by metric.metric_date, metric.currency
+      `,
+      [
+        filters.connectionId,
+        filters.dateFrom,
+        filters.dateTo,
+        filters.adAccountId ?? null,
+        filters.currency?.trim() || null,
+        filters.accountMetaId?.trim() || null,
+        filters.campaignMetaId?.trim() || null,
+      ],
+    );
+
+    return rows.map((row) => {
+      const spend = asNumber(row.spend);
+      const impressions = asNumber(row.impressions);
+      const linkClicks = asNumber(row.link_clicks);
+      const installs = asNumber(row.installs);
+      const registrations = asNumber(row.registrations);
+
+      return {
+        metricDate: asIso(row.metric_date).slice(0, 10),
+        currency: String(row.currency),
+        spend,
+        impressions,
+        linkClicks,
+        installs,
+        registrations,
+        video3sViews: asNumber(row.video_3s_views),
+        video100Views: asNumber(row.video_100_views),
+        linkCtr: impressions > 0 ? (linkClicks / impressions) * 100 : null,
+        cpi: installs > 0 ? spend / installs : null,
+        costPerRegistration:
+          registrations > 0 ? spend / registrations : null,
+      };
+    });
   }
 
   async listCreativeTracker(

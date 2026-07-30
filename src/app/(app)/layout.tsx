@@ -1,6 +1,8 @@
 import { AppShell } from "@/components/app-shell";
 import { getApplicationSnapshot } from "@/lib/app-data";
 
+export const dynamic = "force-dynamic";
+
 export default async function ProductLayout({
   children,
 }: Readonly<{
