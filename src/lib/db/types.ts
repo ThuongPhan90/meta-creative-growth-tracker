@@ -55,7 +55,21 @@ export interface TrackerSettings {
   reportingCurrency: string | null;
   syncLookbackDays: number;
   minimumInstallThreshold: number;
+  minimumRegistrationThreshold: number;
   benchmarkMode: "os" | "account_os_event" | "custom";
+  benchmarkWindowDays: number;
+  benchmarkByOs: boolean;
+  benchmarkByFormat: boolean;
+  numberFormat: "vi-VN" | "en-US";
+  compareDefault: "previous_period" | "none";
+  scoringWeights: {
+    cpi: number;
+    cpa: number;
+    hook: number;
+    hold: number;
+  };
+  syncCadence: "deployment" | "manual";
+  alertChannel: "none" | "email";
   installActionTypes: string[];
   registrationActionTypes: string[];
   lastInitialSyncAt: string | null;
@@ -67,10 +81,27 @@ export interface TrackerSettingsUpdate {
   reportingCurrency?: string | null;
   syncLookbackDays?: number;
   minimumInstallThreshold?: number;
+  minimumRegistrationThreshold?: number;
   benchmarkMode?: TrackerSettings["benchmarkMode"];
+  benchmarkWindowDays?: number;
+  benchmarkByOs?: boolean;
+  benchmarkByFormat?: boolean;
+  numberFormat?: TrackerSettings["numberFormat"];
+  compareDefault?: TrackerSettings["compareDefault"];
+  scoringWeights?: TrackerSettings["scoringWeights"];
+  syncCadence?: TrackerSettings["syncCadence"];
+  alertChannel?: TrackerSettings["alertChannel"];
   installActionTypes?: readonly string[];
   registrationActionTypes?: readonly string[];
   lastInitialSyncAt?: string | null;
+}
+
+export interface SettingsAuditRecord {
+  settingsAuditId: DatabaseId;
+  changedAt: string;
+  changedBy: string;
+  beforeState: JsonObject;
+  afterState: JsonObject;
 }
 
 export interface BusinessInput {
@@ -304,6 +335,7 @@ export interface MetaAssetInventory {
 
 export interface CreativeLibraryFilters {
   connectionId: DatabaseId;
+  creativeFamilyId?: DatabaseId;
   search?: string;
   assetType?: "video" | "image" | "unknown";
   limit?: number;
@@ -312,6 +344,8 @@ export interface CreativeLibraryFilters {
 
 export interface CreativeLibraryItem {
   creativeAssetId: DatabaseId;
+  /** Present on V2 projections; older repository projections remain valid. */
+  creativeFamilyId?: DatabaseId;
   assetKey: string;
   assetType: "video" | "image" | "unknown";
   metaVideoId: string | null;
@@ -330,15 +364,30 @@ export interface CreativeLibraryItem {
   activeAdCount: number;
   adAccountCount: number;
   pageCount: number;
+  metaCreativeIds?: string[];
+  adIds?: string[];
+  campaignIds?: string[];
+  adAccountIds?: string[];
+  pageIds?: string[];
   lastUsedAt: string | null;
   lastSeenAt: string;
 }
 
+export interface InsightsFreshnessRecord {
+  lastSyncedAt: string | null;
+  dataThroughAt: string | null;
+  syncStatus: "healthy" | "warning" | "partial" | "error";
+  syncMode: "scheduled" | "manual" | "webhook";
+}
+
 export interface CreativePerformanceFilters {
   connectionId: DatabaseId;
+  creativeFamilyId?: DatabaseId;
   dateFrom: string;
   dateTo: string;
   adAccountId?: DatabaseId;
+  accountMetaId?: string;
+  campaignMetaId?: string;
   assetType?: "video" | "image" | "unknown";
   currency?: string;
   limit?: number;
@@ -347,6 +396,8 @@ export interface CreativePerformanceFilters {
 
 export interface CreativePerformanceItem {
   creativeAssetId: DatabaseId;
+  /** Present on V2 projections; older repository projections remain valid. */
+  creativeFamilyId?: DatabaseId;
   assetKey: string;
   assetType: "video" | "image" | "unknown";
   name: string | null;
@@ -374,6 +425,8 @@ export interface DeliveryPerformanceFilters {
   dateFrom: string;
   dateTo: string;
   adAccountId?: DatabaseId;
+  accountMetaId?: string;
+  campaignMetaId?: string;
   currency?: string;
 }
 
@@ -390,14 +443,48 @@ export interface DeliveryPerformanceItem {
   metricDays: number;
 }
 
+export type DeliveryTrendFilters = DeliveryPerformanceFilters;
+
+/**
+ * One daily point for exactly one currency. Consumers must render separate
+ * series (or request a currency filter) rather than summing monetary values.
+ */
+export interface DeliveryTrendItem {
+  metricDate: string;
+  currency: string;
+  spend: number;
+  impressions: number;
+  linkClicks: number;
+  installs: number;
+  registrations: number;
+  video3sViews: number;
+  video100Views: number;
+  linkCtr: number | null;
+  cpi: number | null;
+  costPerRegistration: number | null;
+}
+
 export interface CampaignInventoryFilters {
   connectionId: DatabaseId;
+  dateFrom?: string;
+  dateTo?: string;
+  currency?: string;
   accountMetaId?: string;
   includeInactiveAccounts?: boolean;
   status?: string;
   search?: string;
   limit?: number;
   offset?: number;
+}
+
+export interface CampaignPerformanceItem {
+  currency: string;
+  spend: number;
+  impressions: number;
+  installs: number;
+  registrations: number;
+  cpi: number | null;
+  costPerRegistration: number | null;
 }
 
 export interface CampaignInventoryItem {
@@ -413,6 +500,7 @@ export interface CampaignInventoryItem {
   adSetCount: number;
   adCount: number;
   creativeAssetCount: number;
+  performance: CampaignPerformanceItem[];
   lastSeenAt: string;
 }
 
@@ -421,6 +509,30 @@ export interface CampaignInventoryPage {
   total: number;
   limit: number;
   offset: number;
+}
+
+export interface CampaignAdItem {
+  adId: DatabaseId;
+  metaAdId: string;
+  name: string;
+  status: string | null;
+  effectiveStatus: string | null;
+  creativeFamilyIds: string[];
+}
+
+export interface CampaignAdSetItem {
+  adSetId: DatabaseId;
+  metaAdSetId: string;
+  name: string;
+  status: string | null;
+  effectiveStatus: string | null;
+  ads: CampaignAdItem[];
+}
+
+export interface CampaignHierarchy {
+  campaignId: DatabaseId;
+  metaCampaignId: string;
+  adSets: CampaignAdSetItem[];
 }
 
 export interface CreativeTrackerFilters {
@@ -503,4 +615,47 @@ export interface SyncRunRecord {
   errorMessage: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CreativeFamilyIdentityRecord {
+  creativeFamilyId: DatabaseId;
+  creativeAssetId: DatabaseId;
+  assetKey: string;
+  assetType: "video" | "image" | "unknown";
+  metaVideoId: string | null;
+  metaImageHash: string | null;
+}
+
+export interface CreativeFamilyEntityLinksRecord
+  extends CreativeFamilyIdentityRecord {
+  metaCreativeIds: string[];
+  adIds: string[];
+  campaignIds: string[];
+  adAccountIds: string[];
+  pageIds: string[];
+}
+
+export interface DataHealthOccurrenceInput {
+  technicalCode: string;
+  severity: "info" | "warning" | "error" | "critical";
+  userMessage: string;
+  impact: string;
+  affectedEntities: {
+    entityType:
+      | "business"
+      | "ad_account"
+      | "campaign"
+      | "ad_set"
+      | "ad"
+      | "meta_creative"
+      | "asset"
+      | "creative_family"
+      | "page"
+      | "post"
+      | "event_mapping"
+      | "connection";
+    entityId: DatabaseId;
+    label?: string | null;
+  }[];
+  occurredAt?: string | null;
 }

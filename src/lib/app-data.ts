@@ -16,13 +16,22 @@ import {
   demoAssets,
   demoCreatives,
   demoDashboard,
+  demoFreshness,
   demoSyncRuns,
 } from "@/lib/demo-data";
 import {
   baselineKey,
   computeOsCpiBaselines,
+  computeScopedCpiBaselines,
+  explainCreativeRating,
   rateCreativeCpi,
+  scopedBaselineKey,
 } from "@/lib/reporting";
+import {
+  createCreativeFamilyIdentity,
+  createFreshness,
+  deriveDataConfidence,
+} from "@/lib/data-contract";
 import {
   evaluateMetaConnectionLifecycle,
   isOperationalAdAccount,
@@ -38,6 +47,7 @@ import type {
   CreativePlatform,
   CreativeRow,
   DashboardViewModel,
+  Freshness,
   MetaAssetRow,
   SetupCheck,
   SyncRunView,
@@ -67,14 +77,24 @@ export type ApplicationSnapshot = {
   creativesTruncated: boolean;
   syncRuns: SyncRunView[];
   setupChecks: SetupCheck[];
+  freshness: Freshness;
   settings: {
     timezone: string;
     lookbackDays: number;
     currency: string | null;
+    compareDefault: "previous_period" | "none";
     minimumInstallThreshold: number;
     installActionTypes: string[];
     registrationActionTypes: string[];
   };
+};
+
+const EMPTY_FRESHNESS: Freshness = {
+  lastSyncedAt: null,
+  dataThroughAt: null,
+  syncStatus: "warning",
+  freshnessSeconds: null,
+  syncMode: "manual",
 };
 
 function localDate(timeZone: string) {
@@ -118,6 +138,22 @@ function platformFromOs(
   if (operatingSystem === "ANDROID") return "Android";
   if (operatingSystem === "IOS") return "iOS";
   return "Unknown";
+}
+
+function canonicalOs(
+  operatingSystem: CreativePerformanceItem["operatingSystem"],
+) {
+  if (operatingSystem === "ANDROID") return "android" as const;
+  if (operatingSystem === "IOS") return "ios" as const;
+  return "unknown" as const;
+}
+
+function canonicalFormat(
+  assetType: CreativePerformanceItem["assetType"],
+) {
+  if (assetType === "video") return "video" as const;
+  if (assetType === "image") return "image" as const;
+  return "unknown" as const;
 }
 
 function safeThumbnail(value: string | null) {
@@ -178,6 +214,8 @@ async function loadPerformance(
   dateFrom: string,
   dateTo: string,
   currency: string | null,
+  accountMetaId?: string,
+  campaignMetaId?: string,
 ) {
   const items: CreativePerformanceItem[] = [];
   for (let offset = 0; offset <= MAX_VIEW_ROWS; offset += PAGE_SIZE) {
@@ -187,6 +225,8 @@ async function loadPerformance(
       dateFrom,
       dateTo,
       currency: currency ?? undefined,
+      accountMetaId: accountMetaId || undefined,
+      campaignMetaId: campaignMetaId || undefined,
       limit,
       offset,
     });
@@ -199,13 +239,348 @@ async function loadPerformance(
   };
 }
 
+export async function getCreativeRowsForReport({
+  snapshot,
+  dateFrom,
+  dateTo,
+  accountMetaId,
+  campaignMetaId,
+  currency,
+}: {
+  snapshot: ApplicationSnapshot;
+  dateFrom: string;
+  dateTo: string;
+  accountMetaId?: string;
+  campaignMetaId?: string;
+  currency?: string | null;
+}): Promise<{
+  creatives: CreativeRow[];
+  truncated: boolean;
+}> {
+  if (snapshot.demoMode) {
+    const filtered = snapshot.creatives.filter((creative) => {
+      if (
+        accountMetaId &&
+        !creative.entityLinks?.adAccountIds.includes(accountMetaId)
+      ) {
+        return false;
+      }
+      if (
+        campaignMetaId &&
+        !creative.entityLinks?.campaignIds.includes(campaignMetaId)
+      ) {
+        return false;
+      }
+      if (currency && creative.performance?.currency !== currency) {
+        return false;
+      }
+      return true;
+    });
+    const isPreviousDemoPeriod = filtered.some(
+      (creative) =>
+        creative.performance?.dateFrom &&
+        dateTo < creative.performance.dateFrom,
+    );
+    return {
+      creatives: isPreviousDemoPeriod
+        ? filtered.map((creative) => {
+            if (!creative.performance) return creative;
+            const spend = creative.performance.spend * 0.92;
+            const installs = Math.round(
+              creative.performance.installs * 0.78,
+            );
+            const registrations = Math.round(
+              creative.performance.registrations * 0.72,
+            );
+            return {
+              ...creative,
+              performance: {
+                ...creative.performance,
+                spend,
+                installs,
+                registrations,
+                cpi: installs > 0 ? spend / installs : null,
+                costPerRegistration:
+                  registrations > 0 ? spend / registrations : null,
+                dateFrom,
+                dateTo,
+              },
+            };
+          })
+        : filtered,
+      truncated: false,
+    };
+  }
+
+  if (
+    !snapshot.authenticated ||
+    !snapshot.connection ||
+    snapshot.connection.status !== "connected"
+  ) {
+    return {
+      creatives: snapshot.creatives,
+      truncated: snapshot.creativesTruncated,
+    };
+  }
+  const repository = await createTrackerRepository();
+  const settings = await repository.getSettings();
+  const effectiveCurrency =
+    currency === undefined ? settings.reportingCurrency : currency;
+  const [libraryResult, performanceResult, delivery] = await Promise.all([
+    loadCreativeLibrary(repository, snapshot.connection.connectionId),
+    loadPerformance(
+      repository,
+      snapshot.connection.connectionId,
+      dateFrom,
+      dateTo,
+      effectiveCurrency,
+      accountMetaId,
+      campaignMetaId,
+    ),
+    repository.getDeliveryPerformance({
+      connectionId: snapshot.connection.connectionId,
+      dateFrom,
+      dateTo,
+      currency: effectiveCurrency ?? undefined,
+      accountMetaId: accountMetaId || undefined,
+      campaignMetaId: campaignMetaId || undefined,
+    }),
+  ]);
+  const coverageRatio =
+    snapshot.freshness.syncStatus === "healthy"
+      ? 1
+      : snapshot.freshness.syncStatus === "partial"
+        ? 0.8
+        : 0;
+  return {
+    creatives: mapCreatives(
+      libraryResult.items,
+      performanceResult.items,
+      delivery,
+      settings,
+      dateFrom,
+      dateTo,
+      snapshot.freshness,
+      coverageRatio,
+      snapshot.freshness.syncStatus === "partial",
+    ),
+    truncated: libraryResult.truncated || performanceResult.truncated,
+  };
+}
+
+/**
+ * Loads one Creative Family by its canonical database ID before any list
+ * limit is applied. The optional repository lets owner-authenticated API
+ * routes reuse the repository already bound to their verified session.
+ */
+export async function getCreativeFamilyRowsForReport({
+  snapshot,
+  creativeFamilyId,
+  dateFrom,
+  dateTo,
+  currency,
+  accountMetaId,
+  campaignMetaId,
+  repository: suppliedRepository,
+}: {
+  snapshot: ApplicationSnapshot;
+  creativeFamilyId: string;
+  dateFrom: string;
+  dateTo: string;
+  currency?: string;
+  accountMetaId?: string;
+  campaignMetaId?: string;
+  repository?: TrackerRepository;
+}): Promise<CreativeRow[] | null> {
+  if (snapshot.demoMode) {
+    const rows = snapshot.creatives.filter(
+      (row) => row.creativeFamilyId === creativeFamilyId,
+    );
+    return rows.length ? rows : null;
+  }
+
+  if (
+    !snapshot.authenticated ||
+    !snapshot.connection ||
+    snapshot.connection.status !== "connected"
+  ) {
+    return null;
+  }
+
+  const repository =
+    suppliedRepository ?? (await createTrackerRepository());
+  const libraryItem = await repository.getCreativeFamilyById(
+    snapshot.connection.connectionId,
+    creativeFamilyId,
+  );
+  if (!libraryItem) return null;
+
+  const settings = await repository.getSettings();
+  const reportingCurrency =
+    currency?.trim() || settings.reportingCurrency || undefined;
+  const [performance, delivery] = await Promise.all([
+    repository.listCreativePerformance({
+      connectionId: snapshot.connection.connectionId,
+      creativeFamilyId,
+      dateFrom,
+      dateTo,
+      currency: reportingCurrency,
+      accountMetaId: accountMetaId?.trim() || undefined,
+      campaignMetaId: campaignMetaId?.trim() || undefined,
+      limit: 200,
+      offset: 0,
+    }),
+    repository.getDeliveryPerformance({
+      connectionId: snapshot.connection.connectionId,
+      dateFrom,
+      dateTo,
+      currency: reportingCurrency,
+      accountMetaId: accountMetaId?.trim() || undefined,
+      campaignMetaId: campaignMetaId?.trim() || undefined,
+    }),
+  ]);
+  const coverageRatio =
+    snapshot.freshness.syncStatus === "healthy"
+      ? 1
+      : snapshot.freshness.syncStatus === "partial"
+        ? 0.8
+        : 0;
+
+  return mapCreatives(
+    [libraryItem],
+    performance,
+    delivery,
+    settings,
+    dateFrom,
+    dateTo,
+    snapshot.freshness,
+    coverageRatio,
+    snapshot.freshness.syncStatus === "partial",
+  );
+}
+
+export async function getOverviewTrendForReport({
+  snapshot,
+  dateFrom,
+  dateTo,
+  accountMetaId,
+  campaignMetaId,
+  currency,
+}: {
+  snapshot: ApplicationSnapshot;
+  dateFrom: string;
+  dateTo: string;
+  accountMetaId?: string;
+  campaignMetaId?: string;
+  currency?: string | null;
+}) {
+  if (snapshot.demoMode) {
+    const start = new Date(`${dateFrom}T00:00:00.000Z`).getTime();
+    const end = new Date(`${dateTo}T00:00:00.000Z`).getTime();
+    const spanDays = Math.max(
+      1,
+      Math.round((end - start) / 86_400_000),
+    );
+    const offsets = [...new Set([0, 0.2, 0.4, 0.6, 0.8, 1].map(
+      (ratio) => Math.round(spanDays * ratio),
+    ))];
+    return offsets.map((offset, index) => {
+      const date = new Date(start + offset * 86_400_000)
+        .toISOString()
+        .slice(0, 10);
+      const cpi = [24_500, 22_800, 21_400, 20_900, 19_600, 18_700][
+        index
+      ];
+      const costPerRegistration = [
+        48_000, 45_500, 43_800, 42_100, 40_600, 39_400,
+      ][index];
+      return {
+        date,
+        currency:
+          currency === undefined
+            ? snapshot.settings.currency ?? "VND"
+            : currency ?? snapshot.settings.currency ?? "VND",
+        spend: 6_000_000 + index * 350_000,
+        installs: 245 + index * 24,
+        registrations: 122 + index * 13,
+        cpi,
+        costPerRegistration,
+      };
+    });
+  }
+
+  if (
+    !snapshot.authenticated ||
+    !snapshot.connection ||
+    snapshot.connection.status !== "connected"
+  ) {
+    return [];
+  }
+
+  const repository = await createTrackerRepository();
+  const settings = await repository.getSettings();
+  const effectiveCurrency =
+    currency === undefined ? settings.reportingCurrency : currency;
+  const points = await repository.getDeliveryTrend({
+    connectionId: snapshot.connection.connectionId,
+    dateFrom,
+    dateTo,
+    currency: effectiveCurrency ?? undefined,
+    accountMetaId: accountMetaId || undefined,
+    campaignMetaId: campaignMetaId || undefined,
+  });
+
+  return points.map((point) => ({
+    date: point.metricDate,
+    currency: point.currency,
+    spend: point.spend,
+    installs: point.installs,
+    registrations: point.registrations,
+    cpi: point.cpi,
+    costPerRegistration: point.costPerRegistration,
+  }));
+}
+
 function performanceSummary(
   item: CreativePerformanceItem,
   baseline: number | null,
+  benchmarkSampleSize: number,
   minimumInstalls: number,
   dateFrom: string,
   dateTo: string,
+  freshness: Freshness,
+  coverageRatio: number,
+  partial: boolean,
 ): CreativePerformanceSummary {
+  const confidence = deriveDataConfidence({
+    coverageRatio,
+    sampleSize: item.installs,
+    minimumSampleSize: minimumInstalls,
+    hasRequiredMapping: true,
+    isStale:
+      freshness.freshnessSeconds !== null &&
+      freshness.freshnessSeconds > 60 * 60 * 48,
+    isPartial: partial,
+  });
+  const ratingExplanation = explainCreativeRating({
+    installs: item.installs,
+    cpi: item.cpi,
+    osBaselineCpi: baseline,
+    minimumInstalls,
+    os: canonicalOs(item.operatingSystem),
+    format: canonicalFormat(item.assetType),
+    currency: item.currency,
+    windowDays: Math.max(
+      1,
+      Math.round(
+        (new Date(`${dateTo}T00:00:00.000Z`).getTime() -
+          new Date(`${dateFrom}T00:00:00.000Z`).getTime()) /
+          86_400_000,
+      ) + 1,
+    ),
+    benchmarkSampleSize,
+    confidence,
+  });
   return {
     currency: item.currency,
     spend: item.spend,
@@ -227,6 +602,9 @@ function performanceSummary(
     }),
     dateFrom,
     dateTo,
+    freshness,
+    confidence,
+    ratingExplanation,
   };
 }
 
@@ -237,8 +615,32 @@ function mapCreatives(
   settings: TrackerSettings,
   dateFrom: string,
   dateTo: string,
+  freshness: Freshness,
+  coverageRatio: number,
+  partial: boolean,
 ) {
   const baselines = computeOsCpiBaselines(deliveryPerformance);
+  const scopedBaselines = computeScopedCpiBaselines(
+    performance.map((item) => ({
+      operatingSystem: item.operatingSystem,
+      format: canonicalFormat(item.assetType),
+      currency: item.currency,
+      spend: item.spend,
+      installs: item.installs,
+    })),
+  );
+  const benchmarkSamples = new Map<string, number>();
+  for (const item of performance) {
+    const key = scopedBaselineKey(
+      item.operatingSystem,
+      canonicalFormat(item.assetType),
+      item.currency,
+    );
+    benchmarkSamples.set(
+      key,
+      (benchmarkSamples.get(key) ?? 0) + Math.max(0, item.installs),
+    );
+  }
   const byAsset = new Map<string, CreativePerformanceItem[]>();
   for (const item of performance) {
     const rows = byAsset.get(item.creativeAssetId) ?? [];
@@ -249,6 +651,12 @@ function mapCreatives(
   return library.flatMap<CreativeRow>((item) => {
     const rows = byAsset.get(item.creativeAssetId) ?? [];
     const common = {
+      creativeFamilyId:
+        item.creativeFamilyId ??
+        createCreativeFamilyIdentity({
+          assetKey: item.assetKey,
+          internalStableIdentifier: item.creativeAssetId,
+        }).creativeFamilyId,
       name: item.name ?? item.assetKey,
       assetKey: item.assetKey,
       aliases: item.creativeCodes,
@@ -271,6 +679,20 @@ function mapCreatives(
       duration: formatDuration(item.durationSeconds),
       ratio: ratio(item.width, item.height),
       pageName: item.pageNames[0] ?? null,
+      entityLinks: {
+        creativeFamilyId:
+          item.creativeFamilyId ??
+          createCreativeFamilyIdentity({
+            assetKey: item.assetKey,
+            internalStableIdentifier: item.creativeAssetId,
+          }).creativeFamilyId,
+        assetId: item.creativeAssetId,
+        metaCreativeIds: item.metaCreativeIds ?? [],
+        adIds: item.adIds ?? [],
+        campaignIds: item.campaignIds ?? [],
+        adAccountIds: item.adAccountIds ?? [],
+        pageIds: item.pageIds ?? [],
+      },
     };
 
     if (rows.length === 0) {
@@ -298,10 +720,17 @@ function mapCreatives(
     }
 
     return rows.map((metric) => {
+      const scopedKey = scopedBaselineKey(
+        metric.operatingSystem,
+        canonicalFormat(metric.assetType),
+        metric.currency,
+      );
       const baseline =
+        scopedBaselines.get(scopedKey) ??
         baselines.get(
           baselineKey(metric.operatingSystem, metric.currency),
-        ) ?? null;
+        ) ??
+        null;
       return {
         id: `${item.creativeAssetId}:${metric.operatingSystem}:${metric.currency}`,
         ...common,
@@ -315,9 +744,13 @@ function mapCreatives(
         performance: performanceSummary(
           metric,
           baseline,
+          benchmarkSamples.get(scopedKey) ?? 0,
           settings.minimumInstallThreshold,
           dateFrom,
           dateTo,
+          freshness,
+          coverageRatio,
+          partial,
         ),
       };
     });
@@ -475,10 +908,67 @@ function mapSyncRun(
       },
     ];
   });
+  const startedAtIso = run.startedAt ?? run.createdAt;
+  const finishedAtIso = run.finishedAt;
+  const durationSeconds =
+    finishedAtIso && startedAtIso
+      ? Math.max(
+          0,
+          Math.round(
+            (new Date(finishedAtIso).getTime() -
+              new Date(startedAtIso).getTime()) /
+              1_000,
+          ),
+        )
+      : null;
+  const kindLabel =
+    run.syncKind === "full"
+      ? "Đồng bộ toàn bộ"
+      : run.syncKind === "assets"
+        ? "Đồng bộ tài sản"
+        : run.syncKind === "insights"
+          ? "Đồng bộ Insights"
+          : "Đồng bộ tăng dần";
+  const triggerLabel =
+    run.triggerSource === "manual"
+      ? "Thủ công"
+      : run.triggerSource === "cron"
+        ? "Lịch chạy"
+        : run.triggerSource === "setup"
+          ? "Thiết lập"
+          : run.triggerSource === "retry"
+            ? "Thử lại"
+            : "Hệ thống";
+  const insightsStats =
+    typeof run.stats.insights === "object" &&
+    run.stats.insights !== null &&
+    !Array.isArray(run.stats.insights)
+      ? run.stats.insights
+      : null;
+  const recordCount =
+    insightsStats &&
+    typeof insightsStats.metrics_upserted === "number" &&
+    Number.isFinite(insightsStats.metrics_upserted)
+      ? insightsStats.metrics_upserted
+      : null;
+  const errorCount =
+    insightsStats &&
+    typeof insightsStats.unmapped_rows === "number" &&
+    Number.isFinite(insightsStats.unmapped_rows)
+      ? insightsStats.unmapped_rows
+      : null;
   return {
     id: run.syncRunId,
-    kind: `${run.syncKind} · ${run.triggerSource}`,
+    kind: `${kindLabel} · ${triggerLabel}`,
     status,
+    startedAtIso,
+    finishedAtIso,
+    durationSeconds:
+      durationSeconds !== null && Number.isFinite(durationSeconds)
+        ? durationSeconds
+        : null,
+    recordCount,
+    errorCount,
     startedAt:
       formatTimestamp(
         run.startedAt ?? run.createdAt,
@@ -488,15 +978,18 @@ function mapSyncRun(
       run.createdAt,
     finishedAt: formatTimestamp(run.finishedAt, reportingTimezone),
     summary:
+      status === "failed"
+        ? "Đồng bộ thất bại; mở chi tiết để xem nguyên nhân kỹ thuật."
+        : warnings.length > 0
+          ? `${warnings.length} cảnh báo cần kiểm tra`
+          : status === "success"
+            ? "Hoàn tất không có cảnh báo"
+            : status === "running"
+              ? "Đang đồng bộ"
+              : "Đồng bộ đã dừng",
+    technicalSummary:
       run.errorMessage ??
-      (warnings.length > 0
-        ? `${warnings.length} cảnh báo · ${warnings
-            .slice(0, 2)
-            .map((item) => item.code)
-            .join(", ")}`
-        : run.currentStage
-          ? `Stage: ${run.currentStage}`
-          : `Status: ${run.status}`),
+      (run.currentStage ? `Stage: ${run.currentStage}` : null),
     warnings,
   };
 }
@@ -547,11 +1040,13 @@ export const getApplicationSnapshot = cache(
           connection: null,
           lastInitialSyncAt: null,
         }),
+        freshness: demoFreshness,
         settings: {
           timezone:
             process.env.REPORTING_TIMEZONE ?? "Asia/Ho_Chi_Minh",
           lookbackDays: Number(process.env.SYNC_LOOKBACK_DAYS ?? 30),
           currency: "VND",
+          compareDefault: "previous_period",
           minimumInstallThreshold: 20,
           installActionTypes: DEFAULT_INSTALL_ACTION_TYPES,
           registrationActionTypes: DEFAULT_REGISTRATION_ACTION_TYPES,
@@ -579,11 +1074,13 @@ export const getApplicationSnapshot = cache(
           connection: null,
           lastInitialSyncAt: null,
         }),
+        freshness: EMPTY_FRESHNESS,
         settings: {
           timezone:
             process.env.REPORTING_TIMEZONE ?? "Asia/Ho_Chi_Minh",
           lookbackDays: Number(process.env.SYNC_LOOKBACK_DAYS ?? 30),
           currency: null,
+          compareDefault: "previous_period",
           minimumInstallThreshold: 20,
           installActionTypes: DEFAULT_INSTALL_ACTION_TYPES,
           registrationActionTypes: DEFAULT_REGISTRATION_ACTION_TYPES,
@@ -612,11 +1109,13 @@ export const getApplicationSnapshot = cache(
           connection: null,
           lastInitialSyncAt: null,
         }),
+        freshness: EMPTY_FRESHNESS,
         settings: {
           timezone:
             process.env.REPORTING_TIMEZONE ?? "Asia/Ho_Chi_Minh",
           lookbackDays: Number(process.env.SYNC_LOOKBACK_DAYS ?? 30),
           currency: null,
+          compareDefault: "previous_period",
           minimumInstallThreshold: 20,
           installActionTypes: DEFAULT_INSTALL_ACTION_TYPES,
           registrationActionTypes: DEFAULT_REGISTRATION_ACTION_TYPES,
@@ -646,11 +1145,13 @@ export const getApplicationSnapshot = cache(
           connection: null,
           lastInitialSyncAt: null,
         }),
+        freshness: EMPTY_FRESHNESS,
         settings: {
           timezone:
             process.env.REPORTING_TIMEZONE ?? "Asia/Ho_Chi_Minh",
           lookbackDays: Number(process.env.SYNC_LOOKBACK_DAYS ?? 30),
           currency: null,
+          compareDefault: "previous_period",
           minimumInstallThreshold: 20,
           installActionTypes: DEFAULT_INSTALL_ACTION_TYPES,
           registrationActionTypes: DEFAULT_REGISTRATION_ACTION_TYPES,
@@ -661,8 +1162,15 @@ export const getApplicationSnapshot = cache(
     const settings = await repository.getSettings();
     const dateTo = localDate(settings.reportingTimezone);
     const dateFrom = addDays(dateTo, -(settings.syncLookbackDays - 1));
-    const [coverage, inventory, libraryResult, performanceResult, delivery, runs] =
-      await Promise.all([
+    const [
+      coverage,
+      inventory,
+      libraryResult,
+      performanceResult,
+      delivery,
+      runs,
+      insightsFreshness,
+    ] = await Promise.all([
         repository.getCoverage(connection.connectionId),
         repository.listMetaAssets(connection.connectionId),
         loadCreativeLibrary(repository, connection.connectionId),
@@ -680,6 +1188,7 @@ export const getApplicationSnapshot = cache(
           currency: settings.reportingCurrency ?? undefined,
         }),
         repository.listRecentSyncRuns(connection.connectionId, 20),
+        repository.getInsightsFreshness(connection.connectionId),
       ]);
     const library = libraryResult.items;
     const performance = performanceResult.items;
@@ -690,9 +1199,8 @@ export const getApplicationSnapshot = cache(
         name: item.name,
         kind: "Business" as const,
         parentName: null,
-        status: item.isActive
-          ? item.verificationStatus ?? "ACCESSIBLE"
-          : "INACTIVE",
+        status: item.isActive ? "ACTIVE" : "INACTIVE",
+        verificationStatus: item.verificationStatus,
         isCurrent: item.isActive,
         lastSeenAt: item.lastSeenAt,
       })),
@@ -712,7 +1220,8 @@ export const getApplicationSnapshot = cache(
         name: item.name,
         kind: "Page" as const,
         parentName: null,
-        status: item.isActive ? item.category ?? "ACCESSIBLE" : "INACTIVE",
+        status: item.isActive ? "ACTIVE" : "INACTIVE",
+        category: item.category,
         isCurrent: item.isActive,
         lastSeenAt: item.lastSeenAt,
       })),
@@ -721,11 +1230,47 @@ export const getApplicationSnapshot = cache(
         name: item.name,
         kind: "App" as const,
         parentName: null,
-        status: item.isActive ? item.platform.toUpperCase() : "INACTIVE",
+        status: item.isActive ? "ACTIVE" : "INACTIVE",
+        platform: item.platform,
         isCurrent: item.isActive,
         lastSeenAt: item.lastSeenAt,
       })),
     ];
+    const freshness = createFreshness({
+      lastSyncedAt: insightsFreshness.lastSyncedAt,
+      dataThroughAt: insightsFreshness.dataThroughAt,
+      syncStatus: insightsFreshness.syncStatus,
+      syncMode: insightsFreshness.syncMode,
+    });
+    const latestInsightsRun = runs.find((run) =>
+      ["insights", "incremental", "full"].includes(run.syncKind),
+    );
+    const latestInsightsStats =
+      latestInsightsRun &&
+      typeof latestInsightsRun.stats.insights === "object" &&
+      latestInsightsRun.stats.insights !== null &&
+      !Array.isArray(latestInsightsRun.stats.insights)
+        ? latestInsightsRun.stats.insights
+        : null;
+    const accountsAttempted =
+      latestInsightsStats &&
+      typeof latestInsightsStats.accounts_attempted === "number"
+        ? latestInsightsStats.accounts_attempted
+        : 0;
+    const accountsSucceeded =
+      latestInsightsStats &&
+      typeof latestInsightsStats.accounts_succeeded === "number"
+        ? latestInsightsStats.accounts_succeeded
+        : 0;
+    const coverageRatio =
+      accountsAttempted > 0
+        ? Math.min(1, Math.max(0, accountsSucceeded / accountsAttempted))
+        : insightsFreshness.syncStatus === "healthy"
+          ? 1
+          : 0;
+    const partial =
+      insightsFreshness.syncStatus === "partial" ||
+      latestInsightsRun?.status === "partial";
     const creatives = mapCreatives(
       library,
       performance,
@@ -733,6 +1278,9 @@ export const getApplicationSnapshot = cache(
       settings,
       dateFrom,
       dateTo,
+      freshness,
+      coverageRatio,
+      partial,
     );
 
     const eventStatus = (
@@ -747,7 +1295,8 @@ export const getApplicationSnapshot = cache(
         ? ("ready" as const)
         : ("warning" as const);
     };
-    const lastSyncAt = coverage?.lastSyncAt ?? null;
+    const lastSyncAt =
+      insightsFreshness.lastSyncedAt ?? coverage?.lastSyncAt ?? null;
     const hasDelivery = delivery.some(
       (item) => item.impressions > 0 || item.spend > 0,
     );
@@ -888,10 +1437,12 @@ export const getApplicationSnapshot = cache(
         lastInitialSyncAt: settings.lastInitialSyncAt ?? lastSyncAt,
         reportingTimezone: settings.reportingTimezone,
       }),
+      freshness,
       settings: {
         timezone: settings.reportingTimezone,
         lookbackDays: settings.syncLookbackDays,
         currency: settings.reportingCurrency,
+        compareDefault: settings.compareDefault,
         minimumInstallThreshold: settings.minimumInstallThreshold,
         installActionTypes: settings.installActionTypes,
         registrationActionTypes: settings.registrationActionTypes,

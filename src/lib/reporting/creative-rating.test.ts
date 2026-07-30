@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   baselineKey,
+  computeScopedCpiBaselines,
   computeOsCpiBaselines,
+  explainCreativeRating,
   rateCreativeCpi,
+  scopedBaselineKey,
 } from "./creative-rating";
 
 describe("rateCreativeCpi", () => {
@@ -30,5 +33,67 @@ describe("computeOsCpiBaselines", () => {
     expect(result.get(baselineKey("ANDROID", "USD"))).toBe(10);
     expect(result.get(baselineKey("IOS", "USD"))).toBe(20);
     expect(result.get(baselineKey("ANDROID", "VND"))).toBe(50_000);
+  });
+});
+
+describe("V2 rating explanation", () => {
+  it("returns benchmark scope, thresholds, action, reasons and confidence", () => {
+    const result = explainCreativeRating({
+      installs: 30,
+      cpi: 8,
+      osBaselineCpi: 10,
+      os: "android",
+      format: "video",
+      currency: "vnd",
+      windowDays: 30,
+      benchmarkSampleSize: 42,
+      additionalReasons: ["Hold thấp hơn nhóm cùng format 12%"],
+    });
+
+    expect(result).toMatchObject({
+      rating: "TỐT",
+      performanceStatus: "good",
+      recommendedAction: "scale",
+      deltaPercent: -20,
+      benchmarkScope: {
+        os: "android",
+        format: "video",
+        currency: "VND",
+        windowDays: 30,
+        sampleSize: 42,
+      },
+      thresholds: {
+        minimumSampleSize: 20,
+        goodMaxRatio: 0.8,
+        withinRangeMaxRatio: 1.2,
+      },
+      confidence: {
+        dataStatus: "ready",
+        confidence: "high",
+      },
+    });
+    expect(result.reasons).toContain("Hold thấp hơn nhóm cùng format 12%");
+  });
+
+  it("keeps format cohorts separate", () => {
+    const result = computeScopedCpiBaselines([
+      {
+        operatingSystem: "ANDROID",
+        format: "video",
+        currency: "VND",
+        spend: 100,
+        installs: 10,
+      },
+      {
+        operatingSystem: "ANDROID",
+        format: "image",
+        currency: "VND",
+        spend: 200,
+        installs: 10,
+      },
+    ]);
+
+    expect(result.get(scopedBaselineKey("ANDROID", "video", "VND"))).toBe(10);
+    expect(result.get(scopedBaselineKey("ANDROID", "image", "VND"))).toBe(20);
   });
 });

@@ -19,6 +19,11 @@ const rawActionTypesSchema = z
 
 const settingsSchema = z.object({
   timezone: z.enum(["Asia/Ho_Chi_Minh", "UTC", "Asia/Singapore"]),
+  reportingCurrency: z
+    .union([z.string().regex(/^[A-Z]{3}$/), z.null()])
+    .optional(),
+  numberFormat: z.enum(["vi-VN", "en-US"]).optional(),
+  compareDefault: z.enum(["previous_period", "none"]).optional(),
   lookbackDays: z.union([
     z.literal(7),
     z.literal(14),
@@ -26,6 +31,33 @@ const settingsSchema = z.object({
     z.literal(90),
   ]),
   minimumInstallThreshold: z.number().int().min(1).max(10_000),
+  minimumRegistrationThreshold: z
+    .number()
+    .int()
+    .min(1)
+    .max(100_000)
+    .optional(),
+  benchmarkMode: z
+    .enum(["os", "account_os_event", "custom"])
+    .optional(),
+  benchmarkWindowDays: z.number().int().min(7).max(180).optional(),
+  benchmarkByOs: z.boolean().optional(),
+  benchmarkByFormat: z.boolean().optional(),
+  scoringWeights: z
+    .object({
+      cpi: z.number().int().min(0).max(100),
+      cpa: z.number().int().min(0).max(100),
+      hook: z.number().int().min(0).max(100),
+      hold: z.number().int().min(0).max(100),
+    })
+    .refine(
+      (weights) =>
+        weights.cpi + weights.cpa + weights.hook + weights.hold === 100,
+      "Tổng trọng số phải bằng 100.",
+    )
+    .optional(),
+  syncCadence: z.enum(["deployment", "manual"]).optional(),
+  alertChannel: z.enum(["none", "email"]).optional(),
   installActionTypes: rawActionTypesSchema,
   registrationActionTypes: rawActionTypesSchema,
 });
@@ -57,8 +89,23 @@ export async function POST(request: NextRequest) {
     assertOwnerSessionBinding(session, connection?.connectionId);
     const settings = await repository.updateSettings({
       reportingTimezone: input.timezone,
+      reportingCurrency:
+        "reportingCurrency" in input
+          ? input.reportingCurrency
+          : undefined,
+      numberFormat: input.numberFormat,
+      compareDefault: input.compareDefault,
       syncLookbackDays: input.lookbackDays,
       minimumInstallThreshold: input.minimumInstallThreshold,
+      minimumRegistrationThreshold:
+        input.minimumRegistrationThreshold,
+      benchmarkMode: input.benchmarkMode,
+      benchmarkWindowDays: input.benchmarkWindowDays,
+      benchmarkByOs: input.benchmarkByOs,
+      benchmarkByFormat: input.benchmarkByFormat,
+      scoringWeights: input.scoringWeights,
+      syncCadence: input.syncCadence,
+      alertChannel: input.alertChannel,
       installActionTypes: actionTypeMapping.installActionTypes,
       registrationActionTypes:
         actionTypeMapping.registrationActionTypes,
@@ -69,8 +116,20 @@ export async function POST(request: NextRequest) {
       message: "Đã lưu cài đặt hiển thị.",
       settings: {
         timezone: settings.reportingTimezone,
+        reportingCurrency: settings.reportingCurrency,
+        numberFormat: settings.numberFormat,
+        compareDefault: settings.compareDefault,
         lookbackDays: settings.syncLookbackDays,
         minimumInstallThreshold: settings.minimumInstallThreshold,
+        minimumRegistrationThreshold:
+          settings.minimumRegistrationThreshold,
+        benchmarkMode: settings.benchmarkMode,
+        benchmarkWindowDays: settings.benchmarkWindowDays,
+        benchmarkByOs: settings.benchmarkByOs,
+        benchmarkByFormat: settings.benchmarkByFormat,
+        scoringWeights: settings.scoringWeights,
+        syncCadence: settings.syncCadence,
+        alertChannel: settings.alertChannel,
         installActionTypes: settings.installActionTypes,
         registrationActionTypes: settings.registrationActionTypes,
       },
