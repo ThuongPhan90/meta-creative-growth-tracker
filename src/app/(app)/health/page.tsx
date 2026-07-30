@@ -1,14 +1,14 @@
-import { HealthView } from "@/components/health-view";
-import { getApplicationSnapshot } from "@/lib/app-data";
+import { redirect } from "next/navigation";
+import { buildCompatibilityHref } from "@/lib/navigation";
 
-export const dynamic = "force-dynamic";
-
-export default async function HealthPage() {
-  const snapshot = await getApplicationSnapshot();
-  return (
-    <HealthView
-      checklist={snapshot.dashboard.checklist}
-      syncRuns={snapshot.syncRuns}
-    />
+export default async function HealthPage({
+  searchParams,
+}: {
+  searchParams: Promise<
+    Record<string, string | string[] | undefined>
+  >;
+}) {
+  redirect(
+    buildCompatibilityHref("/data-health", await searchParams),
   );
 }

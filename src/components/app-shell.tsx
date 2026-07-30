@@ -3,7 +3,6 @@
 import {
   Activity,
   BarChart3,
-  Building2,
   ExternalLink,
   Images,
   LayoutDashboard,
@@ -16,51 +15,26 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useState } from "react";
+import {
+  buildNavigationHref,
+  isNavigationItemActive,
+  PRIMARY_NAVIGATION,
+} from "@/lib/navigation";
 
-const navItems = [
-  {
-    href: "/dashboard",
-    label: "Tổng quan",
-    icon: LayoutDashboard,
-  },
-  {
-    href: "/connect",
-    label: "Kết nối Meta",
-    icon: Link2,
-  },
-  {
-    href: "/assets",
-    label: "Tài sản Meta",
-    icon: Building2,
-  },
-  {
-    href: "/campaigns",
-    label: "Campaigns & Ads",
-    icon: ListTree,
-  },
-  {
-    href: "/tracker",
-    label: "Creative Tracker",
-    icon: BarChart3,
-  },
-  {
-    href: "/creatives",
-    label: "Thư viện Creative",
-    icon: Images,
-  },
-  {
-    href: "/health",
-    label: "Sức khỏe dữ liệu",
-    icon: Activity,
-  },
-  {
-    href: "/settings",
-    label: "Cài đặt",
-    icon: Settings,
-  },
-];
+const navIcons = {
+  overview: LayoutDashboard,
+  creatives: BarChart3,
+  library: Images,
+  campaigns: ListTree,
+  sources: Link2,
+  "data-health": Activity,
+  settings: Settings,
+} satisfies Record<
+  (typeof PRIMARY_NAVIGATION)[number]["id"],
+  typeof LayoutDashboard
+>;
 
 export function AppShell({
   children,
@@ -78,7 +52,9 @@ export function AppShell({
   reportingTimezone?: string;
 }) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const overviewHref = buildNavigationHref("/overview", searchParams);
 
   return (
     <div className="app-shell">
@@ -105,28 +81,27 @@ export function AppShell({
         className={`sidebar${mobileOpen ? " sidebar--open" : ""}`}
         aria-label="Điều hướng chính"
       >
-        <Link className="brand" href="/dashboard" aria-label="Meta Growth Tracker">
+        <Link className="brand" href={overviewHref} aria-label="Meta Growth Tracker">
           <span className="brand__mark" aria-hidden="true">
             <TrendingUp size={22} strokeWidth={2.3} />
           </span>
           <span>
             <strong>Meta Growth Tracker</strong>
-            <small>Personal · Read-only</small>
+            <small>Cá nhân · Chỉ đọc</small>
           </span>
         </Link>
 
         <nav className="sidebar__nav">
-          {navItems.map((item) => {
-            const isActive =
-              pathname === item.href ||
-              (item.href !== "/dashboard" && pathname.startsWith(item.href));
-            const Icon = item.icon;
+          {PRIMARY_NAVIGATION.map((item) => {
+            const isActive = isNavigationItemActive(pathname, item);
+            const Icon = navIcons[item.id];
+            const href = buildNavigationHref(item.href, searchParams);
 
             return (
               <Link
-                key={item.href}
+                key={item.id}
                 className={`nav-link${isActive ? " nav-link--active" : ""}`}
-                href={item.href}
+                href={href}
                 aria-current={isActive ? "page" : undefined}
                 onClick={() => setMobileOpen(false)}
               >
@@ -145,8 +120,8 @@ export function AppShell({
             <ShieldCheck size={18} />
           </span>
           <div>
-            <strong>Meta read-only</strong>
-            <p>Repo không tạo, sửa, pause hoặc thay đổi ngân sách quảng cáo.</p>
+            <strong>Chế độ chỉ đọc</strong>
+            <p>Không tạo, sửa, tạm dừng hoặc thay đổi ngân sách quảng cáo.</p>
             <Link href="/setup">
               Mở Setup Wizard
               <ExternalLink aria-hidden="true" size={14} />
@@ -159,12 +134,12 @@ export function AppShell({
         <header className="topbar">
           <div className="topbar__context">
             <span className="topbar__product">
-              Personal command center
+              Trung tâm hiệu quả Creative
               {demoMode ? <em>Demo data</em> : null}
             </span>
             <span className="topbar__meta">
-              {reportingCurrency ?? "Per-account currency"} reporting ·{" "}
-              {reportingTimezone}
+              {reportingCurrency ?? "Tiền tệ theo tài khoản"} ·{" "}
+              Múi giờ {reportingTimezone}
             </span>
           </div>
 
@@ -178,7 +153,13 @@ export function AppShell({
               />
               <span>
                 <strong>Chỉ đọc</strong>
-                <small>{isConnected ? "Meta đã kết nối" : "Chưa kết nối"}</small>
+                <small>
+                  {demoMode
+                    ? "Dữ liệu mẫu"
+                    : isConnected
+                      ? "Meta đã kết nối"
+                      : "Chưa kết nối"}
+                </small>
               </span>
             </div>
             <div className="profile">
@@ -187,7 +168,7 @@ export function AppShell({
               </span>
               <span>
                 <strong>{ownerName}</strong>
-                <small>Owner</small>
+                <small>Chủ sở hữu</small>
               </span>
             </div>
           </div>

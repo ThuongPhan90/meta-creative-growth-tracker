@@ -1,4 +1,4 @@
-import { CreativePerformanceV2 } from "@/components/creative-performance-v2";
+import { CreativeLibraryV2 } from "@/components/creative-library-v2";
 import {
   getApplicationSnapshot,
   getCreativeRowsForReport,
@@ -8,7 +8,7 @@ import { formatFreshnessLabel } from "@/lib/presentation/formatters";
 
 export const dynamic = "force-dynamic";
 
-export default async function CreativesPage({
+export default async function LibraryPage({
   searchParams,
 }: {
   searchParams: Promise<
@@ -41,10 +41,6 @@ export default async function CreativesPage({
   const accounts = snapshot.assets
     .filter((asset) => asset.kind === "Ad Account")
     .map((asset) => ({ id: asset.id, name: asset.name }));
-  const connected =
-    snapshot.demoMode ||
-    (snapshot.authenticated &&
-      snapshot.connection?.status === "connected");
   const report = await getCreativeRowsForReport({
     snapshot,
     dateFrom: context.dateFrom,
@@ -57,9 +53,14 @@ export default async function CreativesPage({
   });
 
   return (
-    <CreativePerformanceV2
+    <CreativeLibraryV2
       creatives={report.creatives}
-      connected={connected}
+      truncated={report.truncated}
+      connected={
+        snapshot.demoMode ||
+        (snapshot.authenticated &&
+          snapshot.connection?.status === "connected")
+      }
       query={query}
       dateFrom={context.dateFrom}
       dateTo={context.dateTo}

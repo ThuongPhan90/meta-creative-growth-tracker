@@ -8,13 +8,23 @@ import {
   KeyRound,
   Link2,
   LogOut,
+  MoreHorizontal,
   ShieldCheck,
+  X,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import {
+  type KeyboardEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { PageHeader } from "@/components/ui/page-header";
 import type { MetaConnectionLifecycle } from "@/lib/meta";
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 function formatExpiry(value: string | null) {
   if (!value) return null;
@@ -35,6 +45,7 @@ export function ConnectionView({
   dataAccessExpiresAt,
   lifecycle,
   initialMessage,
+  embedded = false,
 }: {
   configured: boolean;
   connected: boolean;
@@ -43,14 +54,60 @@ export function ConnectionView({
   dataAccessExpiresAt: string | null;
   lifecycle: MetaConnectionLifecycle | null;
   initialMessage?: string | null;
+  embedded?: boolean;
 }) {
   const router = useRouter();
   const [disconnecting, setDisconnecting] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [message, setMessage] = useState<string | null>(
     initialMessage ?? null,
   );
+  const overflowButtonRef = useRef<HTMLButtonElement>(null);
+  const confirmRef = useRef<HTMLElement>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement>(null);
   const expiryLabel = formatExpiry(expiresAt);
   const dataAccessExpiryLabel = formatExpiry(dataAccessExpiresAt);
+
+  useEffect(() => {
+    if (!confirmOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const restoreTarget = overflowButtonRef.current;
+    document.body.style.overflow = "hidden";
+    cancelButtonRef.current?.focus();
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      restoreTarget?.focus();
+    };
+  }, [confirmOpen]);
+
+  function closeConfirm() {
+    if (disconnecting) return;
+    setConfirmOpen(false);
+  }
+
+  function trapConfirmFocus(event: KeyboardEvent<HTMLElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeConfirm();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const focusable = Array.from(
+      confirmRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [],
+    ).filter((element) => !element.hidden);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 
   async function disconnect() {
     setDisconnecting(true);
@@ -63,6 +120,8 @@ export function ConnectionView({
         const data = (await response.json()) as { error?: string };
         throw new Error(data.error ?? "Không thể ngắt kết nối.");
       }
+      setConfirmOpen(false);
+      setMenuOpen(false);
       router.refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Có lỗi xảy ra.");
@@ -73,10 +132,12 @@ export function ConnectionView({
 
   return (
     <div className="connection-page">
-      <PageHeader
-        title="Kết nối Meta"
-        description="Xác thực chủ sở hữu và cấp quyền đọc dữ liệu Marketing API."
-      />
+      {!embedded ? (
+        <PageHeader
+          title="Kết nối Meta"
+          description="Xác thực chủ sở hữu và cấp quyền đọc dữ liệu Marketing API."
+        />
+      ) : null}
 
       {!configured ? (
         <section className="connection-state connection-state--warning">
@@ -115,15 +176,34 @@ export function ConnectionView({
                   : ""}
             </p>
           </div>
-          <button
-            className="button button--danger"
-            type="button"
-            disabled={disconnecting}
-            onClick={disconnect}
-          >
-            <LogOut aria-hidden="true" size={16} />
-            {disconnecting ? "Đang ngắt" : "Ngắt kết nối"}
-          </button>
+          <div className="connection-overflow">
+            <button
+              ref={overflowButtonRef}
+              className="v2-icon-button"
+              type="button"
+              aria-label="Tùy chọn kết nối"
+              aria-expanded={menuOpen}
+              aria-haspopup="menu"
+              onClick={() => setMenuOpen((current) => !current)}
+            >
+              <MoreHorizontal aria-hidden="true" size={19} />
+            </button>
+            {menuOpen ? (
+              <div className="connection-overflow__menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setConfirmOpen(true);
+                    setMenuOpen(false);
+                  }}
+                >
+                  <LogOut aria-hidden="true" size={16} />
+                  Ngắt kết nối
+                </button>
+              </div>
+            ) : null}
+          </div>
         </section>
       ) : (
         <section className="connect-hero">
@@ -166,6 +246,63 @@ export function ConnectionView({
         <p className="inline-notice" role="alert">
           {message}
         </p>
+      ) : null}
+
+      {confirmOpen ? (
+        <div className="disconnect-confirm-layer">
+          <button
+            type="button"
+            className="disconnect-confirm-layer__backdrop"
+            aria-label="Hủy ngắt kết nối"
+            onClick={closeConfirm}
+          />
+          <section
+            ref={confirmRef}
+            className="disconnect-confirm"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="disconnect-confirm-title"
+            aria-describedby="disconnect-confirm-description"
+            onKeyDown={trapConfirmFocus}
+          >
+            <button
+              className="v2-icon-button disconnect-confirm__close"
+              type="button"
+              aria-label="Đóng xác nhận"
+              onClick={closeConfirm}
+            >
+              <X aria-hidden="true" size={19} />
+            </button>
+            <span className="disconnect-confirm__icon" aria-hidden="true">
+              <LogOut size={21} />
+            </span>
+            <h2 id="disconnect-confirm-title">Ngắt kết nối Meta?</h2>
+            <p id="disconnect-confirm-description">
+              Token và dữ liệu kết nối cục bộ sẽ bị xóa. Thao tác này không thay
+              đổi Campaign, Ads hoặc ngân sách trong Meta.
+            </p>
+            <div>
+              <button
+                ref={cancelButtonRef}
+                className="button button--secondary"
+                type="button"
+                disabled={disconnecting}
+                onClick={closeConfirm}
+              >
+                Giữ kết nối
+              </button>
+              <button
+                className="button button--danger"
+                type="button"
+                disabled={disconnecting}
+                onClick={disconnect}
+              >
+                <LogOut aria-hidden="true" size={16} />
+                {disconnecting ? "Đang ngắt…" : "Xác nhận ngắt"}
+              </button>
+            </div>
+          </section>
+        </div>
       ) : null}
 
       <section className="permission-grid" aria-label="Quyền và phạm vi">

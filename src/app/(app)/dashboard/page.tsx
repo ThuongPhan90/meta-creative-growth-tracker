@@ -1,9 +1,14 @@
-import { DashboardOverview } from "@/components/dashboard-overview";
-import { getApplicationSnapshot } from "@/lib/app-data";
+import { redirect } from "next/navigation";
+import { buildCompatibilityHref } from "@/lib/navigation";
 
-export const dynamic = "force-dynamic";
-
-export default async function DashboardPage() {
-  const snapshot = await getApplicationSnapshot();
-  return <DashboardOverview data={snapshot.dashboard} />;
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<
+    Record<string, string | string[] | undefined>
+  >;
+}) {
+  redirect(
+    buildCompatibilityHref("/overview", await searchParams),
+  );
 }
