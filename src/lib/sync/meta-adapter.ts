@@ -2698,10 +2698,15 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     dateFrom: string,
     dateTo: string,
     warnings: SyncWarning[],
-  ): Promise<{ rows: MetaInsightRow[]; modes: string[] }> {
+  ): Promise<{
+    rows: MetaInsightRow[];
+    modes: string[];
+    complete: boolean;
+  }> {
     const path = `${canonicalAdAccountId(account.graph)}/insights`;
     const rows: MetaInsightRow[] = [];
     const modes: string[] = [];
+    let complete = true;
 
     for (const assetBreakdown of ASSET_BREAKDOWN_FIELDS) {
       for (
@@ -2759,12 +2764,13 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
             resource: canonicalAdAccountId(account.graph),
             message: `${assetBreakdown} was unavailable; multi-asset delivery remains safely unallocated.`,
           });
+          complete = false;
           break;
         }
       }
     }
 
-    return { rows, modes };
+    return { rows, modes, complete };
   }
 
   private async readPeriodReachSnapshots(
@@ -2772,9 +2778,16 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     account: StoredAccount,
     dateFrom: string,
     dateTo: string,
+    deliveryEvidence: {
+      primaryRowsFetched: number;
+      assetRowsFetched: number;
+      assetReadComplete: boolean;
+      campaignMetaIds: ReadonlySet<string>;
+    },
   ): Promise<{
     snapshots: PeriodReachSnapshotInput[];
     rowsFetched: number;
+    omittedZeroReachRows: number;
   }> {
     const path = `${canonicalAdAccountId(account.graph)}/insights`;
     const timeRange = JSON.stringify({
@@ -2815,14 +2828,33 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     const exactPeriod = (row: MetaInsightRow) =>
       optionalString(row.date_start) === dateFrom &&
       optionalString(row.date_stop) === dateTo;
-    const parsedReach = (row: MetaInsightRow | undefined) => {
+    let omittedZeroReachRows = 0;
+    const parsedReach = (
+      row: MetaInsightRow | undefined,
+      options: {
+        allowMissingRow?: boolean;
+        allowOmittedZero?: boolean;
+      } = {},
+    ) => {
       if (!row) {
-        return 0;
+        if (options.allowMissingRow ?? true) {
+          return 0;
+        }
+        throw new TypeError(
+          "Meta omitted an exact-period Reach row for a scope with delivery.",
+        );
       }
       if (row.reach === undefined || row.reach === null) {
+        if (options.allowOmittedZero) {
+          omittedZeroReachRows += 1;
+          return 0;
+        }
         throw new TypeError(
           "Meta omitted Reach from a returned period row.",
         );
+      }
+      if (typeof row.reach === "string" && !row.reach.trim()) {
+        throw new TypeError("Meta returned an invalid period Reach value.");
       }
       const value = nonNegativeNumber(row.reach);
       if (value === null || !Number.isSafeInteger(value)) {
@@ -2850,6 +2882,16 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     const accountAttributionWindow =
       optionalString(accountRow?.attribution_setting) ??
       "account_default";
+    // Meta can return an exact-period account metadata row while omitting every
+    // delivery metric for a zero-delivery window. Normalize only when the
+    // primary, exact-asset, and campaign-period reads independently agree that
+    // the account had no delivery. Any contradictory evidence keeps the
+    // existing fail-closed behavior.
+    const accountPeriodHasNoDelivery =
+      deliveryEvidence.primaryRowsFetched === 0 &&
+      deliveryEvidence.assetRowsFetched === 0 &&
+      deliveryEvidence.assetReadComplete &&
+      campaignRows.length === 0;
     const campaignRowsById = new Map<string, MetaInsightRow>();
     // The map guard applies the same one-row-per-scope invariant to campaigns.
     for (const row of campaignRows) {
@@ -2877,7 +2919,10 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         attributionWindow: accountAttributionWindow,
         actionReportTime: "mixed",
         syncVersion: context.syncRunId,
-        reach: parsedReach(accountRow),
+        reach: parsedReach(accountRow, {
+          allowMissingRow: accountPeriodHasNoDelivery,
+          allowOmittedZero: accountPeriodHasNoDelivery,
+        }),
       },
     ];
     for (const [metaCampaignId, campaignId] of account.campaigns) {
@@ -2893,12 +2938,16 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
           accountAttributionWindow,
         actionReportTime: "mixed",
         syncVersion: context.syncRunId,
-        reach: parsedReach(row),
+        reach: parsedReach(row, {
+          allowMissingRow:
+            !deliveryEvidence.campaignMetaIds.has(metaCampaignId),
+        }),
       });
     }
     return {
       snapshots,
       rowsFetched: accountRows.length + campaignRows.length,
+      omittedZeroReachRows,
     };
   }
 
@@ -2949,6 +2998,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     let accountsSkippedForMapping = 0;
     let accountsSkippedForPeriodReach = 0;
     let periodReachRowsFetched = 0;
+    let periodReachOmittedZeroRows = 0;
     const video3sSourceRows: Record<ThreeSecondVideoMetricSource, number> = {
       "actions.video_view": 0,
       "legacy.video_3_sec_watched_actions": 0,
@@ -3044,13 +3094,50 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       let periodReachResult: {
         snapshots: PeriodReachSnapshotInput[];
         rowsFetched: number;
+        omittedZeroReachRows: number;
       };
       try {
+        const campaignMetaIdByInternalId = new Map<DatabaseId, string>();
+        for (const [metaCampaignId, internalId] of account.campaigns) {
+          campaignMetaIdByInternalId.set(internalId, metaCampaignId);
+        }
+        const campaignMetaIds = new Set<string>();
+        for (const row of [...result.rows, ...assetResult.rows]) {
+          const rawMetaCampaignId = optionalString(row.campaign_id);
+          const metaAdId = optionalString(row.ad_id);
+          const storedAd = metaAdId ? account.ads.get(metaAdId) : undefined;
+          if (storedAd) {
+            const storedMetaCampaignId = campaignMetaIdByInternalId.get(
+              storedAd.campaignInternalId,
+            );
+            if (
+              !storedMetaCampaignId ||
+              (rawMetaCampaignId &&
+                rawMetaCampaignId !== storedMetaCampaignId)
+            ) {
+              throw new TypeError(
+                "Meta insight campaign did not match the stored ad campaign.",
+              );
+            }
+            campaignMetaIds.add(storedMetaCampaignId);
+          } else if (
+            rawMetaCampaignId &&
+            account.campaigns.has(rawMetaCampaignId)
+          ) {
+            campaignMetaIds.add(rawMetaCampaignId);
+          }
+        }
         periodReachResult = await this.readPeriodReachSnapshots(
           context,
           account,
           dateFrom,
           dateTo,
+          {
+            primaryRowsFetched: result.rows.length,
+            assetRowsFetched: assetResult.rows.length,
+            assetReadComplete: assetResult.complete,
+            campaignMetaIds,
+          },
         );
       } catch (error) {
         throwIfAborted(context.signal);
@@ -3358,6 +3445,8 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         metrics: [...uniqueDailyMetrics.values()],
       });
       periodReachSnapshots.push(...periodReachResult.snapshots);
+      periodReachOmittedZeroRows +=
+        periodReachResult.omittedZeroReachRows;
       accountsSucceeded += 1;
       coveredDateTos.push(dateTo);
       await markInsightAccountComplete(account, dateFrom, dateTo);
@@ -3448,6 +3537,9 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         rows_fetched: rowsFetched,
         asset_breakdown_rows_fetched: assetBreakdownRowsFetched,
         period_reach_rows_fetched: periodReachRowsFetched,
+        period_reach_omitted_zero_rows_published: completeSnapshot
+          ? periodReachOmittedZeroRows
+          : 0,
         period_reach_snapshots_published: completeSnapshot
           ? periodReachSnapshots.length
           : 0,
