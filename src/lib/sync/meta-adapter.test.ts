@@ -401,6 +401,101 @@ function context(repository: TrackerRepository): MetaSyncStageContext {
   };
 }
 
+function singleAccountSyncClient(input: {
+  dailyRows: readonly MetaInsightRow[];
+  accountPeriodRows?: readonly MetaInsightRow[];
+  campaignPeriodRows?: readonly MetaInsightRow[];
+  insightQueries?: MetaGraphQuery[];
+}): MetaGraphReadClient {
+  const inventory: Record<string, unknown[]> = {
+    "me/businesses": [],
+    "me/adaccounts": [
+      {
+        id: "act_100",
+        account_id: "100",
+        name: "Account",
+        currency: "USD",
+        timezone_name: "Asia/Ho_Chi_Minh",
+      },
+    ],
+    "me/accounts": [],
+    "act_100/campaigns": [
+      { id: "campaign-1", name: "Campaign" },
+    ],
+    "act_100/adsets": [
+      {
+        id: "adset-1",
+        campaign_id: "campaign-1",
+        name: "Ad set",
+      },
+    ],
+    "act_100/ads": [
+      {
+        id: "ad-1",
+        campaign_id: "campaign-1",
+        adset_id: "adset-1",
+        name: "Ad",
+        creative: { id: "creative-1" },
+      },
+    ],
+    "act_100/adcreatives": [
+      {
+        id: "creative-1",
+        name: "Creative",
+        image_hash: "image-1",
+      },
+    ],
+  };
+
+  return {
+    request: async <T>(path: string) => {
+      throw new Error(`Unexpected request path: ${path}`) as never as T;
+    },
+    getAll: async <T>(path: string, query: MetaGraphQuery = {}) => {
+      if (path === "act_100/insights") {
+        input.insightQueries?.push(query);
+        if (query.level === "account") {
+          return (input.accountPeriodRows ?? [
+            {
+              date_start: "2026-07-20",
+              date_stop: "2026-07-21",
+              account_id: "100",
+              attribution_setting: "7d_click_1d_view",
+              reach: "80",
+            },
+          ]) as T[];
+        }
+        if (query.level === "campaign") {
+          return (input.campaignPeriodRows ?? [
+            {
+              date_start: "2026-07-20",
+              date_stop: "2026-07-21",
+              account_id: "100",
+              campaign_id: "campaign-1",
+              attribution_setting: "7d_click_1d_view",
+              reach: "70",
+            },
+          ]) as T[];
+        }
+        const breakdowns = Array.isArray(query.breakdowns)
+          ? query.breakdowns
+          : [];
+        if (
+          breakdowns.includes("image_asset") ||
+          breakdowns.includes("video_asset")
+        ) {
+          return [] as T[];
+        }
+        return [...input.dailyRows] as T[];
+      }
+      if (!(path in inventory)) {
+        throw new Error(`Unexpected collection path: ${path}`);
+      }
+      return inventory[path] as T[];
+    },
+  };
+}
+
 describe("extractPhysicalCreativeAssets", () => {
   it("finds static, object-story, carousel, and dynamic physical identities", () => {
     const assets = extractPhysicalCreativeAssets({
@@ -905,6 +1000,150 @@ describe("MetaMarketingApiSyncAdapter", () => {
       metrics_upserted: 2,
       result_mapping_version: DEFAULT_RESULT_MAPPING_VERSION,
     });
+  });
+
+  it("preserves the previous snapshot when account-attribution rows conflict at one logical grain", async () => {
+    const insightQueries: MetaGraphQuery[] = [];
+    const dailyRow: MetaInsightRow = {
+      date_start: "2026-07-20",
+      date_stop: "2026-07-20",
+      account_id: "100",
+      account_currency: "USD",
+      campaign_id: "campaign-1",
+      adset_id: "adset-1",
+      ad_id: "ad-1",
+      spend: "10",
+      impressions: "100",
+      attribution_setting: "7d_click_1d_view",
+    };
+    const client = singleAccountSyncClient({
+      dailyRows: [
+        dailyRow,
+        {
+          ...dailyRow,
+          attribution_setting: "1d_click",
+        },
+      ],
+      insightQueries,
+    });
+    const harness = repositoryHarness();
+    const adapter = new MetaMarketingApiSyncAdapter({ client });
+    const syncContext = context(harness.repository);
+
+    await adapter.syncAssets(syncContext);
+    const result = await adapter.syncInsights(syncContext);
+
+    const dailyQueries = insightQueries.filter((query) => {
+      const breakdowns = Array.isArray(query.breakdowns)
+        ? query.breakdowns
+        : [];
+      return (
+        query.level === "ad" &&
+        !breakdowns.includes("image_asset") &&
+        !breakdowns.includes("video_asset")
+      );
+    });
+    expect(dailyQueries).toHaveLength(1);
+    expect(dailyQueries[0]).toMatchObject({
+      use_account_attribution_setting: true,
+      action_report_time: "mixed",
+    });
+    expect(harness.metricBatches).toEqual([]);
+    expect(harness.publishCalls).toEqual([
+      expect.objectContaining({
+        periodReachSnapshots: [],
+        replacements: [],
+      }),
+    ]);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "META_CONFLICTING_INSIGHT_ROW",
+          resource: "act_100",
+        }),
+        expect.objectContaining({
+          code: "META_INSIGHTS_SNAPSHOT_PRESERVED",
+          resource: "insights",
+        }),
+      ]),
+    );
+    expect(result.stats).toMatchObject({
+      accounts_succeeded: 0,
+      accounts_published: 0,
+      accounts_preserved_on_partial_mapping: 1,
+      metrics_upserted: 0,
+      duplicate_rows: 1,
+      conflicting_duplicate_rows: 1,
+    });
+    expect(result.checkpoint).toBeUndefined();
+  });
+
+  it("preserves the previous snapshot when period Reach repeats one campaign scope", async () => {
+    const campaignReachRow: MetaInsightRow = {
+      date_start: "2026-07-20",
+      date_stop: "2026-07-21",
+      account_id: "100",
+      campaign_id: "campaign-1",
+      attribution_setting: "7d_click_1d_view",
+      reach: "70",
+    };
+    const client = singleAccountSyncClient({
+      dailyRows: [
+        {
+          date_start: "2026-07-20",
+          date_stop: "2026-07-20",
+          account_id: "100",
+          account_currency: "USD",
+          campaign_id: "campaign-1",
+          adset_id: "adset-1",
+          ad_id: "ad-1",
+          spend: "10",
+          impressions: "100",
+          attribution_setting: "7d_click_1d_view",
+        },
+      ],
+      campaignPeriodRows: [
+        campaignReachRow,
+        {
+          ...campaignReachRow,
+          attribution_setting: "1d_click",
+        },
+      ],
+    });
+    const harness = repositoryHarness();
+    const adapter = new MetaMarketingApiSyncAdapter({ client });
+    const syncContext = context(harness.repository);
+
+    await adapter.syncAssets(syncContext);
+    const result = await adapter.syncInsights(syncContext);
+
+    expect(harness.metricBatches).toEqual([]);
+    expect(harness.publishCalls).toEqual([
+      expect.objectContaining({
+        periodReachSnapshots: [],
+        replacements: [],
+      }),
+    ]);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "META_PERIOD_REACH_UNAVAILABLE",
+          resource: "act_100",
+        }),
+        expect.objectContaining({
+          code: "META_INSIGHTS_SNAPSHOT_PRESERVED",
+          resource: "insights",
+        }),
+      ]),
+    );
+    expect(result.stats).toMatchObject({
+      accounts_succeeded: 0,
+      accounts_published: 0,
+      accounts_preserved_on_period_reach_failure: 1,
+      period_reach_snapshots_published: 0,
+      metrics_upserted: 0,
+    });
+    expect(result.checkpoint).toBeUndefined();
   });
 
   it("does not advance the snapshot when period Reach is partial", async () => {

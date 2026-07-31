@@ -48,6 +48,12 @@ export type CanonicalResultMatch = {
   rawValues: Array<RawResultValue & { selected: boolean }>;
 };
 
+export type RawActionMetricSource = "action" | "action_value";
+
+export type ReportingResultMetricSource =
+  | RawActionMetricSource
+  | "delivery";
+
 export type ResultMappingRule = {
   id: string;
   canonicalResultKey: string;
@@ -273,6 +279,42 @@ export const DEFAULT_RESULT_DEFINITIONS: readonly ResultDefinition[] = [
   },
 ];
 
+const DELIVERY_NATIVE_RESULT_KEYS = new Set([
+  "reach",
+  "impressions",
+  "link_click",
+]);
+
+export function isDeliveryNativeResultKey(canonicalKey: string) {
+  return DELIVERY_NATIVE_RESULT_KEYS.has(canonicalKey);
+}
+
+/**
+ * Resolves the persisted Meta action source from hydrated aliases. Definitions
+ * with no enabled aliases, or aliases in both sources, are intentionally
+ * unavailable so callers never guess from display metadata such as `unit`.
+ */
+export function resolveMappedResultMetricSource(
+  definition: ResultDefinition,
+): RawActionMetricSource | null {
+  const hasActionAliases = definition.rawActionTypes.some((alias) =>
+    Boolean(alias.trim()),
+  );
+  const hasActionValueAliases = (
+    definition.rawValueActionTypes ?? []
+  ).some((alias) => Boolean(alias.trim()));
+  if (hasActionAliases === hasActionValueAliases) return null;
+  return hasActionAliases ? "action" : "action_value";
+}
+
+export function resolveReportingResultMetricSource(
+  definition: ResultDefinition,
+): ReportingResultMetricSource | null {
+  return isDeliveryNativeResultKey(definition.canonicalKey)
+    ? "delivery"
+    : resolveMappedResultMetricSource(definition);
+}
+
 function totalsByActionType(values: readonly RawResultValue[]) {
   const totals = new Map<string, number>();
   for (const item of values) {
@@ -299,11 +341,8 @@ export function resolveCanonicalResults({
 
   for (const definition of definitions) {
     if (!definition.enabled) continue;
-    const source =
-      definition.unit === "currency" &&
-      definition.rawValueActionTypes?.length
-        ? "action_value"
-        : "action";
+    const source = resolveMappedResultMetricSource(definition);
+    if (!source) continue;
     const totals = source === "action_value" ? valueTotals : actionTotals;
     const aliases =
       source === "action_value"
@@ -454,8 +493,6 @@ export function aggregateResultMetricsAvailable({
 }) {
   return objectiveKey !== "all" && !!primaryResultKey;
 }
-
-export type RawActionMetricSource = "action" | "action_value";
 
 export type PersistedResultMapping = {
   id: string;

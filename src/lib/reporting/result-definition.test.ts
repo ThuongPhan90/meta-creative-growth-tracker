@@ -5,7 +5,9 @@ import {
   DEFAULT_RESULT_DEFINITIONS,
   hydrateResultDefinitions,
   resolveCanonicalResults,
+  resolveMappedResultMetricSource,
   resolvePrimaryResult,
+  resolveReportingResultMetricSource,
   type ResultDefinition,
   validateResultMappings,
 } from "./result-definition";
@@ -219,6 +221,114 @@ describe("result definition engine", () => {
     expect(
       hydrated(definitions, "purchase_value").rawValueActionTypes,
     ).toEqual(["purchase"]);
+  });
+
+  it("uses an owner-remapped action source for a currency Result", () => {
+    const definitions = hydrateResultDefinitions({
+      definitions: DEFAULT_RESULT_DEFINITIONS.filter(
+        (definition) =>
+          definition.canonicalKey === "purchase_value",
+      ),
+      mappings: [
+        {
+          id: "owner-action",
+          canonicalResultKey: "purchase_value",
+          rawActionType: "purchase",
+          metricSource: "action",
+          priority: 0,
+          mappingSource: "owner",
+          enabled: true,
+        },
+      ],
+    });
+    const definition = hydrated(definitions, "purchase_value");
+
+    expect(definition.rawActionTypes).toEqual(["purchase"]);
+    expect(definition.rawValueActionTypes).toEqual([]);
+    expect(resolveMappedResultMetricSource(definition)).toBe("action");
+    expect(resolveReportingResultMetricSource(definition)).toBe(
+      "action",
+    );
+    expect(
+      resolveCanonicalResults({
+        actions: [{ actionType: "purchase", value: 3 }],
+        actionValues: [{ actionType: "purchase", value: 450 }],
+        definitions,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        canonicalKey: "purchase_value",
+        source: "action",
+        value: 3,
+      }),
+    ]);
+  });
+
+  it("keeps the default currency Result on action-value aliases", () => {
+    const definition = DEFAULT_RESULT_DEFINITIONS.find(
+      (item) => item.canonicalKey === "purchase_value",
+    )!;
+
+    expect(resolveMappedResultMetricSource(definition)).toBe(
+      "action_value",
+    );
+    expect(resolveReportingResultMetricSource(definition)).toBe(
+      "action_value",
+    );
+  });
+
+  it("fails closed when persisted aliases are disabled or ambiguous", () => {
+    const definition = DEFAULT_RESULT_DEFINITIONS.find(
+      (item) => item.canonicalKey === "purchase_value",
+    )!;
+    const disabled = hydrateResultDefinitions({
+      definitions: [definition],
+      mappings: [
+        {
+          id: "disabled-value",
+          canonicalResultKey: "purchase_value",
+          rawActionType: "purchase",
+          metricSource: "action_value",
+          priority: 0,
+          mappingSource: "owner",
+          enabled: false,
+        },
+      ],
+    })[0];
+    const ambiguous = hydrateResultDefinitions({
+      definitions: [definition],
+      mappings: [
+        {
+          id: "owner-action",
+          canonicalResultKey: "purchase_value",
+          rawActionType: "purchase",
+          metricSource: "action",
+          priority: 0,
+          mappingSource: "owner",
+          enabled: true,
+        },
+        {
+          id: "owner-value",
+          canonicalResultKey: "purchase_value",
+          rawActionType: "purchase",
+          metricSource: "action_value",
+          priority: 0,
+          mappingSource: "owner",
+          enabled: true,
+        },
+      ],
+    })[0];
+
+    expect(resolveMappedResultMetricSource(disabled)).toBeNull();
+    expect(resolveReportingResultMetricSource(disabled)).toBeNull();
+    expect(resolveMappedResultMetricSource(ambiguous)).toBeNull();
+    expect(
+      resolveCanonicalResults({
+        actions: [{ actionType: "purchase", value: 3 }],
+        actionValues: [{ actionType: "purchase", value: 450 }],
+        definitions: [disabled, ambiguous],
+      }),
+    ).toEqual([]);
   });
 
   it("rejects cross-result raw action ownership and duplicate priorities", () => {

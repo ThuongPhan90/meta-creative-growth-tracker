@@ -108,6 +108,8 @@ export function scatterBubbleAriaLabel({
   efficiencyValue,
   resultLabel,
   resultValue,
+  confidenceLabel,
+  benchmarkDeltaLabel,
 }: {
   name: string;
   statusLabel: string;
@@ -116,6 +118,8 @@ export function scatterBubbleAriaLabel({
   efficiencyValue: string;
   resultLabel: string;
   resultValue: string;
+  confidenceLabel?: string | null;
+  benchmarkDeltaLabel?: string | null;
 }) {
   return [
     name,
@@ -123,5 +127,11 @@ export function scatterBubbleAriaLabel({
     `Spend: ${spend}`,
     `${efficiencyLabel}: ${efficiencyValue}`,
     `${resultLabel}: ${resultValue}`,
+    ...(confidenceLabel
+      ? [`Độ tin cậy: ${confidenceLabel}`]
+      : []),
+    ...(benchmarkDeltaLabel
+      ? [`So với benchmark: ${benchmarkDeltaLabel}`]
+      : []),
   ].join(". ");
 }

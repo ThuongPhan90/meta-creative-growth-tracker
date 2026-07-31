@@ -117,7 +117,7 @@ describe("resolveReportContext", () => {
     expect(result).toMatchObject({
       businessIds: ["123", "456"],
       adAccountIds: ["act_1", "act_2"],
-      objectiveKey: "OUTCOME_SALES",
+      objectiveKey: "sales",
       primaryResultKey: "purchase",
       currency: "USD",
       currencyMode: "single",
@@ -135,6 +135,105 @@ describe("resolveReportContext", () => {
         input: ["bad account"],
       }),
     ]);
+    expect(result.debug.normalizedFields).toContain(
+      "objectiveKey",
+    );
+  });
+
+  it.each(["OUTCOME_SALES", "outcome_sales"])(
+    "canonicalizes the Objective URL alias %s",
+    (objectiveKey) => {
+      const result = resolveReportContext({
+        query: { objectiveKey },
+        timeZone: "UTC",
+        lookbackDays: 30,
+        now: new Date("2026-07-30T10:00:00Z"),
+      });
+
+      expect(result.objectiveKey).toBe("sales");
+      expect(result.primaryResultKey).toBe("purchase");
+      expect(result.warnings).toEqual([]);
+      expect(result.debug.normalizedFields).toContain(
+        "objectiveKey",
+      );
+    },
+  );
+
+  it("falls back from an incompatible Result to the Objective default", () => {
+    const result = resolveReportContext({
+      query: {
+        objectiveKey: "sales",
+        primaryResultKey: "install",
+      },
+      timeZone: "UTC",
+      lookbackDays: 30,
+      now: new Date("2026-07-30T10:00:00Z"),
+    });
+
+    expect(result.objectiveKey).toBe("sales");
+    expect(result.primaryResultKey).toBe("purchase");
+    expect(result.warnings).toContainEqual({
+      code: "result_not_available_for_objective",
+      field: "primaryResultKey",
+      message:
+        "primaryResultKey was not available for the selected Objective and the Objective default was used.",
+      input: "install",
+      fallback: "purchase",
+    });
+    expect(result.debug.fallbackApplied).toBe(true);
+    expect(result.debug.fallbackFields).toContain(
+      "primaryResultKey",
+    );
+    expect(result.debug.normalizedFields).toContain(
+      "primaryResultKey",
+    );
+  });
+
+  it("removes a Result selection when all Objectives are selected", () => {
+    const result = resolveReportContext({
+      query: {
+        objectiveKey: "all",
+        primaryResultKey: "install",
+      },
+      timeZone: "UTC",
+      lookbackDays: 30,
+      now: new Date("2026-07-30T10:00:00Z"),
+    });
+
+    expect(result.objectiveKey).toBe("all");
+    expect(result.primaryResultKey).toBeUndefined();
+    expect(result.warnings).toContainEqual({
+      code: "result_not_available_for_objective",
+      field: "primaryResultKey",
+      message:
+        "primaryResultKey was removed because all Objectives were selected.",
+      input: "install",
+      fallback: undefined,
+    });
+    expect(result.debug.fallbackApplied).toBe(true);
+    expect(result.debug.fallbackFields).toContain("primaryResultKey");
+    expect(result.debug.normalizedFields).toContain(
+      "primaryResultKey",
+    );
+  });
+
+  it("keeps a compatible non-default Result selection", () => {
+    const result = resolveReportContext({
+      query: {
+        objectiveKey: "sales",
+        primaryResultKey: "purchase_value",
+      },
+      timeZone: "UTC",
+      lookbackDays: 30,
+      now: new Date("2026-07-30T10:00:00Z"),
+    });
+
+    expect(result.objectiveKey).toBe("sales");
+    expect(result.primaryResultKey).toBe("purchase_value");
+    expect(result.warnings).toEqual([]);
+    expect(result.debug.normalizedFields).not.toContain(
+      "primaryResultKey",
+    );
   });
 
   it("keeps currencies separate in split mode instead of silently selecting one", () => {
@@ -208,7 +307,6 @@ describe("resolveReportContext", () => {
       dateFrom: "2026-07-24",
       dateTo: "2026-07-30",
       objectiveKey: "all",
-      primaryResultKey: "purchase",
       currencyMode: "split",
       reportingTimezoneMode: "account_local",
       attributionSettingKey: "account_default",

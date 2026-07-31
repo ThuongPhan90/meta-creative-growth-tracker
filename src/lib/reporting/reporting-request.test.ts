@@ -56,6 +56,55 @@ describe("reporting request context", () => {
     expect(result.warnings).toEqual([]);
   });
 
+  it("canonicalizes raw Objective aliases before selecting the default Result", () => {
+    const result = resolveReportingRequest({
+      searchParams: new URLSearchParams({
+        objective: "outcome_sales",
+      }),
+      timeZone: "UTC",
+      lookbackDays: 30,
+      now: new Date("2026-07-30T10:00:00Z"),
+    });
+
+    expect(result.context).toMatchObject({
+      objectiveKey: "sales",
+      primaryResultKey: "purchase",
+    });
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("returns a structured fallback warning for an incompatible Result", () => {
+    const result = resolveReportingRequest({
+      searchParams: new URLSearchParams({
+        objective: "sales",
+        result: "install",
+      }),
+      timeZone: "UTC",
+      lookbackDays: 30,
+      now: new Date("2026-07-30T10:00:00Z"),
+    });
+
+    expect(result.context).toMatchObject({
+      objectiveKey: "sales",
+      primaryResultKey: "purchase",
+    });
+    expect(result.warnings).toEqual([
+      expect.objectContaining({
+        code: "REPORTING_CONTEXT_FALLBACK",
+        source: "backend_fallback",
+        fallbacks: [
+          {
+            field: "primaryResultKey",
+            requested: "install",
+            applied: "purchase",
+            reason:
+              "result_not_available_for_objective",
+          },
+        ],
+      }),
+    ]);
+  });
+
   it("maps freshness to explicit reporting sync states", () => {
     expect(
       reportingSyncStatus({

@@ -3,7 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import type { DatabaseClient } from "./client";
 import { TrackerRepository } from "./repository";
 import { computeResultMappingVersion } from "./result-mapping-version";
-import type { DailyMetricInput, DatabaseId } from "./types";
+import type {
+  DailyMetricInput,
+  DatabaseId,
+  PeriodReachSnapshotInput,
+} from "./types";
 
 const TEST_RESULT_MAPPINGS = [
   {
@@ -28,6 +32,32 @@ const TEST_RESULT_MAPPING_ROWS = [
     enabled: true,
   },
 ];
+
+const AVAILABLE_CANONICAL_SNAPSHOT_ROW = {
+  snapshot_status: "available",
+  snapshot_sync_version: "run-9",
+  snapshot_result_mapping_version: TEST_RESULT_MAPPING_VERSION,
+};
+
+function compactSql(query: string) {
+  return query.replace(/\s+/g, " ").trim();
+}
+
+function expectAccountDefaultAwareAttributionFilter(input: {
+  query: string;
+  metricAlias: string;
+  parameter: string;
+  optional?: boolean;
+}) {
+  const normalized = compactSql(input.query);
+  const nullablePrefix = input.optional
+    ? `${input.parameter}::text is null or `
+    : "";
+
+  expect(normalized).toContain(
+    `${nullablePrefix}${input.parameter} = 'account_default' or ${input.metricAlias}.attribution_window = ${input.parameter}`,
+  );
+}
 
 describe("Meta connection owner claim", () => {
   it("uses one atomic statement and returns null for a different owner", async () => {
@@ -260,6 +290,7 @@ describe("Atomic daily metric publishing", () => {
           {
             ...periodReach("account-2", 200),
             dateFrom: "2026-07-19",
+            attributionWindow: "1d_click",
           },
         ],
         replacements: [
@@ -280,6 +311,7 @@ describe("Atomic daily metric publishing", () => {
             metrics: [
               metric("account-2", "2", {
                 actionReportTime: "conversion",
+                attributionWindow: "1d_click",
               }),
             ],
           },
@@ -344,6 +376,268 @@ describe("Atomic daily metric publishing", () => {
     ).toEqual(new Set(["run-old"]));
     expect(versionsVisibleDuringTransaction).toHaveLength(13);
     expect(visibleSyncVersion).toBe("run-new");
+  });
+
+  it("rejects multiple daily attribution windows across distinct grains in one account", async () => {
+    const begin = vi.fn(async () => {
+      throw new Error("The invalid publish must not open a transaction.");
+    });
+    const repository = new TrackerRepository({
+      begin,
+    } as unknown as DatabaseClient);
+    await expect(
+      repository.publishDailyMetricWindows({
+        connectionId: "connection-1",
+        syncRunId: "run-new",
+        resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
+        periodReachSnapshots: [
+          {
+            ...periodReach("account-1", 100),
+            attributionWindow: "7d_click_1d_view",
+          },
+        ],
+        replacements: [
+          {
+            adAccountId: "account-1",
+            dateFrom: "2026-07-20",
+            dateTo: "2026-07-21",
+            metrics: [
+              metric("account-1", "1", {
+                attributionWindow: "7d_click_1d_view",
+              }),
+              metric("account-1", "2", {
+                metricScope: "asset",
+                scopeKey: "image:image-2",
+                allocationMethod: "exact",
+                creativeId: "creative-2",
+                creativeAssetId: "asset-2",
+                attributionWindow: "1d_click",
+              }),
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow(
+      "cannot include multiple concrete attribution windows for one ad account",
+    );
+
+    expect(begin).not.toHaveBeenCalled();
+  });
+
+  it("rejects multiple period Reach attribution windows across scopes in one account", async () => {
+    const begin = vi.fn(async () => {
+      throw new Error("The invalid publish must not open a transaction.");
+    });
+    const repository = new TrackerRepository({
+      begin,
+    } as unknown as DatabaseClient);
+    const accountReach: PeriodReachSnapshotInput = {
+      ...periodReach("account-1", 100),
+      attributionWindow: "7d_click_1d_view",
+    };
+    const campaignReach: PeriodReachSnapshotInput = {
+      ...accountReach,
+      campaignId: "campaign-1",
+      scopeLevel: "campaign",
+      reach: 80,
+    };
+    await expect(
+      repository.publishDailyMetricWindows({
+        connectionId: "connection-1",
+        syncRunId: "run-new",
+        resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
+        periodReachSnapshots: [
+          accountReach,
+          {
+            ...campaignReach,
+            attributionWindow: "1d_click",
+          },
+        ],
+        replacements: [
+          {
+            adAccountId: "account-1",
+            dateFrom: "2026-07-20",
+            dateTo: "2026-07-21",
+            metrics: [
+              metric("account-1", "1", {
+                attributionWindow: "7d_click_1d_view",
+              }),
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow(
+      "cannot include multiple concrete period Reach attribution windows for one ad account",
+    );
+
+    expect(begin).not.toHaveBeenCalled();
+  });
+
+  it("rejects a period Reach window that differs from the account daily window", async () => {
+    const begin = vi.fn(async () => {
+      throw new Error("The invalid publish must not open a transaction.");
+    });
+    const repository = new TrackerRepository({
+      begin,
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.publishDailyMetricWindows({
+        connectionId: "connection-1",
+        syncRunId: "run-new",
+        resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
+        periodReachSnapshots: [
+          {
+            ...periodReach("account-1", 100),
+            attributionWindow: "1d_click",
+          },
+        ],
+        replacements: [
+          {
+            adAccountId: "account-1",
+            dateFrom: "2026-07-20",
+            dateTo: "2026-07-21",
+            metrics: [
+              metric("account-1", "1", {
+                attributionWindow: "7d_click_1d_view",
+              }),
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow(
+      "Period Reach attribution window does not match its daily metrics",
+    );
+    expect(begin).not.toHaveBeenCalled();
+  });
+
+  it("normalizes account_default sentinels to the one concrete account window", async () => {
+    const transactionUnsafe = vi.fn(
+      async (query: string, parameters?: unknown[]) => {
+        if (query.includes("from tracker.meta_connections")) {
+          return [{ connection_id: "connection-1" }];
+        }
+        if (query.includes("from tracker.result_mappings mapping")) {
+          return TEST_RESULT_MAPPING_ROWS;
+        }
+        if (query.includes("insert into tracker.daily_metrics")) {
+          return [
+            {
+              affected_count: Array.isArray(parameters?.[0])
+                ? parameters[0].length
+                : 0,
+            },
+          ];
+        }
+        if (
+          query.includes("insert into tracker.period_reach_snapshots")
+        ) {
+          return [
+            {
+              affected_count: Array.isArray(parameters?.[1])
+                ? parameters[1].length
+                : 0,
+            },
+          ];
+        }
+        return [];
+      },
+    );
+    const begin = vi.fn(
+      async (
+        callback: (transaction: {
+          unsafe: typeof transactionUnsafe;
+        }) => Promise<unknown>,
+      ) => callback({ unsafe: transactionUnsafe }),
+    );
+    const repository = new TrackerRepository({
+      begin,
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.publishDailyMetricWindows({
+        connectionId: "connection-1",
+        syncRunId: "run-new",
+        resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
+        periodReachSnapshots: [
+          periodReach("account-1", 100),
+          periodReach("account-2", 200),
+          {
+            ...periodReach("account-2", 150),
+            campaignId: "campaign-3",
+            scopeLevel: "campaign",
+            attributionWindow: "1d_click",
+          },
+        ],
+        replacements: [
+          {
+            adAccountId: "account-1",
+            dateFrom: "2026-07-20",
+            dateTo: "2026-07-21",
+            metrics: [
+              metric("account-1", "1", {
+                attributionWindow: "account_default",
+              }),
+              metric("account-1", "2", {
+                attributionWindow: "7d_click_1d_view",
+              }),
+            ],
+          },
+          {
+            adAccountId: "account-2",
+            dateFrom: "2026-07-20",
+            dateTo: "2026-07-21",
+            metrics: [
+              metric("account-2", "3", {
+                attributionWindow: "account_default",
+              }),
+            ],
+          },
+        ],
+      }),
+    ).resolves.toBe(3);
+
+    const dailyCall = transactionUnsafe.mock.calls.find(([query]) =>
+      query.includes("insert into tracker.daily_metrics"),
+    );
+    expect(dailyCall?.[1]?.[0]).toEqual([
+      expect.objectContaining({
+        ad_account_id: "account-1",
+        attribution_window: "7d_click_1d_view",
+      }),
+      expect.objectContaining({
+        ad_account_id: "account-1",
+        attribution_window: "7d_click_1d_view",
+      }),
+      expect.objectContaining({
+        ad_account_id: "account-2",
+        attribution_window: "1d_click",
+      }),
+    ]);
+    const reachPayloads = transactionUnsafe.mock.calls
+      .filter(([query]) =>
+        query.includes("insert into tracker.period_reach_snapshots"),
+      )
+      .flatMap(([, parameters]) =>
+        Array.isArray(parameters?.[1]) ? parameters[1] : [],
+      );
+    expect(reachPayloads).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ad_account_id: "account-1",
+          attribution_window: "7d_click_1d_view",
+        }),
+        expect.objectContaining({
+          ad_account_id: "account-2",
+          attribution_window: "1d_click",
+        }),
+        expect.objectContaining({
+          ad_account_id: "account-2",
+          campaign_id: "campaign-3",
+          attribution_window: "1d_click",
+        }),
+      ]),
+    );
   });
 
   it("does not advance or expose a new snapshot when metric storage fails", async () => {
@@ -708,6 +1002,7 @@ describe("Canonical result totals", () => {
       void parameters;
       return [
         {
+          ...AVAILABLE_CANONICAL_SNAPSHOT_ROW,
           row_kind: "result",
           canonical_result_key: "purchase",
           objective_key: "sales",
@@ -717,6 +1012,7 @@ describe("Canonical result totals", () => {
           objective_spend: 600,
         },
         {
+          ...AVAILABLE_CANONICAL_SNAPSHOT_ROW,
           row_kind: "objective_spend",
           canonical_result_key: null,
           objective_key: "sales",
@@ -726,6 +1022,7 @@ describe("Canonical result totals", () => {
           objective_spend: 600,
         },
         {
+          ...AVAILABLE_CANONICAL_SNAPSHOT_ROW,
           row_kind: "result",
           canonical_result_key: "purchase",
           objective_key: "sales",
@@ -735,6 +1032,7 @@ describe("Canonical result totals", () => {
           objective_spend: 7_000_000,
         },
         {
+          ...AVAILABLE_CANONICAL_SNAPSHOT_ROW,
           row_kind: "objective_spend",
           canonical_result_key: null,
           objective_key: "sales",
@@ -744,6 +1042,7 @@ describe("Canonical result totals", () => {
           objective_spend: 7_000_000,
         },
         {
+          ...AVAILABLE_CANONICAL_SNAPSHOT_ROW,
           row_kind: "objective_spend",
           canonical_result_key: null,
           objective_key: "traffic",
@@ -774,12 +1073,15 @@ describe("Canonical result totals", () => {
             rawObjectiveKeys: ["OUTCOME_TRAFFIC"],
           },
         ],
-        attributionWindow: "7d_click_1d_view",
+        attributionWindow: "account_default",
         actionReportTime: "mixed",
         syncVersion: "run-9",
         resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
       }),
     ).resolves.toEqual({
+      available: true,
+      syncVersion: "run-9",
+      resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
       results: [
         {
           canonicalResultKey: "purchase",
@@ -825,7 +1127,20 @@ describe("Canonical result totals", () => {
     expect(query).toContain(
       "metric.sync_version = scope.snapshot_sync_version",
     );
-    expect(query).toContain("from objective_spend spend");
+    expectAccountDefaultAwareAttributionFilter({
+      query,
+      metricAlias: "fact",
+      parameter: "$7",
+    });
+    expectAccountDefaultAwareAttributionFilter({
+      query,
+      metricAlias: "metric",
+      parameter: "$7",
+    });
+    expect(
+      compactSql(query).match(/fact\.attribution_window = \$7/g),
+    ).toHaveLength(2);
+    expect(query).toContain("from objective_delivery spend");
     expect(parameters?.slice(0, 8)).toEqual([
       "connection-1",
       "2026-07-01",
@@ -833,42 +1148,475 @@ describe("Canonical result totals", () => {
       ["act_usd", "act_vnd"],
       null,
       null,
-      "7d_click_1d_view",
+      "account_default",
       "mixed",
     ]);
     expect(parameters?.[9]).toBe("run-9");
     expect(parameters?.[10]).toBe(TEST_RESULT_MAPPING_VERSION);
   });
 
-  it("treats an explicit empty account scope as no accounts", async () => {
+  it("returns objective-scoped native delivery results without synthesizing Reach", async () => {
     const unsafe = vi.fn(async (query: string, parameters?: unknown[]) => {
       void query;
       void parameters;
-      return [];
+      return [
+        {
+          ...AVAILABLE_CANONICAL_SNAPSHOT_ROW,
+          row_kind: "result",
+          canonical_result_key: "impressions",
+          objective_key: "awareness",
+          metric_source: "delivery",
+          currency: "USD",
+          value: 1_200,
+          objective_spend: 50,
+        },
+        {
+          ...AVAILABLE_CANONICAL_SNAPSHOT_ROW,
+          row_kind: "result",
+          canonical_result_key: "link_click",
+          objective_key: "traffic",
+          metric_source: "delivery",
+          currency: "USD",
+          value: 45,
+          objective_spend: 100,
+        },
+        {
+          ...AVAILABLE_CANONICAL_SNAPSHOT_ROW,
+          row_kind: "objective_spend",
+          canonical_result_key: null,
+          objective_key: "awareness",
+          metric_source: null,
+          currency: "USD",
+          value: null,
+          objective_spend: 50,
+        },
+        {
+          ...AVAILABLE_CANONICAL_SNAPSHOT_ROW,
+          row_kind: "objective_spend",
+          canonical_result_key: null,
+          objective_key: "traffic",
+          metric_source: null,
+          currency: "USD",
+          value: null,
+          objective_spend: 100,
+        },
+      ];
     });
     const repository = new TrackerRepository({
       unsafe,
     } as unknown as DatabaseClient);
 
-    await repository.getCanonicalResultTotals({
-      connectionId: "connection-1",
+    await expect(
+      repository.getCanonicalResultTotals({
+        connectionId: "connection-1",
+        dateFrom: "2026-07-01",
+        dateTo: "2026-07-31",
+        objectiveMappings: [
+          {
+            objectiveKey: "awareness",
+            rawObjectiveKeys: ["OUTCOME_AWARENESS"],
+          },
+          {
+            objectiveKey: "traffic",
+            rawObjectiveKeys: ["OUTCOME_TRAFFIC"],
+          },
+        ],
+        attributionWindow: "account_default",
+        actionReportTime: "mixed",
+        syncVersion: "run-9",
+        resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
+      }),
+    ).resolves.toEqual({
+      available: true,
+      syncVersion: "run-9",
+      resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
+      results: [
+        {
+          canonicalResultKey: "impressions",
+          objectiveKey: "awareness",
+          metricSource: "delivery",
+          currency: "USD",
+          value: 1_200,
+          objectiveSpend: 50,
+        },
+        {
+          canonicalResultKey: "link_click",
+          objectiveKey: "traffic",
+          metricSource: "delivery",
+          currency: "USD",
+          value: 45,
+          objectiveSpend: 100,
+        },
+      ],
+      spendByObjective: [
+        { objectiveKey: "awareness", currency: "USD", spend: 50 },
+        { objectiveKey: "traffic", currency: "USD", spend: 100 },
+      ],
+    });
+
+    const [query] = unsafe.mock.calls[0];
+    const normalized = compactSql(query);
+    expect(normalized).toContain(
+      "sum(metric.impressions)::numeric as impressions",
+    );
+    expect(normalized).toContain(
+      "sum(metric.link_clicks)::numeric as link_clicks",
+    );
+    expect(normalized).toContain(
+      "'impressions'::text as canonical_result_key",
+    );
+    expect(normalized).toContain(
+      "'link_click'::text as canonical_result_key",
+    );
+    expect(normalized).toContain("'delivery'::text as metric_source");
+    expect(normalized).toContain("select * from delivery_totals");
+    expect(
+      normalized.match(
+        /fact\.canonical_result_key not in \( 'reach', 'impressions', 'link_click' \)/g,
+      ),
+    ).toHaveLength(2);
+    expect(query).not.toContain(
+      "'reach'::text as canonical_result_key",
+    );
+    expectAccountDefaultAwareAttributionFilter({
+      query,
+      metricAlias: "metric",
+      parameter: "$7",
+    });
+  });
+
+  it("treats an explicit empty account scope as no accounts", async () => {
+    const unsafe = vi.fn(async (query: string, parameters?: unknown[]) => {
+      void query;
+      void parameters;
+      return [AVAILABLE_CANONICAL_SNAPSHOT_ROW];
+    });
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.getCanonicalResultTotals({
+        connectionId: "connection-1",
+        dateFrom: "2026-07-01",
+        dateTo: "2026-07-31",
+        adAccountIds: [],
+        objectiveMappings: [
+          {
+            objectiveKey: "sales",
+            rawObjectiveKeys: ["OUTCOME_SALES"],
+          },
+        ],
+        attributionWindow: "7d_click_1d_view",
+        actionReportTime: "mixed",
+        syncVersion: "run-9",
+        resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
+      }),
+    ).resolves.toEqual({
+      available: true,
+      syncVersion: "run-9",
+      resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
+      results: [],
+      spendByObjective: [],
+    });
+
+    expect(unsafe.mock.calls[0]?.[1]?.[3]).toEqual([]);
+  });
+
+  it.each([
+    ["reporting_snapshot_unavailable", "reporting_snapshot_unavailable"],
+    ["reporting_snapshot_stale", "reporting_snapshot_stale"],
+  ] as const)(
+    "returns %s instead of conflating snapshot state with an empty report",
+    async (snapshotStatus, reason) => {
+      const unsafe = vi.fn(async () => [
+        {
+          snapshot_status: snapshotStatus,
+          snapshot_sync_version: "run-other",
+          snapshot_result_mapping_version: "mapping-other",
+        },
+      ]);
+      const repository = new TrackerRepository({
+        unsafe,
+      } as unknown as DatabaseClient);
+
+      await expect(
+        repository.getCanonicalResultTotals({
+          connectionId: "connection-1",
+          dateFrom: "2026-07-01",
+          dateTo: "2026-07-31",
+          objectiveMappings: [],
+          attributionWindow: "account_default",
+          actionReportTime: "mixed",
+          syncVersion: "run-9",
+          resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
+        }),
+      ).resolves.toEqual({
+        available: false,
+        reason,
+        results: [],
+        spendByObjective: [],
+      });
+    },
+  );
+});
+
+describe("Canonical result trend", () => {
+  it("returns snapshot-pinned daily Result rows with Objective spend", async () => {
+    const unsafe = vi.fn(async (query: string, parameters?: unknown[]) => {
+      void query;
+      void parameters;
+      return [
+        {
+          ...AVAILABLE_CANONICAL_SNAPSHOT_ROW,
+          metric_date: "2026-07-01",
+          canonical_result_key: "install",
+          objective_key: "app_promotion",
+          metric_source: "action",
+          currency: "USD",
+          value: 10,
+          daily_spend: 100,
+        },
+        {
+          ...AVAILABLE_CANONICAL_SNAPSHOT_ROW,
+          metric_date: "2026-07-01",
+          canonical_result_key: "purchase_value",
+          objective_key: "sales",
+          metric_source: "action_value",
+          currency: "USD",
+          value: 250,
+          daily_spend: 80,
+        },
+        {
+          ...AVAILABLE_CANONICAL_SNAPSHOT_ROW,
+          metric_date: "2026-07-02",
+          canonical_result_key: "link_click",
+          objective_key: "traffic",
+          metric_source: "delivery",
+          currency: "USD",
+          value: 45,
+          daily_spend: 120,
+        },
+      ];
+    });
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.getCanonicalResultTrend({
+        connectionId: "connection-1",
+        dateFrom: "2026-07-01",
+        dateTo: "2026-07-31",
+        adAccountIds: [" act_1 "],
+        campaignMetaIds: [" campaign_1 "],
+        objectiveKeys: [" APP_PROMOTION ", "sales", "traffic"],
+        objectiveMappings: [
+          {
+            objectiveKey: "app_promotion",
+            rawObjectiveKeys: ["OUTCOME_APP_PROMOTION"],
+          },
+          {
+            objectiveKey: "sales",
+            rawObjectiveKeys: ["OUTCOME_SALES"],
+          },
+          {
+            objectiveKey: "traffic",
+            rawObjectiveKeys: ["OUTCOME_TRAFFIC"],
+          },
+        ],
+        currency: " usd ",
+        attributionWindow: "account_default",
+        actionReportTime: "mixed",
+        syncVersion: " run-9 ",
+        resultMappingVersion: ` ${TEST_RESULT_MAPPING_VERSION} `,
+      }),
+    ).resolves.toEqual({
+      available: true,
+      syncVersion: "run-9",
+      resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
+      results: [
+        {
+          metricDate: "2026-07-01",
+          canonicalResultKey: "install",
+          objectiveKey: "app_promotion",
+          metricSource: "action",
+          currency: "USD",
+          value: 10,
+          dailySpend: 100,
+        },
+        {
+          metricDate: "2026-07-01",
+          canonicalResultKey: "purchase_value",
+          objectiveKey: "sales",
+          metricSource: "action_value",
+          currency: "USD",
+          value: 250,
+          dailySpend: 80,
+        },
+        {
+          metricDate: "2026-07-02",
+          canonicalResultKey: "link_click",
+          objectiveKey: "traffic",
+          metricSource: "delivery",
+          currency: "USD",
+          value: 45,
+          dailySpend: 120,
+        },
+      ],
+    });
+
+    const [query, parameters] = unsafe.mock.calls[0];
+    const normalized = compactSql(query);
+    expect(normalized).toContain(
+      "from tracker.action_metric_daily fact",
+    );
+    expect(normalized).toContain(
+      "from tracker.action_value_daily fact",
+    );
+    expect(normalized).toContain(
+      "sum(metric.impressions)::numeric as impressions",
+    );
+    expect(normalized).toContain(
+      "sum(metric.link_clicks)::numeric as link_clicks",
+    );
+    expect(normalized).toContain(
+      "group by fact.metric_date, fact.canonical_result_key, scope.objective_key, upper(fact.currency)",
+    );
+    expect(normalized).toContain(
+      "delivery.metric_date = total.metric_date",
+    );
+    expect(normalized).toContain(
+      "coalesce(delivery.daily_spend, 0) as daily_spend",
+    );
+    expect(
+      normalized.match(
+        /fact\.canonical_result_key not in \( 'reach', 'impressions', 'link_click' \)/g,
+      ),
+    ).toHaveLength(2);
+    expect(query).not.toContain(
+      "'reach'::text as canonical_result_key",
+    );
+    expectAccountDefaultAwareAttributionFilter({
+      query,
+      metricAlias: "fact",
+      parameter: "$7",
+    });
+    expectAccountDefaultAwareAttributionFilter({
+      query,
+      metricAlias: "metric",
+      parameter: "$7",
+    });
+    expect(normalized).toContain(
+      "fact.sync_version = scope.snapshot_sync_version",
+    );
+    expect(normalized).toContain(
+      "fact.result_mapping_version = scope.snapshot_result_mapping_version",
+    );
+    expect(normalized).toContain(
+      "not scope.normalized_results_require_resync",
+    );
+    expect(normalized).toContain(
+      "campaign.meta_campaign_id = any($12::text[])",
+    );
+    expect(parameters?.slice(0, 8)).toEqual([
+      "connection-1",
+      "2026-07-01",
+      "2026-07-31",
+      ["act_1"],
+      ["app_promotion", "sales", "traffic"],
+      "USD",
+      "account_default",
+      "mixed",
+    ]);
+    expect(parameters?.[9]).toBe("run-9");
+    expect(parameters?.[10]).toBe(TEST_RESULT_MAPPING_VERSION);
+    expect(parameters?.[11]).toEqual(["campaign_1"]);
+  });
+
+  it("keeps an exact attribution request exact and preserves an available empty Objective registry", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [AVAILABLE_CANONICAL_SNAPSHOT_ROW];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+    const base = {
+      connectionId: "connection-1" as DatabaseId,
       dateFrom: "2026-07-01",
       dateTo: "2026-07-31",
-      adAccountIds: [],
+      attributionWindow: "7d_click_1d_view",
+      actionReportTime: "mixed" as const,
+      syncVersion: "run-9",
+      resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
+    };
+
+    await repository.getCanonicalResultTrend({
+      ...base,
       objectiveMappings: [
         {
           objectiveKey: "sales",
           rawObjectiveKeys: ["OUTCOME_SALES"],
         },
       ],
-      attributionWindow: "7d_click_1d_view",
-      actionReportTime: "mixed",
+    });
+    expect(unsafe.mock.calls[0]?.[1]?.[6]).toBe(
+      "7d_click_1d_view",
+    );
+
+    await expect(
+      repository.getCanonicalResultTrend({
+        ...base,
+        objectiveMappings: [],
+      }),
+    ).resolves.toEqual({
+      available: true,
       syncVersion: "run-9",
       resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
+      results: [],
     });
-
-    expect(unsafe.mock.calls[0]?.[1]?.[3]).toEqual([]);
+    expect(unsafe).toHaveBeenCalledTimes(2);
   });
+
+  it.each([
+    ["reporting_snapshot_unavailable", "reporting_snapshot_unavailable"],
+    ["reporting_snapshot_stale", "reporting_snapshot_stale"],
+  ] as const)(
+    "returns %s instead of an ambiguous empty trend",
+    async (snapshotStatus, reason) => {
+      const unsafe = vi.fn(async () => [
+        {
+          snapshot_status: snapshotStatus,
+          snapshot_sync_version: "run-other",
+          snapshot_result_mapping_version: "mapping-other",
+        },
+      ]);
+      const repository = new TrackerRepository({
+        unsafe,
+      } as unknown as DatabaseClient);
+
+      await expect(
+        repository.getCanonicalResultTrend({
+          connectionId: "connection-1",
+          dateFrom: "2026-07-01",
+          dateTo: "2026-07-31",
+          objectiveMappings: [],
+          attributionWindow: "account_default",
+          actionReportTime: "mixed",
+          syncVersion: "run-9",
+          resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
+        }),
+      ).resolves.toEqual({
+        available: false,
+        reason,
+        results: [],
+      });
+    },
+  );
 });
 
 describe("Ad account activity filters", () => {
@@ -921,7 +1669,12 @@ describe("Ad account activity filters", () => {
     expect(query).toContain("account.connection_id = $1");
     expect(query).toContain("and account.is_active");
     expect(query).toContain("and account.account_status = 1");
-    expect(query).toContain("metric.attribution_window = $8");
+    expectAccountDefaultAwareAttributionFilter({
+      query,
+      metricAlias: "metric",
+      parameter: "$8",
+      optional: true,
+    });
     expect(query).toContain("metric.action_report_time = $9");
     expect(query).toContain("metric.sync_version = $10");
     expect(parameters).toEqual([
@@ -992,7 +1745,12 @@ describe("Ad account activity filters", () => {
     );
     expect(query).toContain("account.meta_ad_account_id = $6");
     expect(query).toContain("selected_campaign.meta_campaign_id = $7");
-    expect(query).toContain("metric.attribution_window = $8");
+    expectAccountDefaultAwareAttributionFilter({
+      query,
+      metricAlias: "metric",
+      parameter: "$8",
+      optional: true,
+    });
     expect(query).toContain("metric.action_report_time = $9");
     expect(query).toContain("metric.sync_version = $10");
     expect(parameters).toEqual([
@@ -1089,7 +1847,12 @@ describe("Ad account activity filters", () => {
     expect(defaultQuery).toContain(
       "coalesce(filtered.effective_status, filtered.status) = 'ACTIVE'",
     );
-    expect(defaultQuery).toContain("metric.attribution_window = $11");
+    expectAccountDefaultAwareAttributionFilter({
+      query: defaultQuery,
+      metricAlias: "metric",
+      parameter: "$11",
+      optional: true,
+    });
     expect(defaultQuery).toContain("metric.action_report_time = $12");
     expect(defaultQuery).toContain("metric.sync_version = $13");
     expect(defaultParameters).toEqual([
@@ -1228,6 +1991,8 @@ describe("Ad account activity filters", () => {
       50,
       0,
       null,
+      null,
+      null,
     ]);
   });
 
@@ -1256,6 +2021,58 @@ describe("Ad account activity filters", () => {
       5_001,
       0,
       null,
+      null,
+      null,
+    ]);
+  });
+
+  it("filters exact linked Account and Campaign IDs before the creative-library limit", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await repository.listCreativeLibrary({
+      connectionId: "connection-1",
+      adAccountMetaIds: [" act_2 ", "act_1", "act_2", ""],
+      campaignMetaIds: [
+        " campaign-2 ",
+        "campaign-1",
+        "campaign-2",
+      ],
+      limit: 5_001,
+      offset: 0,
+    });
+
+    const [query, parameters] = unsafe.mock.calls[0];
+    const normalized = compactSql(query);
+    expect(normalized).toContain(
+      "$7::text[] is null or entity_links.ad_account_ids && $7::text[]",
+    );
+    expect(normalized).toContain(
+      "$8::text[] is null or entity_links.campaign_ids && $8::text[]",
+    );
+    expect(query.indexOf("entity_links.ad_account_ids &&")).toBeLessThan(
+      query.indexOf("order by"),
+    );
+    expect(query.indexOf("entity_links.campaign_ids &&")).toBeLessThan(
+      query.indexOf("limit $4"),
+    );
+    expect(parameters).toEqual([
+      "connection-1",
+      null,
+      null,
+      5_001,
+      0,
+      null,
+      ["act_2", "act_1"],
+      ["campaign-2", "campaign-1"],
     ]);
   });
 
@@ -1319,6 +2136,8 @@ describe("Ad account activity filters", () => {
       1,
       0,
       familyId,
+      null,
+      null,
     ]);
     expect(result).toMatchObject({
       creativeAssetId: "asset-7001",
@@ -1377,7 +2196,12 @@ describe("Ad account activity filters", () => {
 
     const [query, parameters] = unsafe.mock.calls[0];
     expect(query).toContain("asset.creative_family_id = $11");
-    expect(query).toContain("metric.attribution_window = $12");
+    expectAccountDefaultAwareAttributionFilter({
+      query,
+      metricAlias: "metric",
+      parameter: "$12",
+      optional: true,
+    });
     expect(query).toContain("metric.action_report_time = $13");
     expect(query).toContain("metric.sync_version = $14");
     expect(parameters?.slice(8)).toEqual([

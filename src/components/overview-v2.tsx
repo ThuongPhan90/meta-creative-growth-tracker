@@ -67,6 +67,12 @@ function first(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
 }
 
+function overviewReportingContextHiddenFields(query: Query) {
+  const fields = reportingContextHiddenFields(query);
+  const campaign = first(query.campaign)?.trim();
+  return campaign ? { ...fields, campaign } : fields;
+}
+
 function href(
   pathname: string,
   query: Query,
@@ -141,6 +147,8 @@ type TrendMetric = {
   resultKey: string;
   label: string;
   valueType: ResultKpiCard["valueType"];
+  source: "result" | "efficiency";
+  attribution: ResultKpiCard["attribution"];
 };
 
 type TrendChartModel = {
@@ -155,16 +163,6 @@ type TrendChartModel = {
     tooltip: string;
   }>;
 };
-
-function supportedTrendMetric(
-  primaryResultKey: string | null,
-  label: string | undefined,
-  valueType: ResultKpiCard["valueType"] | undefined,
-): TrendMetric | null {
-  return primaryResultKey && label && valueType
-    ? { resultKey: primaryResultKey, label, valueType }
-    : null;
-}
 
 function isTrendValue(
   value: number | null | undefined,
@@ -200,13 +198,22 @@ function trendUnit(metric: TrendMetric, currency: string) {
   return "kết quả";
 }
 
+function trendPointValue(
+  point: OverviewTrendPoint,
+  metric: TrendMetric,
+) {
+  return metric.source === "result"
+    ? point.resultValues[metric.resultKey]
+    : point.efficiencyValues[metric.resultKey];
+}
+
 function buildTrendChartModel(
   points: OverviewTrendPoint[],
   metric: TrendMetric,
   currency: string,
 ): TrendChartModel | null {
   const values = points
-    .map((point) => point.efficiencyValues[metric.resultKey])
+    .map((point) => trendPointValue(point, metric))
     .filter(isTrendValue);
   if (values.length < 2) return null;
 
@@ -225,7 +232,7 @@ function buildTrendChartModel(
   let continuesLine = false;
 
   points.forEach((point, index) => {
-    const value = point.efficiencyValues[metric.resultKey];
+    const value = trendPointValue(point, metric);
     if (!isTrendValue(value)) {
       continuesLine = false;
       return;
@@ -264,6 +271,114 @@ function formatTrendTick(
   currency: string,
 ) {
   return formatTrendValue(value, metric, currency);
+}
+
+function TrendSeriesChart({
+  chart,
+  metric,
+  currency,
+}: {
+  chart: TrendChartModel;
+  metric: TrendMetric;
+  currency: string;
+}) {
+  const seriesId = `overview-trend-${metric.source}-${metric.resultKey.replace(
+    /[^a-z0-9_-]/gi,
+    "-",
+  )}`;
+  const unit = trendUnit(metric, currency);
+  const sourceLabel =
+    metric.attribution === "delivery"
+      ? "Meta-reported"
+      : "Meta-attributed";
+
+  return (
+    <div className="v2-trend-chart" data-trend-series={metric.source}>
+      <div
+        className="v2-trend-legend"
+        aria-label="Chú giải biểu đồ xu hướng"
+      >
+        <span>
+          <i
+            className={`v2-trend-dot v2-trend-dot--${metric.source}`}
+            aria-hidden="true"
+          />
+          <strong>{metric.label}</strong>
+        </span>
+        <small>{sourceLabel} · theo ngày</small>
+        <strong>Đơn vị: {unit}</strong>
+      </div>
+      <div className="v2-trend-plot">
+        <div
+          className="v2-trend-y-axis"
+          aria-label={`Trục tung ${metric.label}, đơn vị ${unit}`}
+        >
+          <span className="v2-trend-y-axis__label">
+            {metric.label} ({unit})
+          </span>
+          <div className="v2-trend-y-axis__ticks">
+            <span data-trend-axis-tick="max">
+              {formatTrendTick(chart.max, metric, currency)}
+            </span>
+            <span data-trend-axis-tick="min">
+              {formatTrendTick(chart.min, metric, currency)}
+            </span>
+          </div>
+        </div>
+        <div className="v2-trend-canvas">
+          <svg
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+            role="group"
+            aria-labelledby={`${seriesId}-title ${seriesId}-description`}
+          >
+            <title id={`${seriesId}-title`}>
+              {`Xu hướng ${metric.label} theo ngày`}
+            </title>
+            <desc id={`${seriesId}-description`}>
+              {`${chart.points.length} điểm dữ liệu, đơn vị ${unit}. Dùng Tab để đọc từng điểm.`}
+            </desc>
+            <path
+              className={`v2-trend-line v2-trend-line--${metric.source}`}
+              d={chart.path}
+              aria-hidden="true"
+            />
+          </svg>
+          <div
+            className="v2-trend-point-layer"
+            aria-label={`Các điểm dữ liệu ${metric.label}`}
+          >
+            {chart.points.map((point) => (
+              <span
+                className="v2-trend-point"
+                tabIndex={0}
+                role="img"
+                aria-label={point.tooltip}
+                title={point.tooltip}
+                data-tooltip={point.tooltip}
+                data-trend-series={metric.source}
+                data-trend-date={point.date}
+                data-trend-value={point.value}
+                key={`${point.date}:${point.value}`}
+                style={{
+                  left: `${point.x}%`,
+                  top: `${point.y}%`,
+                }}
+              />
+            ))}
+          </div>
+          <div
+            className="v2-trend-axis"
+            aria-label="Trục hoành theo ngày"
+          >
+            <span>{chart.points[0]?.date}</span>
+            <strong>Ngày</strong>
+            <span>{chart.points.at(-1)?.date}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function TopCreative({
@@ -484,6 +599,33 @@ function formatFamilyMetric(
   return formatNumber(value);
 }
 
+function medianFinite(values: readonly number[]) {
+  const sorted = values
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => left - right);
+  if (!sorted.length) return null;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+type ScatterConfidence = "high" | "medium" | "low" | "unknown";
+
+function scatterConfidenceLabel(confidence: ScatterConfidence) {
+  if (confidence === "high") return "Cao";
+  if (confidence === "medium") return "Trung bình";
+  if (confidence === "low") return "Thấp";
+  return "Chưa có đánh giá";
+}
+
+function scatterDeltaLabel(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  return `${value > 0 ? "+" : ""}${formatPercent(value)}`;
+}
+
 function scatterUnavailableMessage(
   reason: DynamicResultMetricsModel["scatter"]["unavailableReason"],
 ) {
@@ -520,6 +662,7 @@ export function OverviewV2({
   reportingBar,
   resultMetrics,
   previousResultMetrics,
+  reportWarnings = [],
   selectedDrawer,
 }: {
   dashboard: DashboardViewModel;
@@ -539,6 +682,7 @@ export function OverviewV2({
   reportingBar: ReportingBarModel;
   resultMetrics: DynamicResultMetricsModel;
   previousResultMetrics?: DynamicResultMetricsModel;
+  reportWarnings?: readonly string[];
   selectedDrawer?: React.ReactNode;
 }) {
   const families = groupCreativeFamiliesForView(creatives);
@@ -548,7 +692,8 @@ export function OverviewV2({
     resultMetrics.metadata.primaryResultKey;
   const primaryResultCard = resultMetrics.kpiCards.find(
     (card) =>
-      card.key === `result:${primaryResultKey ?? ""}`,
+      card.canonicalResultKey === primaryResultKey &&
+      !card.key.startsWith("efficiency:"),
   );
   const primaryEfficiencyCard = resultMetrics.kpiCards.find(
     (card) =>
@@ -597,6 +742,46 @@ export function OverviewV2({
       ),
     )
     .slice(0, 5);
+  const fatigueEvaluations = primaryResultKey
+    ? families.flatMap((family) => {
+        const evaluation = family.performance?.evaluation;
+        return evaluation?.resultKey === primaryResultKey
+          ? [evaluation]
+          : [];
+      })
+    : [];
+  const fatigueStatuses = [
+    {
+      key: "fatigue_risk" as const,
+      label: "Có dấu hiệu mỏi",
+      detail: "Nhiều tín hiệu xu hướng đang xấu đi.",
+      tone: "error",
+    },
+    {
+      key: "monitor" as const,
+      label: "Theo dõi thêm",
+      detail: "Có tín hiệu cần thêm thời gian quan sát.",
+      tone: "warning",
+    },
+    {
+      key: "stable" as const,
+      label: "Chưa thấy dấu hiệu mỏi",
+      detail: "Các tín hiệu xu hướng vẫn ổn định.",
+      tone: "ready",
+    },
+  ].map((status) => ({
+    ...status,
+    count: fatigueEvaluations.filter(
+      (evaluation) => evaluation.fatigueStatus === status.key,
+    ).length,
+  }));
+  const fatigueEvaluableCount = fatigueStatuses.reduce(
+    (total, status) => total + status.count,
+    0,
+  );
+  const fatigueInsufficientCount = fatigueEvaluations.filter(
+    (evaluation) => evaluation.fatigueStatus === "insufficient",
+  ).length;
   const scatterFamilies = resultMetrics.scatter.enabled
     ? familyMetrics.filter(
         (
@@ -610,6 +795,24 @@ export function OverviewV2({
           item.efficiencyValue !== null,
       )
     : [];
+  const scatterMedianSpend = medianFinite(
+    scatterFamilies.map(
+      ({ family }) => family.performance?.spend ?? Number.NaN,
+    ),
+  );
+  const scatterUsesCostPerResult =
+    resultMetrics.scatter.y?.valueType === "currency";
+  const scatterBenchmarkValues = scatterUsesCostPerResult
+    ? scatterFamilies.flatMap(({ family }) => {
+        const evaluation = family.performance?.evaluation;
+        return evaluation?.resultKey === primaryResultKey &&
+          typeof evaluation.benchmarkValue === "number" &&
+          Number.isFinite(evaluation.benchmarkValue)
+          ? [evaluation.benchmarkValue]
+          : [];
+      })
+    : [];
+  const scatterBenchmark = medianFinite(scatterBenchmarkValues);
   const maxScatterSpend = Math.max(
     ...scatterFamilies.map(
       ({ family }) => family.performance?.spend ?? 0,
@@ -618,12 +821,34 @@ export function OverviewV2({
   );
   const maxScatterEfficiency = Math.max(
     ...scatterFamilies.map((item) => item.efficiencyValue),
+    scatterBenchmark ?? 0,
     1,
   );
   const maxScatterResult = Math.max(
     ...scatterFamilies.map((item) => item.resultValue),
     1,
   );
+  const scatterMedianLeft =
+    scatterMedianSpend === null
+      ? null
+      : Math.min(
+          90,
+          Math.max(
+            8,
+            8 + (scatterMedianSpend / maxScatterSpend) * 82,
+          ),
+        );
+  const scatterBenchmarkTop =
+    scatterBenchmark === null
+      ? null
+      : Math.min(
+          82,
+          Math.max(
+            8,
+            8 +
+              (1 - scatterBenchmark / maxScatterEfficiency) * 74,
+          ),
+        );
   const statusDescriptions = {
     good: "Kết quả đã qua ngưỡng đánh giá",
     stable: "Nằm trong ±15% benchmark",
@@ -655,15 +880,39 @@ export function OverviewV2({
   const visibleTrend = trendCurrency
     ? trend.filter((point) => point.currency === trendCurrency)
     : [];
-  const trendMetric = supportedTrendMetric(
-    primaryResultKey,
-    primaryEfficiencyCard?.label,
-    primaryEfficiencyCard?.valueType,
-  );
-  const trendChart =
-    trendCurrency && trendMetric
-      ? buildTrendChartModel(visibleTrend, trendMetric, trendCurrency)
-      : null;
+  const trendMetrics: TrendMetric[] = [];
+  if (primaryResultKey && primaryResultCard) {
+    trendMetrics.push({
+      resultKey: primaryResultKey,
+      label: primaryResultCard.label,
+      valueType: primaryResultCard.valueType,
+      source: "result",
+      attribution: primaryResultCard.attribution,
+    });
+  }
+  if (
+    primaryResultKey &&
+    primaryEfficiencyCard &&
+    !primaryEfficiencyCard.unavailableReason
+  ) {
+    trendMetrics.push({
+      resultKey: primaryResultKey,
+      label: primaryEfficiencyCard.label,
+      valueType: primaryEfficiencyCard.valueType,
+      source: "efficiency",
+      attribution: primaryEfficiencyCard.attribution,
+    });
+  }
+  const trendSeries = trendCurrency
+    ? trendMetrics.flatMap((metric) => {
+        const chart = buildTrendChartModel(
+          visibleTrend,
+          metric,
+          trendCurrency,
+        );
+        return chart ? [{ chart, metric }] : [];
+      })
+    : [];
   const scatterCurrency =
     currency ??
     scatterFamilies[0]?.family.performance?.currency ??
@@ -686,6 +935,69 @@ export function OverviewV2({
             : "cao hơn tốt hơn",
       })
     : null;
+  const scatterMedianSpendText =
+    scatterMedianSpend === null || !scatterCurrency
+      ? null
+      : formatMoney(scatterMedianSpend, scatterCurrency);
+  const scatterBenchmarkText =
+    scatterBenchmark === null || !resultMetrics.scatter.y
+      ? null
+      : formatFamilyMetric(
+          scatterBenchmark,
+          resultMetrics.scatter.y.valueType,
+          scatterCurrency,
+        );
+  const scatterBenchmarkMetricLabel = resultMetrics.scatter.y
+    ? `${resultMetrics.scatter.y.label}${
+        new Set(scatterBenchmarkValues).size > 1
+          ? " (trung vị)"
+          : ""
+      }`
+    : null;
+  const scatterQuadrants =
+    scatterMedianLeft !== null && scatterBenchmarkTop !== null
+      ? {
+          left: (8 + scatterMedianLeft) / 2,
+          right: (scatterMedianLeft + 90) / 2,
+          top: (8 + scatterBenchmarkTop) / 2,
+          bottom: (scatterBenchmarkTop + 82) / 2,
+        }
+      : null;
+  const isAllObjectives = reportingBar.objective === "all";
+  const selectedResultKey = reportingBar.result ?? null;
+  const selectedResultLabel =
+    reportingBar.results.find(
+      (result) => result.key === selectedResultKey,
+    )?.label ??
+    selectedResultKey ??
+    "kết quả đã chọn";
+  const selectedResultUnavailable =
+    !isAllObjectives && !!selectedResultKey && !primaryResultKey;
+  const objectiveCtaSection =
+    resultMetrics.crossObjectiveSections.find((section) =>
+      section.results.some((result) => result.value !== null),
+    ) ??
+    resultMetrics.crossObjectiveSections[0] ??
+    null;
+  const objectiveCta = objectiveCtaSection
+    ? {
+        key: objectiveCtaSection.objectiveKey,
+        label: objectiveCtaSection.objectiveLabel,
+      }
+    : (reportingBar.objectives[0] ?? null);
+  const objectiveSpendCurrency = reportingCurrency || currency;
+  const objectiveSpendTotal =
+    resultMetrics.crossObjectiveSections.reduce(
+      (total, section) => total + (section.spend ?? 0),
+      0,
+    );
+  const visibleReportWarnings = [
+    ...new Set(
+      reportWarnings
+        .map((warning) => warning.trim())
+        .filter(Boolean),
+    ),
+  ];
 
   return (
     <div className="v2-page">
@@ -709,8 +1021,24 @@ export function OverviewV2({
         currencies={currencyOptions}
         compare={compare}
         freshness={freshness}
-        preserved={reportingContextHiddenFields(query)}
+        preserved={overviewReportingContextHiddenFields(query)}
       />
+      {connected && visibleReportWarnings.length ? (
+        <aside className="v2-report-context-warning" role="alert">
+          <strong>Ngữ cảnh báo cáo cần kiểm tra.</strong>{" "}
+          {visibleReportWarnings.join(" · ")}{" "}
+          <Link
+            className="v2-link"
+            href={buildNavigationHref(
+              "/data-health?coverage=event",
+              query,
+            )}
+          >
+            Mở Chất lượng dữ liệu
+            <ArrowRight aria-hidden="true" size={13} />
+          </Link>
+        </aside>
+      ) : null}
       {!connected ? (
         <section className="v2-panel v2-overview-onboarding">
           <Image
@@ -801,332 +1129,442 @@ export function OverviewV2({
                   <strong>
                     {section.results
                       .filter((result) => result.value !== null)
-                      .map(
-                        (result) =>
-                          `${formatCompactNumber(result.value ?? 0)} ${result.label}`,
-                      )
+                      .map((result) => {
+                        const resultDisplay = `${formatCompactNumber(
+                          result.value ?? 0,
+                        )} ${result.label}`;
+                        return result.costPerResult !== null &&
+                          result.efficiencyLabel &&
+                          objectiveSpendCurrency
+                          ? `${resultDisplay} · ${
+                              result.efficiencyLabel
+                            } ${formatMoney(
+                              result.costPerResult,
+                              objectiveSpendCurrency,
+                            )}`
+                          : resultDisplay;
+                      })
                       .join(" · ") || "Chưa có kết quả Meta ghi nhận"}
                   </strong>
-                  <small>Chọn mục tiêu để phân tích Creative</small>
+                  <small>
+                    {section.spend !== null && objectiveSpendCurrency
+                      ? `Spend ${formatMoney(
+                          section.spend,
+                          objectiveSpendCurrency,
+                        )}${
+                          objectiveSpendTotal > 0
+                            ? ` (${formatPercent(
+                                (section.spend /
+                                  objectiveSpendTotal) *
+                                  100,
+                              )})`
+                            : ""
+                        }`
+                      : "Spend tách theo từng tiền tệ · chọn currency để xem"}{" "}
+                    · Chọn mục tiêu để phân tích Creative
+                  </small>
                 </Link>
               ))}
             </section>
           ) : null}
-          {hasCreativeEvaluation ? (
+          {isAllObjectives ? (
             <section
-              className="v2-segment-grid"
-              aria-label="Phân khúc hiệu suất"
+              className="v2-panel"
+              aria-label="Chọn mục tiêu để phân tích Creative"
             >
-              {segments.map((segment) => (
-                <Link
-                  className="v2-segment-card"
-                  href={buildContextHref(
-                    "/creatives?view=table#creative-results",
-                    query,
-                    {
-                      performance: segment.value,
+              <div className="v2-compact-empty">
+                <Target aria-hidden="true" size={22} />
+                <p>
+                  Chọn một mục tiêu để xếp hạng và đánh giá Creative
+                  theo cùng một loại kết quả.
+                </p>
+                {objectiveCta ? (
+                  <Link
+                    className="button button--secondary"
+                    href={href("/overview", query, {
+                      objective: objectiveCta.key,
+                      result: null,
                       selected: null,
                       tab: null,
-                    },
-                  )}
-                  key={segment.value}
-                >
-                  <span className={`v2-chip v2-chip--${segment.tone}`}>
-                    {segment.label}
-                  </span>
-                  <strong>{segment.count}</strong>
-                  <small>{segment.description}</small>
-                  <ArrowRight aria-hidden="true" size={15} />
-                </Link>
-              ))}
+                    })}
+                  >
+                    Phân tích {objectiveCta.label}
+                    <ArrowRight aria-hidden="true" size={15} />
+                  </Link>
+                ) : null}
+              </div>
             </section>
           ) : (
-            <section className="v2-panel v2-evaluation-gate">
-              <ShieldCheck aria-hidden="true" size={20} />
-              <div>
-                <strong>
-                  {primaryResultKey
-                    ? `Đánh giá theo ${
-                        primaryResultDefinition?.label ??
-                        "kết quả đã chọn"
-                      }`
-                    : "Chọn một mục tiêu và kết quả để đánh giá"}
-                </strong>
-                <small>
-                  Không dùng nhãn hoặc benchmark của kết quả khác. Creative chỉ
-                  được xếp loại khi có mapping, benchmark đúng peer group và đủ
-                  ngưỡng mẫu.
-                </small>
-              </div>
-            </section>
-          )}
-          <div className="v2-overview-grid">
-            <section className="v2-panel v2-scatter-panel v2-overview-scatter">
-              <div className="v2-panel__header">
-                <div>
-                  <h2>
-                    {resultMetrics.scatter.y
-                      ? `Spend × ${resultMetrics.scatter.y.label}`
-                      : "Hiệu quả Creative theo kết quả"}
-                  </h2>
-                  <p>
-                    {resultMetrics.scatter.bubbleSize
-                      ? `Kích thước bubble theo ${resultMetrics.scatter.bubbleSize.label}; click để mở Creative Family.`
-                      : "Chọn một kết quả có thể so sánh để mở scatter."}
-                  </p>
-                </div>
-                <BarChart3 aria-hidden="true" size={18} />
-              </div>
-              {scatterFamilies.length ? (
-                <>
-                  <CreativeScatterLegend />
-                  <div
-                    className="v2-scatter"
-                    role="group"
-                    aria-label={`Biểu đồ phân tán. ${scatterXAxisLabel}. ${
-                      scatterYAxisLabel ?? "Trục Y chưa khả dụng"
-                    }`}
-                  >
-                    <span
-                      className="v2-scatter__y"
-                      aria-label={scatterYAxisLabel ?? undefined}
+            <>
+              {hasCreativeEvaluation ? (
+                <section
+                  className="v2-segment-grid"
+                  aria-label="Phân khúc hiệu suất"
+                >
+                  {segments.map((segment) => (
+                    <Link
+                      className="v2-segment-card"
+                      href={buildContextHref(
+                        "/creatives?view=table#creative-results",
+                        query,
+                        {
+                          performance: segment.value,
+                          selected: null,
+                          tab: null,
+                        },
+                      )}
+                      key={segment.value}
                     >
-                      {scatterYAxisLabel}
-                    </span>
-                    <span
-                      className="v2-scatter__x"
-                      aria-label={scatterXAxisLabel}
-                    >
-                      {scatterXAxisLabel} →
-                    </span>
-                    <i className="v2-scatter__line v2-scatter__line--x" />
-                    <i className="v2-scatter__line v2-scatter__line--y" />
-                    {scatterFamilies.slice(0, 28).map((item) => {
-                      const {
-                        family,
-                        resultValue,
-                        efficiencyValue,
-                      } = item;
-                      const performance = family.performance!;
-                      const left =
-                        8 +
-                        (performance.spend / maxScatterSpend) * 82;
-                      const top =
-                        8 +
-                        (1 -
-                          efficiencyValue /
-                            maxScatterEfficiency) *
-                          74;
-                      const pointSize =
-                        14 +
-                        Math.sqrt(
-                          resultValue / maxScatterResult,
-                        ) *
-                          18;
-                      const status = creativePerformanceStatus(
-                        performance,
-                        primaryResultKey,
-                      );
-                      const spendText = formatMoney(
-                        performance.spend,
-                        performance.currency,
-                      );
-                      const efficiencyLabel =
-                        resultMetrics.scatter.y?.label ??
-                        "Hiệu quả";
-                      const efficiencyText = formatFamilyMetric(
-                        efficiencyValue,
-                        resultMetrics.scatter.y?.valueType ??
-                          null,
-                        performance.currency,
-                      );
-                      const resultLabel =
-                        primaryResultCard?.label ??
-                        primaryResultDefinition?.label ??
-                        "Kết quả";
-                      const resultText = formatFamilyMetric(
-                        resultValue,
-                        primaryResultCard?.valueType ?? null,
-                        performance.currency,
-                      );
-                      return (
-                        <ContextualEntityLink
-                          key={family.id}
-                          className={`v2-scatter__point v2-scatter__point--${status.key}`}
-                          href={creativeFullDetailHref({
-                            familyId: family.id,
-                            query,
-                            tab: "performance",
-                            originPathname: "/overview",
-                          })}
-                          drawerHref={href("/overview", query, {
-                            selected: family.id,
-                            tab: "performance",
-                          })}
-                          entityId={family.id}
-                          ariaLabel={scatterBubbleAriaLabel({
-                            name: family.name,
-                            statusLabel: status.label,
-                            spend: spendText,
-                            efficiencyLabel,
-                            efficiencyValue: efficiencyText,
-                            resultLabel,
-                            resultValue: resultText,
-                          })}
-                          style={creativeScatterPointStyle(
-                            left,
-                            top,
-                            pointSize,
-                          )}
-                        >
-                          <CreativeScatterTooltip
-                            name={family.name}
-                            status={status.key}
-                            statusLabel={status.label}
-                            spend={spendText}
-                            efficiencyLabel={efficiencyLabel}
-                            efficiencyValue={efficiencyText}
-                            resultLabel={resultLabel}
-                            resultValue={resultText}
-                            horizontal={
-                              left > 68
-                                ? "right"
-                                : left < 32
-                                  ? "left"
-                                  : "center"
-                            }
-                            vertical={
-                              top < 30 ? "below" : "above"
-                            }
-                          />
-                        </ContextualEntityLink>
-                      );
-                    })}
-                  </div>
-                </>
+                      <span className={`v2-chip v2-chip--${segment.tone}`}>
+                        {segment.label}
+                      </span>
+                      <strong>{segment.count}</strong>
+                      <small>{segment.description}</small>
+                      <ArrowRight aria-hidden="true" size={15} />
+                    </Link>
+                  ))}
+                </section>
               ) : (
-                <div className="v2-compact-empty">
-                  <BarChart3 aria-hidden="true" size={22} />
-                  <p>
-                    {scatterUnavailableMessage(
-                      resultMetrics.scatter.unavailableReason,
-                    )}
-                  </p>
-                </div>
+                <section className="v2-panel v2-evaluation-gate">
+                  <ShieldCheck aria-hidden="true" size={20} />
+                  <div>
+                    <strong>
+                      {primaryResultKey
+                        ? `Đánh giá theo ${
+                            primaryResultDefinition?.label ??
+                            "kết quả đã chọn"
+                          }`
+                        : selectedResultUnavailable
+                          ? `${selectedResultLabel} đã được chọn nhưng dữ liệu chuẩn hóa chưa sẵn sàng`
+                          : "Chọn một kết quả để đánh giá Creative"}
+                    </strong>
+                    <small>
+                      {selectedResultUnavailable
+                        ? "Hãy kiểm tra snapshot, Result Mapping và phạm vi dữ liệu trước khi đánh giá Creative."
+                        : "Không dùng nhãn hoặc benchmark của kết quả khác. Creative chỉ được xếp loại khi có mapping, benchmark đúng peer group và đủ ngưỡng mẫu."}
+                    </small>
+                  </div>
+                </section>
               )}
-            </section>
+              <div className="v2-overview-grid">
+                <section className="v2-panel v2-scatter-panel v2-overview-scatter">
+                  <div className="v2-panel__header">
+                    <div>
+                      <h2>
+                        {resultMetrics.scatter.y
+                          ? `Spend × ${resultMetrics.scatter.y.label}`
+                          : "Hiệu quả Creative theo kết quả"}
+                      </h2>
+                      <p>
+                        {resultMetrics.scatter.bubbleSize
+                          ? `Kích thước bubble theo ${resultMetrics.scatter.bubbleSize.label}; click để mở Creative Family.`
+                          : selectedResultUnavailable
+                            ? `${selectedResultLabel} đã được chọn; đang chờ normalized result cấp Creative Family.`
+                            : "Chọn một kết quả có thể so sánh để mở scatter."}
+                      </p>
+                    </div>
+                    <BarChart3 aria-hidden="true" size={18} />
+                  </div>
+                  {scatterFamilies.length ? (
+                    <>
+                      <CreativeScatterLegend />
+                      <div
+                        className="v2-scatter-confidence-legend"
+                        role="list"
+                        aria-label="Chú giải viền theo độ tin cậy dữ liệu"
+                      >
+                        {(
+                          [
+                            ["high", "Tin cậy cao"],
+                            ["medium", "Tin cậy trung bình"],
+                            ["low", "Tin cậy thấp"],
+                            ["unknown", "Chưa có đánh giá"],
+                          ] as const
+                        ).map(([key, label]) => (
+                          <span role="listitem" key={key}>
+                            <i
+                              className={`v2-scatter-confidence-legend__swatch v2-scatter-confidence-legend__swatch--${key}`}
+                              aria-hidden="true"
+                            />
+                            {label}
+                          </span>
+                        ))}
+                      </div>
+                      <div
+                        className="v2-scatter"
+                        role="group"
+                        aria-label={`Biểu đồ phân tán. ${scatterXAxisLabel}. ${
+                          scatterYAxisLabel ?? "Trục Y chưa khả dụng"
+                        }. ${
+                          scatterMedianSpendText
+                            ? `Median Spend: ${scatterMedianSpendText}`
+                            : "Median Spend chưa khả dụng"
+                        }. ${
+                          scatterBenchmarkText
+                            ? `Benchmark ${scatterBenchmarkMetricLabel}: ${scatterBenchmarkText}`
+                            : scatterUsesCostPerResult
+                              ? "Benchmark chưa khả dụng"
+                              : "Đường benchmark Cost/Result không áp dụng cho chỉ số Y hiện tại"
+                        }`}
+                      >
+                        <span
+                          className="v2-scatter__y"
+                          aria-label={scatterYAxisLabel ?? undefined}
+                        >
+                          {scatterYAxisLabel}
+                        </span>
+                        <span
+                          className="v2-scatter__x"
+                          aria-label={scatterXAxisLabel}
+                        >
+                          {scatterXAxisLabel} →
+                        </span>
+                        {scatterMedianLeft !== null &&
+                        scatterMedianSpendText ? (
+                          <>
+                            <i
+                              className="v2-scatter__benchmark-line v2-scatter__benchmark-line--median"
+                              data-scatter-reference="median-spend"
+                              aria-hidden="true"
+                              style={{ left: `${scatterMedianLeft}%` }}
+                            />
+                            <span
+                              className="v2-scatter__benchmark-label v2-scatter__benchmark-label--median"
+                              data-scatter-label="median-spend"
+                              style={{ left: `${scatterMedianLeft}%` }}
+                            >
+                              Median Spend: {scatterMedianSpendText}
+                            </span>
+                          </>
+                        ) : null}
+                        {scatterBenchmarkTop !== null &&
+                        scatterBenchmarkText ? (
+                          <>
+                            <i
+                              className="v2-scatter__benchmark-line v2-scatter__benchmark-line--result"
+                              data-scatter-reference="result-benchmark"
+                              aria-hidden="true"
+                              style={{ top: `${scatterBenchmarkTop}%` }}
+                            />
+                            <span
+                              className="v2-scatter__benchmark-label v2-scatter__benchmark-label--result"
+                              data-scatter-label="result-benchmark"
+                              style={{ top: `${scatterBenchmarkTop}%` }}
+                            >
+                              Benchmark {scatterBenchmarkMetricLabel}:{" "}
+                              {scatterBenchmarkText}
+                            </span>
+                          </>
+                        ) : null}
+                        {scatterQuadrants ? (
+                          <div
+                            className="v2-scatter__quadrants"
+                            aria-label="Bốn vùng quyết định theo Median Spend và benchmark"
+                          >
+                            {[
+                              {
+                                key: "low-spend-high-cost",
+                                title: "Chi tiêu thấp · Cost cao",
+                                action: "Tiếp tục test",
+                                left: scatterQuadrants.left,
+                                top: scatterQuadrants.top,
+                              },
+                              {
+                                key: "high-spend-high-cost",
+                                title: "Chi tiêu lớn · Cost cao",
+                                action: "Cần kiểm tra",
+                                left: scatterQuadrants.right,
+                                top: scatterQuadrants.top,
+                              },
+                              {
+                                key: "low-spend-good-cost",
+                                title: "Chi tiêu thấp · Cost tốt",
+                                action: "Có tiềm năng",
+                                left: scatterQuadrants.left,
+                                top: scatterQuadrants.bottom,
+                              },
+                              {
+                                key: "high-spend-good-cost",
+                                title: "Chi tiêu lớn · Cost tốt",
+                                action: "Ứng viên mở rộng",
+                                left: scatterQuadrants.right,
+                                top: scatterQuadrants.bottom,
+                              },
+                            ].map((quadrant) => (
+                              <span
+                                className="v2-scatter__quadrant"
+                                data-scatter-quadrant={quadrant.key}
+                                key={quadrant.key}
+                                style={{
+                                  left: `${quadrant.left}%`,
+                                  top: `${quadrant.top}%`,
+                                }}
+                              >
+                                <small>{quadrant.title}</small>
+                                <strong>{quadrant.action}</strong>
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        {scatterFamilies.slice(0, 28).map((item) => {
+                          const {
+                            family,
+                            resultValue,
+                            efficiencyValue,
+                          } = item;
+                          const performance = family.performance!;
+                          const evaluation =
+                            performance.evaluation?.resultKey ===
+                            primaryResultKey
+                              ? performance.evaluation
+                              : null;
+                          const confidence: ScatterConfidence =
+                            evaluation?.dataConfidence ?? "unknown";
+                          const confidenceText =
+                            scatterConfidenceLabel(confidence);
+                          const benchmarkDeltaText = scatterDeltaLabel(
+                            evaluation?.deltaPercent,
+                          );
+                          const left =
+                            8 +
+                            (performance.spend / maxScatterSpend) * 82;
+                          const top =
+                            8 +
+                            (1 -
+                              efficiencyValue /
+                                maxScatterEfficiency) *
+                              74;
+                          const pointSize =
+                            14 +
+                            Math.sqrt(
+                              resultValue / maxScatterResult,
+                            ) *
+                              18;
+                          const status = creativePerformanceStatus(
+                            performance,
+                            primaryResultKey,
+                          );
+                          const spendText = formatMoney(
+                            performance.spend,
+                            performance.currency,
+                          );
+                          const efficiencyLabel =
+                            resultMetrics.scatter.y?.label ??
+                            "Hiệu quả";
+                          const efficiencyText = formatFamilyMetric(
+                            efficiencyValue,
+                            resultMetrics.scatter.y?.valueType ??
+                              null,
+                            performance.currency,
+                          );
+                          const resultLabel =
+                            primaryResultCard?.label ??
+                            primaryResultDefinition?.label ??
+                            "Kết quả";
+                          const resultText = formatFamilyMetric(
+                            resultValue,
+                            primaryResultCard?.valueType ?? null,
+                            performance.currency,
+                          );
+                          return (
+                            <ContextualEntityLink
+                              key={family.id}
+                              className={`v2-scatter__point v2-scatter__point--${status.key} v2-scatter__point--confidence-${confidence}`}
+                              href={creativeFullDetailHref({
+                                familyId: family.id,
+                                query,
+                                tab: "performance",
+                                originPathname: "/overview",
+                              })}
+                              drawerHref={href("/overview", query, {
+                                selected: family.id,
+                                tab: "performance",
+                              })}
+                              entityId={family.id}
+                              ariaLabel={scatterBubbleAriaLabel({
+                                name: family.name,
+                                statusLabel: status.label,
+                                spend: spendText,
+                                efficiencyLabel,
+                                efficiencyValue: efficiencyText,
+                                resultLabel,
+                                resultValue: resultText,
+                                confidenceLabel: confidenceText,
+                                benchmarkDeltaLabel:
+                                  benchmarkDeltaText,
+                              })}
+                              style={creativeScatterPointStyle(
+                                left,
+                                top,
+                                pointSize,
+                              )}
+                            >
+                              <CreativeScatterTooltip
+                                name={family.name}
+                                status={status.key}
+                                statusLabel={status.label}
+                                spend={spendText}
+                                efficiencyLabel={efficiencyLabel}
+                                efficiencyValue={efficiencyText}
+                                resultLabel={resultLabel}
+                                resultValue={resultText}
+                                confidenceLabel={confidenceText}
+                                benchmarkDeltaLabel={
+                                  benchmarkDeltaText
+                                }
+                                horizontal={
+                                  left > 68
+                                    ? "right"
+                                    : left < 32
+                                      ? "left"
+                                      : "center"
+                                }
+                                vertical={
+                                  top < 30 ? "below" : "above"
+                                }
+                              />
+                            </ContextualEntityLink>
+                          );
+                        })}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="v2-compact-empty">
+                      <BarChart3 aria-hidden="true" size={22} />
+                      <p>
+                        {selectedResultUnavailable
+                          ? `${selectedResultLabel} đã được chọn nhưng normalized result cấp Creative Family chưa sẵn sàng.`
+                          : scatterUnavailableMessage(
+                              resultMetrics.scatter.unavailableReason,
+                            )}
+                      </p>
+                    </div>
+                  )}
+                </section>
             <section className="v2-panel v2-trend-panel">
               <div className="v2-panel__header">
                 <div>
                   <h2>
-                    {primaryEfficiencyCard
-                      ? `Xu hướng ${primaryEfficiencyCard.label}`
-                      : "Xu hướng hiệu quả theo kết quả"}
+                    {primaryResultDefinition
+                      ? `Xu hướng ${primaryResultDefinition.label}`
+                      : "Xu hướng kết quả và hiệu quả"}
                   </h2>
                   <p>
-                    Theo ngày và cùng tiền tệ; số chuyển đổi là Meta-attributed.
+                    Result và chỉ số hiệu quả khả dụng theo ngày, cùng tiền tệ.
                   </p>
                 </div>
                 <BarChart3 aria-hidden="true" size={18} />
               </div>
-              {trendChart && trendMetric && trendCurrency ? (
-                <div className="v2-trend-chart">
-                  <div
-                    className="v2-trend-legend"
-                    aria-label="Chú giải biểu đồ xu hướng"
-                  >
-                    <span>
-                      <i
-                        className="v2-trend-dot v2-trend-dot--efficiency"
-                        aria-hidden="true"
-                      />
-                      <strong>{trendMetric.label}</strong>
-                    </span>
-                    <small>Meta-attributed · theo ngày</small>
-                    <strong>
-                      Đơn vị: {trendUnit(trendMetric, trendCurrency)}
-                    </strong>
-                  </div>
-                  <div className="v2-trend-plot">
-                    <div
-                      className="v2-trend-y-axis"
-                      aria-label={`Trục tung ${trendMetric.label}, đơn vị ${trendUnit(
-                        trendMetric,
-                        trendCurrency,
-                      )}`}
-                    >
-                      <span className="v2-trend-y-axis__label">
-                        {trendMetric.label} (
-                        {trendUnit(trendMetric, trendCurrency)})
-                      </span>
-                      <div className="v2-trend-y-axis__ticks">
-                        <span data-trend-axis-tick="max">
-                          {formatTrendTick(
-                            trendChart.max,
-                            trendMetric,
-                            trendCurrency,
-                          )}
-                        </span>
-                        <span data-trend-axis-tick="min">
-                          {formatTrendTick(
-                            trendChart.min,
-                            trendMetric,
-                            trendCurrency,
-                          )}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="v2-trend-canvas">
-                      <svg
-                        viewBox="0 0 100 100"
-                        preserveAspectRatio="none"
-                        role="group"
-                        aria-labelledby="overview-trend-title overview-trend-description"
-                      >
-                        <title id="overview-trend-title">
-                          {`Xu hướng ${trendMetric.label} theo ngày`}
-                        </title>
-                        <desc id="overview-trend-description">
-                          {`${trendChart.points.length} điểm dữ liệu, đơn vị ${trendCurrency}. Dùng Tab để đọc từng điểm.`}
-                        </desc>
-                        <path
-                          className="v2-trend-line v2-trend-line--efficiency"
-                          d={trendChart.path}
-                          aria-hidden="true"
-                        />
-                      </svg>
-                      <div
-                        className="v2-trend-point-layer"
-                        aria-label="Các điểm dữ liệu xu hướng"
-                      >
-                        {trendChart.points.map((point) => (
-                          <span
-                            className="v2-trend-point"
-                            tabIndex={0}
-                            role="img"
-                            aria-label={point.tooltip}
-                            title={point.tooltip}
-                            data-tooltip={point.tooltip}
-                            data-trend-date={point.date}
-                            data-trend-value={point.value}
-                            key={`${point.date}:${point.value}`}
-                            style={{
-                              left: `${point.x}%`,
-                              top: `${point.y}%`,
-                            }}
-                          />
-                        ))}
-                      </div>
-                      <div
-                        className="v2-trend-axis"
-                        aria-label="Trục hoành theo ngày"
-                      >
-                        <span>{visibleTrend[0]?.date}</span>
-                        <strong>Ngày</strong>
-                        <span>{visibleTrend.at(-1)?.date}</span>
-                      </div>
-                    </div>
-                  </div>
+              {trendSeries.length && trendCurrency ? (
+                <div className="v2-trend-series">
+                  {trendSeries.map(({ chart, metric }) => (
+                    <TrendSeriesChart
+                      chart={chart}
+                      metric={metric}
+                      currency={trendCurrency}
+                      key={`${metric.source}:${metric.resultKey}`}
+                    />
+                  ))}
                 </div>
               ) : (
                 <div className="v2-compact-empty">
@@ -1134,7 +1572,9 @@ export function OverviewV2({
                   <p>
                     {primaryResultKey
                       ? "Chưa có đủ chuỗi normalized result theo ngày cho kết quả đã chọn."
-                      : "Chọn một mục tiêu và kết quả để xem xu hướng có thể so sánh."}
+                      : selectedResultUnavailable
+                        ? `${selectedResultLabel} đã được chọn nhưng normalized result theo ngày chưa sẵn sàng.`
+                        : "Chọn một kết quả để xem xu hướng có thể so sánh."}
                   </p>
                 </div>
               )}
@@ -1146,7 +1586,9 @@ export function OverviewV2({
                   <p>
                     {primaryResultDefinition
                       ? `Theo ${primaryResultDefinition.label} Meta ghi nhận trong kỳ.`
-                      : "Chọn một kết quả để xếp hạng cùng bản chất."}
+                      : selectedResultUnavailable
+                        ? `${selectedResultLabel} đã được chọn nhưng normalized result cấp Creative Family chưa sẵn sàng.`
+                        : "Chọn một kết quả để xếp hạng cùng bản chất."}
                   </p>
                 </div>
                 <Sparkles aria-hidden="true" size={18} />
@@ -1184,7 +1626,9 @@ export function OverviewV2({
                 <div className="v2-compact-empty">
                   <Sparkles aria-hidden="true" size={22} />
                   <p>
-                    Chưa có kết quả cấp Creative Family đủ tin cậy để xếp hạng.
+                    {selectedResultUnavailable
+                      ? `Chưa thể xếp hạng theo ${selectedResultLabel} vì dữ liệu chuẩn hóa cấp Creative Family chưa sẵn sàng.`
+                      : "Chưa có kết quả cấp Creative Family đủ tin cậy để xếp hạng."}
                   </p>
                 </div>
               )}
@@ -1253,10 +1697,58 @@ export function OverviewV2({
                   <p>
                     {hasCreativeEvaluation
                       ? "Không có cảnh báo Creative trong bộ lọc hiện tại."
-                      : "Chưa xếp loại Creative cho kết quả này khi benchmark hoặc normalized result cấp Family chưa đủ."}
+                      : selectedResultUnavailable
+                        ? `Đã chọn ${selectedResultLabel}, nhưng chưa thể đề xuất hành động khi normalized result cấp Creative Family chưa sẵn sàng.`
+                        : selectedResultKey
+                          ? "Chưa xếp loại Creative cho kết quả này khi benchmark hoặc normalized result cấp Family chưa đủ."
+                          : "Chọn một kết quả để nhận đề xuất hành động cho Creative."}
                   </p>
                 </div>
               )}
+            </section>
+            <section className="v2-panel v2-data-quality-card v2-fatigue-panel">
+              <div className="v2-panel__header">
+                <div>
+                  <h2>Dấu hiệu mỏi Creative</h2>
+                  <p>
+                    Tách riêng tín hiệu xu hướng khỏi điểm hiệu quả tổng thể.
+                  </p>
+                </div>
+                <BarChart3 aria-hidden="true" size={18} />
+              </div>
+              {fatigueEvaluableCount > 0 ? (
+                <ul aria-label="Phân bố trạng thái mỏi Creative">
+                  {fatigueStatuses.map((status) => (
+                    <li key={status.key}>
+                      <span
+                        className={`v2-quality-dot v2-quality-dot--${status.tone}`}
+                        aria-hidden="true"
+                      />
+                      <div>
+                        <strong>{status.label}</strong>
+                        <small>
+                          {status.count} Creative · {status.detail}
+                        </small>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="v2-compact-empty">
+                  <ShieldCheck aria-hidden="true" size={22} />
+                  <p>
+                    {selectedResultUnavailable
+                      ? `Chưa thể đánh giá độ mỏi theo ${selectedResultLabel} khi normalized result cấp Creative Family chưa sẵn sàng.`
+                      : "Chưa đủ dữ liệu xu hướng hoặc khoảng ngày còn quá ngắn để đánh giá độ mỏi."}
+                  </p>
+                </div>
+              )}
+              {fatigueInsufficientCount > 0 ? (
+                <p className="v2-fatigue-note">
+                  {fatigueInsufficientCount} Creative chưa đủ dữ liệu xu hướng
+                  nên không được gán trạng thái mỏi.
+                </p>
+              ) : null}
             </section>
             <section className="v2-panel v2-data-quality-card">
               <div className="v2-panel__header">
@@ -1317,6 +1809,8 @@ export function OverviewV2({
               </Link>
             </section>
           </div>
+            </>
+          )}
         </>
       )}
       {selectedDrawer}

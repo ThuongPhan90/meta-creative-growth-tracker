@@ -152,6 +152,7 @@ describe("dynamic result metrics", () => {
           expect.objectContaining({
             canonicalKey: "lead",
             value: 10,
+            efficiencyLabel: "Cost/Lead",
             costPerResult: 20,
             attribution: "meta_attributed",
           }),
@@ -165,12 +166,111 @@ describe("dynamic result metrics", () => {
           expect.objectContaining({
             canonicalKey: "purchase",
             value: 2,
+            efficiencyLabel: "Cost/Purchase",
             costPerResult: 50,
             attribution: "meta_attributed",
           }),
         ],
       }),
     ]);
+  });
+
+  it("keeps Spend-only Objective sections when every Result is disabled", () => {
+    const model = buildDynamicResultMetrics({
+      context: context({
+        objectiveKey: "all",
+        primaryResultKey: undefined,
+      }),
+      definitions: [],
+      canonicalResults: [],
+      objectiveSpendByObjective: {
+        awareness: 100,
+        traffic: 200,
+      },
+      spend: 300,
+      impressions: 1_000,
+      reach: null,
+      clicks: 50,
+      value: null,
+    });
+
+    expect(model.crossObjectiveSections).toEqual([
+      expect.objectContaining({
+        objectiveKey: "awareness",
+        spend: 100,
+        results: [],
+      }),
+      expect.objectContaining({
+        objectiveKey: "traffic",
+        spend: 200,
+        results: [],
+      }),
+    ]);
+  });
+
+  it("keeps Spend-only Objective sections unavailable in split-currency mode", () => {
+    const model = buildDynamicResultMetrics({
+      context: context({
+        objectiveKey: "all",
+        primaryResultKey: undefined,
+        currency: undefined,
+        currencyMode: "split",
+      }),
+      definitions: [],
+      canonicalResults: [],
+      objectiveSpendByObjective: {
+        awareness: null,
+        traffic: null,
+      },
+      spend: 300,
+      impressions: 1_000,
+      reach: null,
+      clicks: 50,
+      value: null,
+    });
+
+    expect(model.crossObjectiveSections).toEqual([
+      expect.objectContaining({
+        objectiveKey: "awareness",
+        spend: null,
+        results: [],
+      }),
+      expect.objectContaining({
+        objectiveKey: "traffic",
+        spend: null,
+        results: [],
+      }),
+    ]);
+  });
+
+  it("does not fabricate Cost/Result for a non-cost efficiency definition", () => {
+    const model = buildDynamicResultMetrics({
+      context: context({
+        objectiveKey: "all",
+        primaryResultKey: undefined,
+      }),
+      definitions: DEFAULT_RESULT_DEFINITIONS,
+      canonicalResults: [
+        {
+          canonicalKey: "purchase_value",
+          objectiveKey: "sales",
+          value: 400,
+          spend: 100,
+          hasData: true,
+        },
+      ],
+      spend: 100,
+      impressions: 1_000,
+      reach: 800,
+      clicks: 50,
+      value: 400,
+    });
+
+    expect(model.crossObjectiveSections[0]?.results[0]).toMatchObject({
+      canonicalKey: "purchase_value",
+      efficiencyLabel: "Meta-attributed ROAS",
+      costPerResult: null,
+    });
   });
 
   it("exposes only results that have data or are configured", () => {
@@ -329,6 +429,7 @@ describe("dynamic result metrics", () => {
           configured: true,
         },
       ],
+      objectiveKey: "awareness",
       impressions: 1_000,
       reach: 800,
       linkClicks: 25,

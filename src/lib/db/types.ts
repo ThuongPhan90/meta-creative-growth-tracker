@@ -348,11 +348,28 @@ export interface CanonicalResultTotalsFilters {
 export interface CanonicalResultTotal {
   canonicalResultKey: string;
   objectiveKey: string;
-  metricSource: "action" | "action_value";
+  metricSource: "action" | "action_value" | "delivery";
   currency: string;
   value: number;
   objectiveSpend: number;
 }
+
+export type CanonicalResultUnavailableReason =
+  | "reporting_snapshot_unavailable"
+  | "reporting_snapshot_stale";
+
+export type CanonicalResultBatch<T> =
+  | {
+      available: true;
+      syncVersion: string;
+      resultMappingVersion: string;
+      results: T[];
+    }
+  | {
+      available: false;
+      reason: CanonicalResultUnavailableReason;
+      results: [];
+    };
 
 export interface CanonicalObjectiveSpendTotal {
   objectiveKey: string;
@@ -360,17 +377,46 @@ export interface CanonicalObjectiveSpendTotal {
   spend: number;
 }
 
-export interface CanonicalResultTotals {
-  results: CanonicalResultTotal[];
-  spendByObjective: CanonicalObjectiveSpendTotal[];
+export type CanonicalResultTotals =
+  | {
+      available: true;
+      syncVersion: string;
+      resultMappingVersion: string;
+      results: CanonicalResultTotal[];
+      spendByObjective: CanonicalObjectiveSpendTotal[];
+    }
+  | {
+      available: false;
+      reason: CanonicalResultUnavailableReason;
+      results: [];
+      spendByObjective: [];
+    };
+
+/**
+ * One normalized Result point for a single report date, Objective and
+ * currency. `dailySpend` repeats the matching Objective/currency spend so a
+ * consumer can calculate the configured daily efficiency without crossing
+ * Objective or currency boundaries.
+ */
+export interface CanonicalResultTrendPoint {
+  metricDate: string;
+  canonicalResultKey: string;
+  objectiveKey: string;
+  metricSource: "action" | "action_value" | "delivery";
+  currency: string;
+  value: number;
+  dailySpend: number;
 }
+
+export type CanonicalResultTrend =
+  CanonicalResultBatch<CanonicalResultTrendPoint>;
 
 export interface CanonicalCampaignResultTotal {
   adAccountMetaId: string;
   campaignMetaId: string;
   canonicalResultKey: string;
   objectiveKey: string;
-  metricSource: "action" | "action_value";
+  metricSource: "action" | "action_value" | "delivery";
   currency: string;
   value: number;
 }
@@ -382,28 +428,13 @@ export interface CanonicalCreativeFamilyResultTotal {
    * visible without assigning them to a physical Creative Family.
    */
   creativeFamilyId: string | null;
-  allocationMethod: "single_asset" | "unallocated";
+  allocationMethod: "exact" | "single_asset" | "unallocated";
   canonicalResultKey: string;
   objectiveKey: string;
-  metricSource: "action" | "action_value";
+  metricSource: "action" | "action_value" | "delivery";
   currency: string;
   value: number;
 }
-
-export type CanonicalResultBatch<T> =
-  | {
-      available: true;
-      syncVersion: string;
-      resultMappingVersion: string;
-      results: T[];
-    }
-  | {
-      available: false;
-      reason:
-        | "reporting_snapshot_unavailable"
-        | "reporting_snapshot_stale";
-      results: [];
-    };
 
 export type CanonicalCampaignResultTotals =
   CanonicalResultBatch<CanonicalCampaignResultTotal>;
@@ -499,6 +530,10 @@ export interface MetaAssetInventory {
 export interface CreativeLibraryFilters {
   connectionId: DatabaseId;
   creativeFamilyId?: DatabaseId;
+  /** Exact Meta Ad Account IDs; any linked ID includes the Family. */
+  adAccountMetaIds?: readonly string[];
+  /** Exact Meta Campaign IDs; any linked ID includes the Family. */
+  campaignMetaIds?: readonly string[];
   search?: string;
   assetType?: "video" | "image" | "unknown";
   limit?: number;

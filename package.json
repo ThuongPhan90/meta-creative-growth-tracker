@@ -18,6 +18,7 @@
     "test:watch": "vitest",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "connections:check": "node scripts/connection-doctor.mjs",
+    "db:audit:attribution": "tsx scripts/audit-attribution-conflicts.ts",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:check": "tsx scripts/check-database.ts"
   },

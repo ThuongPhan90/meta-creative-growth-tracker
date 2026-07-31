@@ -91,9 +91,11 @@ describe("creative performance presentation status", () => {
         efficiencyValue: "100 VND",
         resultLabel: "Meta-attributed Lead",
         resultValue: "10",
+        confidenceLabel: "Cao",
+        benchmarkDeltaLabel: "-12%",
       }),
     ).toContain(
-      "Trạng thái: Trong ngưỡng. Spend: 1.000 VND. Cost/Lead: 100 VND. Meta-attributed Lead: 10",
+      "Trạng thái: Trong ngưỡng. Spend: 1.000 VND. Cost/Lead: 100 VND. Meta-attributed Lead: 10. Độ tin cậy: Cao. So với benchmark: -12%",
     );
   });
 });
