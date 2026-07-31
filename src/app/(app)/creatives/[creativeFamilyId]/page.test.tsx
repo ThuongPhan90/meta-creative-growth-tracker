@@ -94,6 +94,7 @@ describe("Creative Family direct URL", () => {
     vi.mocked(getCanonicalResultsForReport).mockResolvedValue({
       definitions: [...DEFAULT_RESULT_DEFINITIONS],
       values: [],
+      objectiveSpendByObjective: {},
       periodReach: null,
       periodReachUnavailableReason: "demo",
       state: "demo_legacy_bridge",

@@ -258,6 +258,7 @@ beforeEach(() => {
   vi.mocked(getCanonicalResultsForReport).mockResolvedValue({
     definitions: [...definitions] as never,
     values: [],
+    objectiveSpendByObjective: {},
     periodReach: null,
     periodReachUnavailableReason: "exact_snapshot_unavailable",
     state: "live",

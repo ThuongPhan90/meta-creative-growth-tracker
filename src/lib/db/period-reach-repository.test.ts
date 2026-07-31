@@ -16,6 +16,10 @@ const filters = {
   resultMappingVersion: "result-map-v1:current",
 };
 
+function compactSql(query: string) {
+  return query.replace(/\s+/g, " ").trim();
+}
+
 describe("period Reach repository", () => {
   it("reads one exact period snapshot without summing daily Reach", async () => {
     const unsafe = vi.fn(
@@ -45,7 +49,12 @@ describe("period Reach repository", () => {
       unsafe,
     } as unknown as DatabaseClient);
 
-    await expect(repository.getPeriodReach(filters)).resolves.toEqual({
+    await expect(
+      repository.getPeriodReach({
+        ...filters,
+        attributionWindow: "account_default",
+      }),
+    ).resolves.toEqual({
       available: true,
       scopeLevel: "account",
       adAccountId: "act_100",
@@ -62,6 +71,9 @@ describe("period Reach repository", () => {
     expect(query).toContain("tracker.period_reach_snapshots period");
     expect(query).not.toContain("reported_reach");
     expect(query).not.toContain("sum(");
+    expect(compactSql(query)).toContain(
+      "$7 = 'account_default' or period.attribution_window = $7",
+    );
     expect(parameters).toEqual([
       "connection-1",
       "2026-07-01",
@@ -69,9 +81,51 @@ describe("period Reach repository", () => {
       "act_100",
       null,
       "account",
-      "7d_click_1d_view",
+      "account_default",
       "mixed",
     ]);
+  });
+
+  it("fails closed when account_default matches multiple historical windows", async () => {
+    const baseRow = {
+      snapshot_sync_version: "run-9",
+      snapshot_result_mapping_version: "result-map-v1:current",
+      normalized_results_require_resync: false,
+      meta_ad_account_id: "act_100",
+      meta_campaign_id: null,
+      date_from: "2026-07-01",
+      date_to: "2026-07-31",
+      action_report_time: "mixed",
+      sync_version: "run-9",
+    };
+    const unsafe = vi.fn(async () => [
+      {
+        ...baseRow,
+        period_reach_snapshot_id: 1,
+        reach: 100,
+        attribution_window: "7d_click_1d_view",
+      },
+      {
+        ...baseRow,
+        period_reach_snapshot_id: 2,
+        reach: 110,
+        attribution_window: "1d_click",
+      },
+    ]);
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.getPeriodReach({
+        ...filters,
+        attributionWindow: "account_default",
+      }),
+    ).resolves.toEqual({
+      available: false,
+      reason: "exact_snapshot_unavailable",
+    });
+    expect(unsafe).toHaveBeenCalledOnce();
   });
 
   it("refuses to sum Reach across accounts or campaigns", async () => {

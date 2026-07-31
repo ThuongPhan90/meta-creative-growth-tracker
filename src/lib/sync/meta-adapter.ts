@@ -1281,6 +1281,11 @@ function statsToJson(stats: MutableAssetStats): JsonObject {
 }
 
 function dailyMetricNaturalKey(metric: DailyMetricInput): string {
+  // Daily Insights are requested with use_account_attribution_setting=true,
+  // so attribution_window is the account-selected value, not an independent
+  // reporting dimension. Excluding it makes multiple variants at the same
+  // logical grain conflict, preserving the previous account snapshot instead
+  // of publishing rows that account_default queries would aggregate together.
   return [
     metric.metricDate,
     metric.adId,
@@ -1289,7 +1294,6 @@ function dailyMetricNaturalKey(metric: DailyMetricInput): string {
     metric.publisherPlatform ?? "ALL",
     metric.platformPosition ?? "ALL",
     metric.impressionDevice ?? "ALL",
-    metric.attributionWindow ?? "account_default",
     metric.actionReportTime ?? "mixed",
   ].join("\u001f");
 }
@@ -2826,6 +2830,9 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       }
       return value;
     };
+    // The account-attribution query must produce at most one row per scope.
+    // Reject duplicates instead of choosing an attribution variant: downstream
+    // account_default reads intentionally treat attribution_window as a wildcard.
     if (
       accountRows.length > 1 ||
       accountRows.some((row) => !exactPeriod(row))
@@ -2844,6 +2851,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       optionalString(accountRow?.attribution_setting) ??
       "account_default";
     const campaignRowsById = new Map<string, MetaInsightRow>();
+    // The map guard applies the same one-row-per-scope invariant to campaigns.
     for (const row of campaignRows) {
       const metaCampaignId = optionalString(row.campaign_id);
       if (

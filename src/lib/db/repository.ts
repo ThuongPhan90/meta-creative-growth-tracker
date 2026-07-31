@@ -19,6 +19,7 @@ import type {
   CampaignInput,
   CanonicalCampaignResultTotals,
   CanonicalCreativeFamilyResultTotals,
+  CanonicalResultTrend,
   CanonicalResultTotals,
   CanonicalResultTotalsFilters,
   ConnectionCoverage,
@@ -252,6 +253,7 @@ function mapSyncRun(row: DatabaseRow): SyncRunRecord {
 
 const CANONICAL_RESULT_KEY_PATTERN =
   /^[a-z0-9][a-z0-9._-]*$/;
+const ACCOUNT_DEFAULT_ATTRIBUTION_WINDOW = "account_default";
 
 function canonicalResultFactKey(
   metric: DailyMetricInput,
@@ -261,9 +263,71 @@ function canonicalResultFactKey(
     metric.adId,
     metric.metricDate,
     canonicalResultKey,
-    metric.attributionWindow ?? "account_default",
+    metric.attributionWindow ?? ACCOUNT_DEFAULT_ATTRIBUTION_WINDOW,
     metric.actionReportTime,
   ].join("\u001f");
+}
+
+function normalizedDailyAttributionWindow(
+  metric: DailyMetricInput,
+): string {
+  return (
+    metric.attributionWindow?.trim() ||
+    ACCOUNT_DEFAULT_ATTRIBUTION_WINDOW
+  );
+}
+
+function addConcreteAttributionWindow(
+  attributionByAccount: Map<DatabaseId, string>,
+  adAccountId: DatabaseId,
+  attributionWindow: string,
+  conflictMessage: string,
+): void {
+  if (attributionWindow === ACCOUNT_DEFAULT_ATTRIBUTION_WINDOW) {
+    return;
+  }
+  const existing = attributionByAccount.get(adAccountId);
+  if (existing !== undefined && existing !== attributionWindow) {
+    throw new TypeError(conflictMessage);
+  }
+  attributionByAccount.set(adAccountId, attributionWindow);
+}
+
+function assertSingleDailyMetricAttributionWindow(
+  metrics: readonly DailyMetricInput[],
+): Map<DatabaseId, string> {
+  const attributionByAccount = new Map<DatabaseId, string>();
+  for (const metric of metrics) {
+    const attributionWindow = normalizedDailyAttributionWindow(metric);
+    addConcreteAttributionWindow(
+      attributionByAccount,
+      metric.adAccountId,
+      attributionWindow,
+      "Atomic daily metric publish cannot include multiple concrete attribution windows for one ad account.",
+    );
+  }
+  return attributionByAccount;
+}
+
+function assertSinglePeriodReachAttributionWindow(
+  snapshots: readonly PeriodReachSnapshotInput[],
+): Map<DatabaseId, string> {
+  const attributionByAccount = new Map<DatabaseId, string>();
+  for (const snapshot of snapshots) {
+    const attributionWindow = snapshot.attributionWindow.trim();
+    if (!attributionWindow) {
+      throw new TypeError(
+        "Atomic daily metric publish requires a period Reach attribution window.",
+      );
+    }
+    addConcreteAttributionWindow(
+      attributionByAccount,
+      snapshot.adAccountId,
+      attributionWindow,
+      "Atomic daily metric publish cannot include multiple concrete period Reach attribution windows for one ad account.",
+    );
+  }
+  return attributionByAccount;
 }
 
 function canonicalResultFacts(
@@ -2605,6 +2669,7 @@ export class TrackerRepository {
       );
     }
     const accountIds = new Set<DatabaseId>();
+    const dailyAttributionByAccount = new Map<DatabaseId, string>();
     for (const replacement of input.replacements) {
       if (
         !/^\d{4}-\d{2}-\d{2}$/.test(replacement.dateFrom) ||
@@ -2623,6 +2688,16 @@ export class TrackerRepository {
         );
       }
       accountIds.add(replacement.adAccountId);
+      const replacementAttribution =
+        assertSingleDailyMetricAttributionWindow(replacement.metrics).get(
+          replacement.adAccountId,
+        );
+      if (replacementAttribution !== undefined) {
+        dailyAttributionByAccount.set(
+          replacement.adAccountId,
+          replacementAttribution,
+        );
+      }
     }
 
     if (input.replacements.length === 0) {
@@ -2639,10 +2714,44 @@ export class TrackerRepository {
         replacement,
       ]),
     );
-    const periodReachSnapshots = input.periodReachSnapshots.map(
+    const rawPeriodReachSnapshots = input.periodReachSnapshots.map(
       (snapshot) => ({
         ...snapshot,
+        attributionWindow: snapshot.attributionWindow.trim(),
         syncVersion: input.syncRunId,
+      }),
+    );
+    const reachAttributionByAccount =
+      assertSinglePeriodReachAttributionWindow(
+        rawPeriodReachSnapshots,
+      );
+    const resolvedAttributionByAccount = new Map(
+      dailyAttributionByAccount,
+    );
+    for (const [adAccountId, reachAttribution] of
+      reachAttributionByAccount) {
+      const dailyAttribution = resolvedAttributionByAccount.get(
+        adAccountId,
+      );
+      if (
+        dailyAttribution !== undefined &&
+        dailyAttribution !== reachAttribution
+      ) {
+        throw new TypeError(
+          "Period Reach attribution window does not match its daily metrics.",
+        );
+      }
+      resolvedAttributionByAccount.set(
+        adAccountId,
+        reachAttribution,
+      );
+    }
+    const periodReachSnapshots = rawPeriodReachSnapshots.map(
+      (snapshot) => ({
+        ...snapshot,
+        attributionWindow:
+          resolvedAttributionByAccount.get(snapshot.adAccountId) ??
+          ACCOUNT_DEFAULT_ATTRIBUTION_WINDOW,
       }),
     );
     for (const snapshot of periodReachSnapshots) {
@@ -2681,6 +2790,9 @@ export class TrackerRepository {
     const metrics = input.replacements.flatMap((replacement) =>
       replacement.metrics.map((metric) => ({
         ...metric,
+        attributionWindow:
+          resolvedAttributionByAccount.get(metric.adAccountId) ??
+          ACCOUNT_DEFAULT_ATTRIBUTION_WINDOW,
         actionReportTime: metric.actionReportTime ?? "mixed",
         syncVersion: input.syncRunId,
         resultMappingVersion,
@@ -2959,10 +3071,6 @@ export class TrackerRepository {
         objectiveOwners.set(normalizedRawKey, objectiveKey);
       }
     }
-    if (objectiveOwners.size === 0) {
-      return { results: [], spendByObjective: [] };
-    }
-
     const objectiveMappingPayload = [...objectiveOwners].map(
       ([rawObjectiveKey, objectiveKey]) => ({
         objective_key: objectiveKey,
@@ -2994,14 +3102,28 @@ export class TrackerRepository {
 
     const rows = await this.query<DatabaseRow>(
       `
-        with snapshot_scope as (
+        with snapshot_status as (
           select
+            case
+              when snapshot.connection_id is null
+                then 'reporting_snapshot_unavailable'
+              when snapshot.sync_version <> $10
+                or snapshot.result_mapping_version <> $11
+                or snapshot.normalized_results_require_resync
+                then 'reporting_snapshot_stale'
+              else 'available'
+            end as snapshot_status,
             snapshot.sync_version,
             snapshot.result_mapping_version,
             snapshot.normalized_results_require_resync
-          from tracker.reporting_snapshots snapshot
-          where snapshot.connection_id = $1
-            and snapshot.sync_version = $10
+          from (select $1::bigint as connection_id) input
+          left join tracker.reporting_snapshots snapshot
+            on snapshot.connection_id = input.connection_id
+        ),
+        snapshot_scope as (
+          select *
+          from snapshot_status
+          where snapshot_status = 'available'
         ),
         objective_mapping as (
           select distinct
@@ -3055,13 +3177,21 @@ export class TrackerRepository {
             on scope.campaign_id = fact.campaign_id
             and scope.ad_account_id = fact.ad_account_id
           where fact.metric_date between $2::date and $3::date
-            and fact.attribution_window = $7
+            and (
+              $7 = 'account_default'
+              or fact.attribution_window = $7
+            )
             and fact.action_report_time = $8
             and fact.sync_version = scope.snapshot_sync_version
             and not scope.normalized_results_require_resync
             and scope.snapshot_result_mapping_version = $11
             and fact.result_mapping_version =
               scope.snapshot_result_mapping_version
+            and fact.canonical_result_key not in (
+              'reach',
+              'impressions',
+              'link_click'
+            )
             and (
               $6::text is null
               or upper(fact.currency) = $6
@@ -3083,13 +3213,21 @@ export class TrackerRepository {
             on scope.campaign_id = fact.campaign_id
             and scope.ad_account_id = fact.ad_account_id
           where fact.metric_date between $2::date and $3::date
-            and fact.attribution_window = $7
+            and (
+              $7 = 'account_default'
+              or fact.attribution_window = $7
+            )
             and fact.action_report_time = $8
             and fact.sync_version = scope.snapshot_sync_version
             and not scope.normalized_results_require_resync
             and scope.snapshot_result_mapping_version = $11
             and fact.result_mapping_version =
               scope.snapshot_result_mapping_version
+            and fact.canonical_result_key not in (
+              'reach',
+              'impressions',
+              'link_click'
+            )
             and (
               $6::text is null
               or upper(fact.currency) = $6
@@ -3099,29 +3237,57 @@ export class TrackerRepository {
             scope.objective_key,
             upper(fact.currency)
         ),
-        objective_spend as (
+        -- Impressions and link clicks are additive native delivery fields.
+        -- Reach is intentionally absent because only exact-period Reach is safe.
+        objective_delivery as (
           select
             scope.objective_key,
             upper(metric.currency) as currency,
-            sum(metric.spend) as objective_spend
+            sum(metric.spend) as objective_spend,
+            sum(metric.impressions)::numeric as impressions,
+            sum(metric.link_clicks)::numeric as link_clicks
           from tracker.daily_metrics metric
           join campaign_scope scope
             on scope.campaign_id = metric.campaign_id
             and scope.ad_account_id = metric.ad_account_id
           where metric.metric_date between $2::date and $3::date
-            and metric.attribution_window = $7
+            and (
+              $7 = 'account_default'
+              or metric.attribution_window = $7
+            )
             and metric.action_report_time = $8
             and metric.sync_version = scope.snapshot_sync_version
             and (
               $6::text is null
               or upper(metric.currency) = $6
-            )
+          )
           group by scope.objective_key, upper(metric.currency)
+        ),
+        delivery_totals as (
+          select
+            'impressions'::text as canonical_result_key,
+            delivery.objective_key,
+            delivery.currency,
+            'delivery'::text as metric_source,
+            delivery.impressions as value
+          from objective_delivery delivery
+
+          union all
+
+          select
+            'link_click'::text as canonical_result_key,
+            delivery.objective_key,
+            delivery.currency,
+            'delivery'::text as metric_source,
+            delivery.link_clicks as value
+          from objective_delivery delivery
         ),
         canonical_totals as (
           select * from metric_totals
           union all
           select * from value_totals
+          union all
+          select * from delivery_totals
         ),
         report_rows as (
           select
@@ -3133,7 +3299,7 @@ export class TrackerRepository {
             total.value,
             coalesce(spend.objective_spend, 0) as objective_spend
           from canonical_totals total
-          left join objective_spend spend
+          left join objective_delivery spend
             on spend.objective_key = total.objective_key
             and spend.currency = total.currency
 
@@ -3147,16 +3313,23 @@ export class TrackerRepository {
             spend.currency,
             null::numeric as value,
             spend.objective_spend
-          from objective_spend spend
+          from objective_delivery spend
         )
-        select *
-        from report_rows
+        select
+          snapshot.snapshot_status,
+          snapshot.sync_version as snapshot_sync_version,
+          snapshot.result_mapping_version
+            as snapshot_result_mapping_version,
+          report.*
+        from snapshot_status snapshot
+        left join report_rows report
+          on snapshot.snapshot_status = 'available'
         order by
-          objective_key,
-          currency,
-          row_kind,
-          metric_source,
-          canonical_result_key
+          report.objective_key,
+          report.currency,
+          report.row_kind,
+          report.metric_source,
+          report.canonical_result_key
       `,
       [
         input.connectionId,
@@ -3176,7 +3349,28 @@ export class TrackerRepository {
       ],
     );
 
+    const snapshotStatus = String(
+      rows[0]?.snapshot_status ??
+        "reporting_snapshot_unavailable",
+    );
+    if (snapshotStatus !== "available") {
+      return {
+        available: false,
+        reason:
+          snapshotStatus === "reporting_snapshot_stale"
+            ? "reporting_snapshot_stale"
+            : "reporting_snapshot_unavailable",
+        results: [],
+        spendByObjective: [],
+      };
+    }
+
     return {
+      available: true,
+      syncVersion: String(rows[0]?.snapshot_sync_version),
+      resultMappingVersion: String(
+        rows[0]?.snapshot_result_mapping_version,
+      ),
       results: rows
         .filter((row) => row.row_kind === "result")
         .map((row) => ({
@@ -3184,7 +3378,8 @@ export class TrackerRepository {
           objectiveKey: String(row.objective_key),
           metricSource: row.metric_source as
             | "action"
-            | "action_value",
+            | "action_value"
+            | "delivery",
           currency: String(row.currency),
           value: asNumber(row.value),
           objectiveSpend: asNumber(row.objective_spend),
@@ -3196,6 +3391,302 @@ export class TrackerRepository {
           currency: String(row.currency),
           spend: asNumber(row.objective_spend),
       })),
+    };
+  }
+
+  async getCanonicalResultTrend(
+    input: CanonicalResultTotalsFilters,
+  ): Promise<CanonicalResultTrend> {
+    const normalized = normalizeCanonicalEntityResultFilters(input);
+
+    const rows = await this.query<DatabaseRow>(
+      `
+        with snapshot_status as (
+          select
+            case
+              when snapshot.connection_id is null
+                then 'reporting_snapshot_unavailable'
+              when snapshot.sync_version <> $10
+                or snapshot.result_mapping_version <> $11
+                or snapshot.normalized_results_require_resync
+                then 'reporting_snapshot_stale'
+              else 'available'
+            end as snapshot_status,
+            snapshot.sync_version,
+            snapshot.result_mapping_version,
+            snapshot.normalized_results_require_resync
+          from (select $1::bigint as connection_id) input
+          left join tracker.reporting_snapshots snapshot
+            on snapshot.connection_id = input.connection_id
+        ),
+        snapshot_scope as (
+          select *
+          from snapshot_status
+          where snapshot_status = 'available'
+        ),
+        objective_mapping as (
+          select distinct
+            item.objective_key,
+            item.raw_objective_key
+          from jsonb_to_recordset($9::jsonb) as item(
+            objective_key text,
+            raw_objective_key text
+          )
+        ),
+        campaign_scope as (
+          select
+            campaign.campaign_id,
+            account.ad_account_id,
+            objective.objective_key,
+            snapshot.sync_version as snapshot_sync_version,
+            snapshot.result_mapping_version
+              as snapshot_result_mapping_version,
+            snapshot.normalized_results_require_resync
+          from tracker.meta_campaigns campaign
+          join tracker.meta_ad_accounts account
+            on account.ad_account_id = campaign.ad_account_id
+          join objective_mapping objective
+            on objective.raw_objective_key =
+              upper(coalesce(campaign.objective, ''))
+          cross join snapshot_scope snapshot
+          where account.connection_id = $1
+            and (
+              $4::text[] is null
+              or account.meta_ad_account_id = any($4::text[])
+            )
+            and (
+              $5::text[] is null
+              or objective.objective_key = any($5::text[])
+            )
+            and (
+              $12::text[] is null
+              or campaign.meta_campaign_id = any($12::text[])
+            )
+        ),
+        metric_daily as (
+          select
+            fact.metric_date,
+            fact.canonical_result_key,
+            scope.objective_key,
+            upper(fact.currency) as currency,
+            'action'::text as metric_source,
+            sum(fact.value) as value
+          from tracker.action_metric_daily fact
+          join campaign_scope scope
+            on scope.campaign_id = fact.campaign_id
+            and scope.ad_account_id = fact.ad_account_id
+          where fact.metric_date between $2::date and $3::date
+            and (
+              $7 = 'account_default'
+              or fact.attribution_window = $7
+            )
+            and fact.action_report_time = $8
+            and fact.sync_version = scope.snapshot_sync_version
+            and not scope.normalized_results_require_resync
+            and scope.snapshot_result_mapping_version = $11
+            and fact.result_mapping_version =
+              scope.snapshot_result_mapping_version
+            and fact.canonical_result_key not in (
+              'reach',
+              'impressions',
+              'link_click'
+            )
+            and (
+              $6::text is null
+              or upper(fact.currency) = $6
+            )
+          group by
+            fact.metric_date,
+            fact.canonical_result_key,
+            scope.objective_key,
+            upper(fact.currency)
+        ),
+        value_daily as (
+          select
+            fact.metric_date,
+            fact.canonical_result_key,
+            scope.objective_key,
+            upper(fact.currency) as currency,
+            'action_value'::text as metric_source,
+            sum(fact.value) as value
+          from tracker.action_value_daily fact
+          join campaign_scope scope
+            on scope.campaign_id = fact.campaign_id
+            and scope.ad_account_id = fact.ad_account_id
+          where fact.metric_date between $2::date and $3::date
+            and (
+              $7 = 'account_default'
+              or fact.attribution_window = $7
+            )
+            and fact.action_report_time = $8
+            and fact.sync_version = scope.snapshot_sync_version
+            and not scope.normalized_results_require_resync
+            and scope.snapshot_result_mapping_version = $11
+            and fact.result_mapping_version =
+              scope.snapshot_result_mapping_version
+            and fact.canonical_result_key not in (
+              'reach',
+              'impressions',
+              'link_click'
+            )
+            and (
+              $6::text is null
+              or upper(fact.currency) = $6
+            )
+          group by
+            fact.metric_date,
+            fact.canonical_result_key,
+            scope.objective_key,
+            upper(fact.currency)
+        ),
+        objective_delivery_daily as (
+          select
+            metric.metric_date,
+            scope.objective_key,
+            upper(metric.currency) as currency,
+            sum(metric.spend) as daily_spend,
+            sum(metric.impressions)::numeric as impressions,
+            sum(metric.link_clicks)::numeric as link_clicks
+          from tracker.daily_metrics metric
+          join campaign_scope scope
+            on scope.campaign_id = metric.campaign_id
+            and scope.ad_account_id = metric.ad_account_id
+          where metric.metric_date between $2::date and $3::date
+            and (
+              $7 = 'account_default'
+              or metric.attribution_window = $7
+            )
+            and metric.action_report_time = $8
+            and metric.sync_version = scope.snapshot_sync_version
+            and (
+              $6::text is null
+              or upper(metric.currency) = $6
+            )
+          group by
+            metric.metric_date,
+            scope.objective_key,
+            upper(metric.currency)
+        ),
+        delivery_daily as (
+          select
+            delivery.metric_date,
+            'impressions'::text as canonical_result_key,
+            delivery.objective_key,
+            delivery.currency,
+            'delivery'::text as metric_source,
+            delivery.impressions as value
+          from objective_delivery_daily delivery
+
+          union all
+
+          select
+            delivery.metric_date,
+            'link_click'::text as canonical_result_key,
+            delivery.objective_key,
+            delivery.currency,
+            'delivery'::text as metric_source,
+            delivery.link_clicks as value
+          from objective_delivery_daily delivery
+        ),
+        canonical_daily as (
+          select * from metric_daily
+          union all
+          select * from value_daily
+          union all
+          select * from delivery_daily
+        ),
+        report_rows as (
+          select
+            total.metric_date,
+            total.canonical_result_key,
+            total.objective_key,
+            total.metric_source,
+            total.currency,
+            total.value,
+            coalesce(delivery.daily_spend, 0) as daily_spend
+          from canonical_daily total
+          left join objective_delivery_daily delivery
+            on delivery.metric_date = total.metric_date
+            and delivery.objective_key = total.objective_key
+            and delivery.currency = total.currency
+        )
+        select
+          snapshot.snapshot_status,
+          snapshot.sync_version as snapshot_sync_version,
+          snapshot.result_mapping_version
+            as snapshot_result_mapping_version,
+          report.*
+        from snapshot_status snapshot
+        left join report_rows report
+          on snapshot.snapshot_status = 'available'
+        order by
+          report.metric_date,
+          report.objective_key,
+          report.currency,
+          report.metric_source,
+          report.canonical_result_key
+      `,
+      [
+        input.connectionId,
+        input.dateFrom,
+        input.dateTo,
+        input.adAccountIds === undefined
+          ? null
+          : normalized.adAccountIds,
+        input.objectiveKeys === undefined
+          ? null
+          : normalized.objectiveKeys,
+        normalized.currency,
+        normalized.attributionWindow,
+        input.actionReportTime,
+        jsonPayload(normalized.objectiveMappingPayload),
+        normalized.syncVersion,
+        normalized.resultMappingVersion,
+        input.campaignMetaIds === undefined
+          ? null
+          : normalized.campaignMetaIds,
+      ],
+    );
+
+    const snapshotStatus = String(
+      rows[0]?.snapshot_status ??
+        "reporting_snapshot_unavailable",
+    );
+    if (snapshotStatus !== "available") {
+      return {
+        available: false,
+        reason:
+          snapshotStatus === "reporting_snapshot_stale"
+            ? "reporting_snapshot_stale"
+            : "reporting_snapshot_unavailable",
+        results: [],
+      };
+    }
+
+    return {
+      available: true,
+      syncVersion: String(rows[0]?.snapshot_sync_version),
+      resultMappingVersion: String(
+        rows[0]?.snapshot_result_mapping_version,
+      ),
+      results: rows
+        .filter(
+          (row) =>
+            row.canonical_result_key !== null &&
+            row.canonical_result_key !== undefined,
+        )
+        .map((row) => ({
+          metricDate: asIso(row.metric_date).slice(0, 10),
+          canonicalResultKey: String(row.canonical_result_key),
+          objectiveKey: String(row.objective_key),
+          metricSource: row.metric_source as
+            | "action"
+            | "action_value"
+            | "delivery",
+          currency: String(row.currency),
+          value: asNumber(row.value),
+          dailySpend: asNumber(row.daily_spend),
+        })),
     };
   }
 
@@ -3247,6 +3738,36 @@ export class TrackerRepository {
               and asset.connection_id = $1
             group by ad.ad_id
           ),
+          ad_exact_asset_resolution as (
+            select
+              ad.ad_id,
+              asset.creative_asset_id,
+              case
+                when count(distinct asset.creative_family_id) = 1
+                then min(asset.creative_family_id)
+                else null
+              end as creative_family_id
+            from tracker.meta_ads ad
+            join campaign_scope scope
+              on scope.campaign_id = ad.campaign_id
+              and scope.ad_account_id = ad.ad_account_id
+            join tracker.ad_creative_links ad_link
+              on ad_link.ad_id = ad.ad_id
+            join tracker.meta_creatives creative
+              on creative.creative_id = ad_link.creative_id
+              and creative.connection_id = $1
+            join tracker.creative_asset_links asset_link
+              on asset_link.creative_id = creative.creative_id
+            join tracker.creative_assets asset
+              on asset.creative_asset_id =
+                asset_link.creative_asset_id
+              and asset.connection_id = $1
+              and asset.asset_type in ('video', 'image')
+              and asset.is_active
+            group by
+              ad.ad_id,
+              asset.creative_asset_id
+          ),
           ad_family_resolution as (
             select
               ad_id,
@@ -3291,27 +3812,52 @@ export class TrackerRepository {
               metric.metric_date,
               upper(metric.currency) as currency,
               case
-                when bool_and(
-                  metric.metric_scope = 'asset'
-                  and metric.allocation_method in (
-                    'exact',
-                    'single_asset'
+                when (
+                  bool_and(
+                    metric.metric_scope = 'asset'
+                    and metric.allocation_method = 'exact'
+                    and metric.creative_asset_id is not null
                   )
-                  and metric.creative_asset_id is not null
+                  or bool_and(
+                    metric.metric_scope = 'asset'
+                    and metric.allocation_method = 'single_asset'
+                    and metric.creative_asset_id is not null
+                  )
                 )
                   and count(distinct metric.creative_asset_id) = 1
                 then min(metric.creative_asset_id)
                 else null
-              end as creative_asset_id
+              end as creative_asset_id,
+              case
+                when bool_and(
+                  metric.metric_scope = 'asset'
+                  and metric.allocation_method = 'exact'
+                  and metric.creative_asset_id is not null
+                )
+                  and count(distinct metric.creative_asset_id) = 1
+                then 'exact'
+                when bool_and(
+                  metric.metric_scope = 'asset'
+                  and metric.allocation_method = 'single_asset'
+                  and metric.creative_asset_id is not null
+                )
+                  and count(distinct metric.creative_asset_id) = 1
+                then 'single_asset'
+                else 'unallocated'
+              end as allocation_method
             from tracker.daily_metrics metric
             join campaign_scope scope
               on scope.campaign_id = metric.campaign_id
               and scope.ad_account_id = metric.ad_account_id
             where metric.metric_date between $2::date and $3::date
-              and metric.attribution_window = $7
+              and (
+                $7 = 'account_default'
+                or metric.attribution_window = $7
+              )
               and metric.action_report_time = $8
               and metric.sync_version = scope.snapshot_sync_version
               and scope.snapshot_sync_version = $10
+              and scope.snapshot_result_mapping_version = $11
               and (
                 $6::text is null
                 or upper(metric.currency) = $6
@@ -3331,6 +3877,10 @@ export class TrackerRepository {
             when daily_allocation.creative_asset_id =
                 resolution.creative_asset_id
               and resolution.allocation_method = 'single_asset'
+              and daily_allocation.allocation_method in (
+                'exact',
+                'single_asset'
+              )
             then resolution.creative_family_id
             else null
           end`;
@@ -3342,7 +3892,11 @@ export class TrackerRepository {
             when daily_allocation.creative_asset_id =
                 resolution.creative_asset_id
               and resolution.allocation_method = 'single_asset'
-            then 'single_asset'
+              and daily_allocation.allocation_method in (
+                'exact',
+                'single_asset'
+              )
+            then daily_allocation.allocation_method
             else 'unallocated'
           end`;
     const entityJoin =
@@ -3356,6 +3910,120 @@ export class TrackerRepository {
             on resolution.ad_id = fact.ad_id
         `
         : "";
+    const entityDeliveryCte =
+      grain === "campaign"
+        ? `
+          entity_delivery as (
+            select
+              scope.account_meta_id,
+              scope.campaign_meta_id as entity_key,
+              'campaign'::text as allocation_method,
+              scope.objective_key,
+              upper(metric.currency) as currency,
+              sum(metric.impressions)::numeric as impressions,
+              sum(metric.link_clicks)::numeric as link_clicks
+            from tracker.daily_metrics metric
+            join campaign_scope scope
+              on scope.campaign_id = metric.campaign_id
+              and scope.ad_account_id = metric.ad_account_id
+            where metric.metric_date between $2::date and $3::date
+              and (
+                $7 = 'account_default'
+                or metric.attribution_window = $7
+              )
+              and metric.action_report_time = $8
+              and metric.sync_version = scope.snapshot_sync_version
+              and scope.snapshot_sync_version = $10
+              and scope.snapshot_result_mapping_version = $11
+              and (
+                $6::text is null
+                or upper(metric.currency) = $6
+              )
+            group by
+              scope.account_meta_id,
+              scope.campaign_meta_id,
+              scope.objective_key,
+              upper(metric.currency)
+          ),
+        `
+        : `
+          family_delivery_rows as (
+            select
+              scope.account_meta_id,
+              case
+                when metric.metric_scope = 'asset'
+                  and metric.allocation_method = 'exact'
+                  and metric.creative_asset_id is not null
+                  and exact_resolution.creative_family_id is not null
+                then exact_resolution.creative_family_id
+                when metric.metric_scope = 'asset'
+                  and metric.allocation_method = 'single_asset'
+                  and metric.creative_asset_id =
+                    resolution.creative_asset_id
+                  and resolution.allocation_method = 'single_asset'
+                then resolution.creative_family_id
+                else null
+              end as entity_key,
+              case
+                when metric.metric_scope = 'asset'
+                  and metric.allocation_method = 'exact'
+                  and metric.creative_asset_id is not null
+                  and exact_resolution.creative_family_id is not null
+                then 'exact'
+                when metric.metric_scope = 'asset'
+                  and metric.allocation_method = 'single_asset'
+                  and metric.creative_asset_id =
+                    resolution.creative_asset_id
+                  and resolution.allocation_method = 'single_asset'
+                then 'single_asset'
+                else 'unallocated'
+              end as allocation_method,
+              scope.objective_key,
+              upper(metric.currency) as currency,
+              metric.impressions::numeric as impressions,
+              metric.link_clicks::numeric as link_clicks
+            from tracker.daily_metrics metric
+            join campaign_scope scope
+              on scope.campaign_id = metric.campaign_id
+              and scope.ad_account_id = metric.ad_account_id
+            left join ad_exact_asset_resolution exact_resolution
+              on exact_resolution.ad_id = metric.ad_id
+              and exact_resolution.creative_asset_id =
+                metric.creative_asset_id
+            left join ad_family_resolution resolution
+              on resolution.ad_id = metric.ad_id
+            where metric.metric_date between $2::date and $3::date
+              and (
+                $7 = 'account_default'
+                or metric.attribution_window = $7
+              )
+              and metric.action_report_time = $8
+              and metric.sync_version = scope.snapshot_sync_version
+              and scope.snapshot_sync_version = $10
+              and scope.snapshot_result_mapping_version = $11
+              and (
+                $6::text is null
+                or upper(metric.currency) = $6
+              )
+          ),
+          entity_delivery as (
+            select
+              delivery_row.account_meta_id,
+              delivery_row.entity_key,
+              delivery_row.allocation_method,
+              delivery_row.objective_key,
+              delivery_row.currency,
+              sum(delivery_row.impressions)::numeric as impressions,
+              sum(delivery_row.link_clicks)::numeric as link_clicks
+            from family_delivery_rows delivery_row
+            group by
+              delivery_row.account_meta_id,
+              delivery_row.entity_key,
+              delivery_row.allocation_method,
+              delivery_row.objective_key,
+              delivery_row.currency
+          ),
+        `;
 
     return this.query<DatabaseRow>(
       `
@@ -3418,6 +4086,7 @@ export class TrackerRepository {
             )
         ),
         ${familyResolutionCtes}
+        ${entityDeliveryCte}
         normalized_facts as (
           select
             fact.metric_date,
@@ -3433,6 +4102,11 @@ export class TrackerRepository {
             fact.result_mapping_version,
             'action'::text as metric_source
           from tracker.action_metric_daily fact
+          where fact.canonical_result_key not in (
+            'reach',
+            'impressions',
+            'link_click'
+          )
           union all
           select
             fact.metric_date,
@@ -3448,6 +4122,11 @@ export class TrackerRepository {
             fact.result_mapping_version,
             'action_value'::text as metric_source
           from tracker.action_value_daily fact
+          where fact.canonical_result_key not in (
+            'reach',
+            'impressions',
+            'link_click'
+          )
         ),
         scoped_facts as (
           select
@@ -3465,7 +4144,10 @@ export class TrackerRepository {
             and scope.ad_account_id = fact.ad_account_id
           ${entityJoin}
           where fact.metric_date between $2::date and $3::date
-            and fact.attribution_window = $7
+            and (
+              $7 = 'account_default'
+              or fact.attribution_window = $7
+            )
             and fact.action_report_time = $8
             and fact.sync_version = scope.snapshot_sync_version
             and fact.result_mapping_version =
@@ -3477,6 +4159,36 @@ export class TrackerRepository {
               or upper(fact.currency) = $6
             )
         ),
+        delivery_facts as (
+          select
+            delivery.account_meta_id,
+            delivery.entity_key,
+            delivery.allocation_method,
+            'impressions'::text as canonical_result_key,
+            delivery.objective_key,
+            'delivery'::text as metric_source,
+            delivery.currency,
+            delivery.impressions as value
+          from entity_delivery delivery
+
+          union all
+
+          select
+            delivery.account_meta_id,
+            delivery.entity_key,
+            delivery.allocation_method,
+            'link_click'::text as canonical_result_key,
+            delivery.objective_key,
+            'delivery'::text as metric_source,
+            delivery.currency,
+            delivery.link_clicks as value
+          from entity_delivery delivery
+        ),
+        canonical_facts as (
+          select * from scoped_facts
+          union all
+          select * from delivery_facts
+        ),
         canonical_totals as (
           select
             account_meta_id,
@@ -3487,7 +4199,7 @@ export class TrackerRepository {
             metric_source,
             currency,
             sum(value) as value
-          from scoped_facts
+          from canonical_facts
           group by
             account_meta_id,
             entity_key,
@@ -3588,7 +4300,8 @@ export class TrackerRepository {
           objectiveKey: String(row.objective_key),
           metricSource: row.metric_source as
             | "action"
-            | "action_value",
+            | "action_value"
+            | "delivery",
           currency: String(row.currency),
           value: asNumber(row.value),
         })),
@@ -3630,7 +4343,8 @@ export class TrackerRepository {
         )
         .map((row) => {
           const allocated =
-            row.allocation_method === "single_asset" &&
+            (row.allocation_method === "exact" ||
+              row.allocation_method === "single_asset") &&
             row.entity_key !== null &&
             row.entity_key !== undefined;
           return {
@@ -3639,7 +4353,7 @@ export class TrackerRepository {
               ? String(row.entity_key)
               : null,
             allocationMethod: allocated
-              ? ("single_asset" as const)
+              ? (row.allocation_method as "exact" | "single_asset")
               : ("unallocated" as const),
             canonicalResultKey: String(
               row.canonical_result_key,
@@ -3647,7 +4361,8 @@ export class TrackerRepository {
             objectiveKey: String(row.objective_key),
             metricSource: row.metric_source as
               | "action"
-              | "action_value",
+              | "action_value"
+              | "delivery",
             currency: String(row.currency),
             value: asNumber(row.value),
           };
@@ -3738,7 +4453,10 @@ export class TrackerRepository {
           )
           and period.date_from = $2::date
           and period.date_to = $3::date
-          and period.attribution_window = $7
+          and (
+            $7 = 'account_default'
+            or period.attribution_window = $7
+          )
           and period.action_report_time = $8
           and period.sync_version = snapshot.sync_version
       `,
@@ -3753,6 +4471,18 @@ export class TrackerRepository {
         input.actionReportTime,
       ],
     );
+    const requestedAttributionWindow = input.attributionWindow.trim();
+    if (
+      requestedAttributionWindow ===
+        ACCOUNT_DEFAULT_ATTRIBUTION_WINDOW &&
+      rows.filter((candidate) => candidate.period_reach_snapshot_id)
+        .length > 1
+    ) {
+      return {
+        available: false,
+        reason: "exact_snapshot_unavailable",
+      };
+    }
     const row = rows[0] ?? {};
     if (!row.snapshot_sync_version) {
       return {
@@ -3939,6 +4669,7 @@ export class TrackerRepository {
             and ($8::text is null or metric.currency = $8)
             and (
               $11::text is null
+              or $11 = 'account_default'
               or metric.attribution_window = $11
             )
             and (
@@ -4212,6 +4943,20 @@ export class TrackerRepository {
       MAX_CREATIVE_LIBRARY_ROWS,
     );
     const offset = Math.max(filters.offset ?? 0, 0);
+    const adAccountMetaIds = [
+      ...new Set(
+        (filters.adAccountMetaIds ?? [])
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    ];
+    const campaignMetaIds = [
+      ...new Set(
+        (filters.campaignMetaIds ?? [])
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    ];
     const rows = await this.query<DatabaseRow>(
       `
         with current_ad_usage as (
@@ -4262,6 +5007,14 @@ export class TrackerRepository {
             or asset.creative_family_id = $6
           )
           and (
+            $7::text[] is null
+            or entity_links.ad_account_ids && $7::text[]
+          )
+          and (
+            $8::text[] is null
+            or entity_links.campaign_ids && $8::text[]
+          )
+          and (
             $3::text is null
             or usage.name ilike '%' || $3 || '%'
             or usage.asset_key ilike '%' || $3 || '%'
@@ -4285,6 +5038,12 @@ export class TrackerRepository {
         limit,
         offset,
         filters.creativeFamilyId?.trim() || null,
+        filters.adAccountMetaIds === undefined
+          ? null
+          : adAccountMetaIds,
+        filters.campaignMetaIds === undefined
+          ? null
+          : campaignMetaIds,
       ],
     );
 
@@ -4444,6 +5203,7 @@ export class TrackerRepository {
             )
             and (
               $12::text is null
+              or $12 = 'account_default'
               or metric.attribution_window = $12
             )
             and (
@@ -4626,6 +5386,7 @@ export class TrackerRepository {
           )
           and (
             $8::text is null
+            or $8 = 'account_default'
             or metric.attribution_window = $8
           )
           and (
@@ -4726,6 +5487,7 @@ export class TrackerRepository {
           )
           and (
             $8::text is null
+            or $8 = 'account_default'
             or metric.attribution_window = $8
           )
           and (

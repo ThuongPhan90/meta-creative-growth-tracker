@@ -13,9 +13,15 @@ import {
   type BenchmarkMetricDefinition,
   type BenchmarkObservation,
 } from "./benchmark-engine";
-import { evaluateCreative } from "./creative-evaluation";
+import {
+  evaluateCreative,
+  type CreativeEvaluationInput,
+} from "./creative-evaluation";
 import type { ReportingContext } from "./report-context";
-import type { ResultDefinition } from "./result-definition";
+import {
+  resolveReportingResultMetricSource,
+  type ResultDefinition,
+} from "./result-definition";
 
 export type AccountCreativePerformance = {
   adAccountMetaId: string;
@@ -28,6 +34,20 @@ export type CreativeFamilyEvaluationLabels = {
   selectedScope?: string;
 };
 
+export type CreativeFamilyFatiguePeriod = {
+  results: CanonicalCreativeFamilyResultTotals;
+  performance: readonly AccountCreativePerformance[];
+  /** Inclusive number of calendar days represented by this period. */
+  days: number;
+};
+
+export type CreativeFamilyFatigueComparison = {
+  earlier: CreativeFamilyFatiguePeriod;
+  later: CreativeFamilyFatiguePeriod;
+  /** Exact selected report window, not the benchmark lookback window. */
+  windowDays: number;
+};
+
 export type EnrichCreativeFamiliesInput = {
   rows: readonly CreativeRow[];
   actualResults: CanonicalCreativeFamilyResultTotals;
@@ -38,6 +58,7 @@ export type EnrichCreativeFamiliesInput = {
   context: ReportingContext;
   definitions: readonly ResultDefinition[];
   benchmarkWindowDays: number;
+  fatigueComparison?: CreativeFamilyFatigueComparison;
   minimumPeerSampleSize?: number;
   labels?: CreativeFamilyEvaluationLabels;
 };
@@ -54,6 +75,17 @@ type FamilyAggregate = {
   rowIndexes: number[];
 };
 
+type FatiguePeriodAggregate = {
+  spend: number;
+  impressions: number;
+  linkClicks: number;
+  results: number;
+};
+
+type FatigueTrend = NonNullable<
+  CreativeEvaluationInput["fatigueTrend"]
+>;
+
 function familyId(row: CreativeRow) {
   return row.creativeFamilyId ?? row.entityLinks?.creativeFamilyId ?? null;
 }
@@ -68,12 +100,6 @@ function accountFamilyCurrencyKey(
   currency: string,
 ) {
   return `${account}\u001f${familyCurrencyKey(family, currency)}`;
-}
-
-function expectedMetricSource(definition: ResultDefinition) {
-  return definition.unit === "currency"
-    ? ("action_value" as const)
-    : ("action" as const);
 }
 
 function canonicalFormat(value: CreativeRow["format"]) {
@@ -236,7 +262,8 @@ function resultValuesByFamily({
   );
   for (const item of batch.results) {
     if (
-      item.allocationMethod !== "single_asset" ||
+      (item.allocationMethod !== "exact" &&
+        item.allocationMethod !== "single_asset") ||
       !item.creativeFamilyId ||
       item.objectiveKey !== objectiveKey
     ) {
@@ -245,7 +272,8 @@ function resultValuesByFamily({
     const definition = byKey.get(item.canonicalResultKey);
     if (
       !definition ||
-      item.metricSource !== expectedMetricSource(definition)
+      item.metricSource !==
+        resolveReportingResultMetricSource(definition)
     ) {
       continue;
     }
@@ -272,11 +300,13 @@ function benchmarkResultValues({
   if (!batch.available) return grouped;
   for (const item of batch.results) {
     if (
-      item.allocationMethod !== "single_asset" ||
+      (item.allocationMethod !== "exact" &&
+        item.allocationMethod !== "single_asset") ||
       !item.creativeFamilyId ||
       item.objectiveKey !== objectiveKey ||
       item.canonicalResultKey !== definition.canonicalKey ||
-      item.metricSource !== expectedMetricSource(definition)
+      item.metricSource !==
+        resolveReportingResultMetricSource(definition)
     ) {
       continue;
     }
@@ -288,6 +318,201 @@ function benchmarkResultValues({
     grouped.set(key, (grouped.get(key) ?? 0) + item.value);
   }
   return grouped;
+}
+
+function fatiguePeriodAggregates({
+  period,
+  definition,
+  assetFamilyIds,
+  context,
+}: {
+  period: CreativeFamilyFatiguePeriod;
+  definition: ResultDefinition;
+  assetFamilyIds: Readonly<Record<string, string>>;
+  context: ReportingContext;
+}) {
+  const grouped = new Map<string, FatiguePeriodAggregate>();
+  if (!period.results.available) return grouped;
+
+  const selectedAccounts = new Set(context.adAccountIds);
+  const resultsByAccountFamily = benchmarkResultValues({
+    batch: period.results,
+    definition,
+    objectiveKey: context.objectiveKey,
+  });
+  const performanceByAccountFamily = new Map<
+    string,
+    Omit<FatiguePeriodAggregate, "results"> & {
+      familyId: string;
+      currency: string;
+    }
+  >();
+
+  for (const account of period.performance) {
+    if (!selectedAccounts.has(account.adAccountMetaId)) continue;
+    for (const item of account.items) {
+      const canonicalFamilyId =
+        item.creativeFamilyId ??
+        assetFamilyIds[item.creativeAssetId] ??
+        null;
+      const currency = item.currency.trim().toUpperCase();
+      if (
+        !canonicalFamilyId ||
+        !currency ||
+        (context.currency && currency !== context.currency)
+      ) {
+        continue;
+      }
+      const key = accountFamilyCurrencyKey(
+        account.adAccountMetaId,
+        canonicalFamilyId,
+        currency,
+      );
+      const current = performanceByAccountFamily.get(key) ?? {
+        familyId: canonicalFamilyId,
+        currency,
+        spend: 0,
+        impressions: 0,
+        linkClicks: 0,
+      };
+      current.spend += item.spend;
+      current.impressions += item.impressions;
+      current.linkClicks += item.linkClicks;
+      performanceByAccountFamily.set(key, current);
+    }
+  }
+
+  for (const [accountKey, performance] of performanceByAccountFamily) {
+    const key = familyCurrencyKey(
+      performance.familyId,
+      performance.currency,
+    );
+    const current = grouped.get(key) ?? {
+      spend: 0,
+      impressions: 0,
+      linkClicks: 0,
+      results: 0,
+    };
+    current.spend += performance.spend;
+    current.impressions += performance.impressions;
+    current.linkClicks += performance.linkClicks;
+    current.results += resultsByAccountFamily.get(accountKey) ?? 0;
+    grouped.set(key, current);
+  }
+
+  return grouped;
+}
+
+function rate(numerator: number, denominator: number) {
+  return denominator > 0 ? numerator / denominator : null;
+}
+
+function percentageChange(
+  earlier: number | null,
+  later: number | null,
+) {
+  if (
+    earlier === null ||
+    later === null ||
+    !Number.isFinite(earlier) ||
+    !Number.isFinite(later) ||
+    earlier <= 0
+  ) {
+    return null;
+  }
+  return ((later - earlier) / earlier) * 100;
+}
+
+function resultVolumePerDay(
+  aggregate: FatiguePeriodAggregate,
+  days: number,
+) {
+  return Number.isInteger(days) && days > 0
+    ? aggregate.results / days
+    : null;
+}
+
+function fatigueTrendsByFamily({
+  comparison,
+  definition,
+  assetFamilyIds,
+  context,
+}: {
+  comparison: CreativeFamilyFatigueComparison | undefined;
+  definition: ResultDefinition;
+  assetFamilyIds: Readonly<Record<string, string>>;
+  context: ReportingContext;
+}) {
+  const trends = new Map<string, FatigueTrend>();
+  if (
+    !comparison ||
+    !comparison.earlier.results.available ||
+    !comparison.later.results.available ||
+    comparison.earlier.results.syncVersion !== context.syncVersion ||
+    comparison.later.results.syncVersion !== context.syncVersion ||
+    comparison.earlier.results.syncVersion !==
+      comparison.later.results.syncVersion ||
+    comparison.earlier.results.resultMappingVersion !==
+      comparison.later.results.resultMappingVersion
+  ) {
+    return trends;
+  }
+
+  const earlier = fatiguePeriodAggregates({
+    period: comparison.earlier,
+    definition,
+    assetFamilyIds,
+    context,
+  });
+  const later = fatiguePeriodAggregates({
+    period: comparison.later,
+    definition,
+    assetFamilyIds,
+    context,
+  });
+
+  for (const [key, earlierAggregate] of earlier) {
+    const laterAggregate = later.get(key);
+    if (!laterAggregate) continue;
+    const earlierCtr = rate(
+      earlierAggregate.linkClicks,
+      earlierAggregate.impressions,
+    );
+    const laterCtr = rate(
+      laterAggregate.linkClicks,
+      laterAggregate.impressions,
+    );
+    const earlierCostPerResult = rate(
+      earlierAggregate.spend,
+      earlierAggregate.results,
+    );
+    const laterCostPerResult = rate(
+      laterAggregate.spend,
+      laterAggregate.results,
+    );
+    trends.set(key, {
+      // Family-level period Reach is not available in this projection, so a
+      // frequency delta would be fabricated. Keep it explicitly unavailable.
+      frequencyDeltaPercent: null,
+      ctrDeltaPercent: percentageChange(earlierCtr, laterCtr),
+      costPerResultDeltaPercent: percentageChange(
+        earlierCostPerResult,
+        laterCostPerResult,
+      ),
+      resultVolumeDeltaPercent: percentageChange(
+        resultVolumePerDay(
+          earlierAggregate,
+          comparison.earlier.days,
+        ),
+        resultVolumePerDay(
+          laterAggregate,
+          comparison.later.days,
+        ),
+      ),
+    });
+  }
+
+  return trends;
 }
 
 function aggregateActualRows(rows: readonly CreativeRow[]) {
@@ -421,6 +646,7 @@ export function enrichCreativeFamiliesWithCanonicalResults({
   context,
   definitions,
   benchmarkWindowDays,
+  fatigueComparison,
   minimumPeerSampleSize = 3,
   labels,
 }: EnrichCreativeFamiliesInput): CreativeRow[] {
@@ -486,6 +712,17 @@ export function enrichCreativeFamiliesWithCanonicalResults({
     context,
     definition,
   });
+  const fatigueTrends = fatigueTrendsByFamily({
+    comparison: fatigueComparison,
+    definition,
+    assetFamilyIds,
+    context,
+  });
+  const requestedWindowDays = fatigueComparison?.windowDays ??
+    benchmarkWindowDays;
+  const selectedWindowDays = Number.isFinite(requestedWindowDays)
+    ? Math.max(1, Math.floor(requestedWindowDays))
+    : 1;
   const selectedAccounts = new Set(context.adAccountIds);
 
   for (const [key, aggregate] of actualGroups) {
@@ -568,10 +805,8 @@ export function enrichCreativeFamiliesWithCanonicalResults({
       minimumResults: definition.minimumResults,
       dataConfidence: evaluationConfidence(aggregate.confidence),
       mappingAvailable: true,
-      windowDays: Math.max(1, Math.floor(benchmarkWindowDays)),
-      // Trend requires period-over-period family facts. Until that exact
-      // series exists, the evaluator returns "insufficient" rather than
-      // inventing a fatigue signal from one aggregate.
+      windowDays: selectedWindowDays,
+      fatigueTrend: fatigueTrends.get(key),
     });
   }
 

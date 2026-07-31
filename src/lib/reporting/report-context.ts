@@ -1,3 +1,10 @@
+import { resolveObjective } from "./objective-registry";
+import {
+  DEFAULT_RESULT_DEFINITIONS,
+  resolvePrimaryResult,
+  type ResultDefinition,
+} from "./result-definition";
+
 export type ReportComparison = "previous_period" | "none";
 export type ReportingCurrencyMode = "single" | "split";
 export type ReportingTimezoneMode = "account_local";
@@ -74,7 +81,8 @@ export type ReportingContextWarningCode =
   | "date_range_reordered"
   | "date_range_capped"
   | "currency_ignored_for_split_mode"
-  | "single_currency_missing";
+  | "single_currency_missing"
+  | "result_not_available_for_objective";
 
 export type ReportingContextWarning = {
   code: ReportingContextWarningCode;
@@ -183,6 +191,12 @@ function normalizedKey(value: string | undefined) {
     : "";
 }
 
+function canonicalObjectiveKey(value: string) {
+  if (value.toLowerCase() === "all") return "all";
+  const resolved = resolveObjective(value);
+  return resolved.known ? resolved.key : value;
+}
+
 function uniqueIds(value: ReportContextQueryValue) {
   const accepted: string[] = [];
   const rejected: string[] = [];
@@ -238,6 +252,7 @@ export function resolveReportContext({
   reportingCurrency = null,
   compareDefault = "previous_period",
   defaults = {},
+  resultDefinitions = DEFAULT_RESULT_DEFINITIONS,
   now,
 }: {
   query: ReportContextQuery;
@@ -246,6 +261,7 @@ export function resolveReportContext({
   reportingCurrency?: string | null;
   compareDefault?: ReportComparison;
   defaults?: ReportingContextDefaults;
+  resultDefinitions?: readonly ResultDefinition[];
   now?: Date;
 }): ResolvedReportContext {
   const warnings: ReportingContextWarning[] = [];
@@ -384,10 +400,18 @@ export function resolveReportContext({
       legacyQueryKeys,
     ),
   );
-  const objectiveFallback = normalizedKey(defaults.objectiveKey) || "all";
-  const objectiveKey = rawObjective
-    ? normalizedKey(rawObjective) || objectiveFallback
+  const objectiveFallback = canonicalObjectiveKey(
+    normalizedKey(defaults.objectiveKey) || "all",
+  );
+  const requestedObjective = rawObjective
+    ? normalizedKey(rawObjective)
+    : "";
+  const objectiveKey = requestedObjective
+    ? canonicalObjectiveKey(requestedObjective)
     : objectiveFallback;
+  if (requestedObjective && requestedObjective !== objectiveKey) {
+    normalizedFields.add("objectiveKey");
+  }
   if (rawObjective && !normalizedKey(rawObjective)) {
     warn({
       code: "invalid_value",
@@ -407,7 +431,7 @@ export function resolveReportContext({
   );
   const primaryResultFallback =
     normalizedKey(defaults.primaryResultKey) || undefined;
-  const primaryResultKey = rawPrimaryResult
+  let primaryResultKey = rawPrimaryResult
     ? normalizedKey(rawPrimaryResult) || primaryResultFallback
     : primaryResultFallback;
   if (rawPrimaryResult && !normalizedKey(rawPrimaryResult)) {
@@ -419,6 +443,53 @@ export function resolveReportContext({
       input: rawPrimaryResult,
       fallback: primaryResultKey,
     });
+  }
+  if (objectiveKey === "all") {
+    if (primaryResultKey) {
+      warn({
+        code: "result_not_available_for_objective",
+        field: "primaryResultKey",
+        message:
+          "primaryResultKey was removed because all Objectives were selected.",
+        input: primaryResultKey,
+        fallback: undefined,
+      });
+      normalizedFields.add("primaryResultKey");
+      primaryResultKey = undefined;
+    }
+  } else {
+    const selectedDefinition = primaryResultKey
+      ? resultDefinitions.find(
+          (definition) =>
+            definition.enabled &&
+            definition.canonicalKey === primaryResultKey &&
+            definition.objectiveKeys.includes(objectiveKey),
+        )
+      : null;
+    if (!selectedDefinition) {
+      const fallbackResult = resolvePrimaryResult({
+        campaignId: "workspace_default",
+        objectiveKey,
+        definitions: resultDefinitions,
+      }).definition;
+      const fallbackPrimaryResultKey =
+        fallbackResult?.canonicalKey;
+      if (
+        primaryResultKey &&
+        primaryResultKey !== fallbackPrimaryResultKey
+      ) {
+        warn({
+          code: "result_not_available_for_objective",
+          field: "primaryResultKey",
+          message:
+            "primaryResultKey was not available for the selected Objective and the Objective default was used.",
+          input: primaryResultKey,
+          fallback: fallbackPrimaryResultKey,
+        });
+        normalizedFields.add("primaryResultKey");
+      }
+      primaryResultKey = fallbackPrimaryResultKey;
+    }
   }
 
   const rawCurrency = first(query.currency);

@@ -32,6 +32,8 @@ export function CreativeScatterTooltip({
   efficiencyValue,
   resultLabel,
   resultValue,
+  confidenceLabel,
+  benchmarkDeltaLabel,
   horizontal = "center",
   vertical = "above",
 }: {
@@ -43,6 +45,8 @@ export function CreativeScatterTooltip({
   efficiencyValue: string;
   resultLabel: string;
   resultValue: string;
+  confidenceLabel?: string | null;
+  benchmarkDeltaLabel?: string | null;
   horizontal?: "left" | "center" | "right";
   vertical?: "above" | "below";
 }) {
@@ -64,6 +68,12 @@ export function CreativeScatterTooltip({
       <small>
         {resultLabel}: {resultValue}
       </small>
+      {confidenceLabel ? (
+        <small>Độ tin cậy: {confidenceLabel}</small>
+      ) : null}
+      {benchmarkDeltaLabel ? (
+        <small>So với benchmark: {benchmarkDeltaLabel}</small>
+      ) : null}
     </span>
   );
 }

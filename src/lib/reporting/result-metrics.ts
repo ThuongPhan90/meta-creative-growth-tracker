@@ -80,6 +80,7 @@ export type CrossObjectiveResult = {
   canonicalKey: string;
   label: string;
   value: number | null;
+  efficiencyLabel: string | null;
   costPerResult: number | null;
   attribution: ResultMetricAttribution;
   configured: boolean;
@@ -194,16 +195,19 @@ function resultFormula(definition: ResultDefinition) {
 
 /**
  * Reach, Impressions and Link Clicks are native Insights delivery fields, not
- * action-array facts. Overlay those exact sources without enabling the legacy
- * Install/Registration bridge used only by demo mode.
+ * action-array facts. Overlay those exact sources only when delivery is scoped
+ * to one Objective; an all-Objective total cannot replace per-Objective rows.
+ * This does not enable the legacy Install/Registration demo bridge.
  */
 export function withDeliveryBackedResultValues({
   values,
+  objectiveKey,
   impressions,
   reach,
   linkClicks,
 }: {
   values: readonly CanonicalResultValue[];
+  objectiveKey: ReportingContext["objectiveKey"];
   impressions: number;
   reach: number | null;
   linkClicks: number;
@@ -215,7 +219,13 @@ export function withDeliveryBackedResultValues({
   ]);
 
   return values.map((item) => {
-    if (!deliveryValues.has(item.canonicalKey)) return { ...item };
+    if (
+      objectiveKey === "all" ||
+      item.objectiveKey !== objectiveKey ||
+      !deliveryValues.has(item.canonicalKey)
+    ) {
+      return { ...item };
+    }
     const value = deliveryValues.get(item.canonicalKey) ?? null;
     return {
       ...item,
@@ -404,6 +414,7 @@ export function buildDynamicResultMetrics({
   context,
   definitions,
   canonicalResults,
+  objectiveSpendByObjective,
   spend,
   impressions,
   reach,
@@ -413,6 +424,9 @@ export function buildDynamicResultMetrics({
   context: ReportingContext;
   definitions: readonly ResultDefinition[];
   canonicalResults: readonly CanonicalResultValue[];
+  objectiveSpendByObjective?: Readonly<
+    Record<string, number | null>
+  >;
   spend: number;
   impressions: number;
   reach: number | null;
@@ -629,18 +643,31 @@ export function buildDynamicResultMetrics({
     current.push(item);
     groupedByObjective.set(item.objectiveKey, current);
   }
+  const crossObjectiveKeys = new Set([
+    ...groupedByObjective.keys(),
+    ...Object.keys(objectiveSpendByObjective ?? {}),
+  ]);
   const crossObjectiveSections: CrossObjectiveSection[] =
     context.objectiveKey === "all"
-      ? [...groupedByObjective.entries()]
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([objectiveKey, items]) => {
-            const objectiveSpend =
-              finiteNonNegative(
-                items.find(
-                  (item) =>
-                    finiteNonNegative(item.spend) !== null,
-                )?.spend,
-              ) ?? null;
+      ? [...crossObjectiveKeys]
+          .sort((left, right) => left.localeCompare(right))
+          .map((objectiveKey) => {
+            const items =
+              groupedByObjective.get(objectiveKey) ?? [];
+            const hasExplicitSpend = Object.prototype.hasOwnProperty.call(
+              objectiveSpendByObjective ?? {},
+              objectiveKey,
+            );
+            const objectiveSpend = hasExplicitSpend
+              ? finiteNonNegative(
+                  objectiveSpendByObjective?.[objectiveKey],
+                )
+              : finiteNonNegative(
+                  items.find(
+                    (item) =>
+                      finiteNonNegative(item.spend) !== null,
+                  )?.spend,
+                );
             return {
               objectiveKey,
               objectiveLabel: resolveObjective(objectiveKey).label,
@@ -660,8 +687,10 @@ export function buildDynamicResultMetrics({
                     canonicalKey: item.canonicalKey,
                     label: definition.label,
                     value: resultValue,
+                    efficiencyLabel: efficiencyLabel(definition),
                     costPerResult:
-                      context.currencyMode === "single"
+                      context.currencyMode === "single" &&
+                      definition.efficiencyMetric === "cost_per_result"
                         ? ratio(objectiveSpend, resultValue)
                         : null,
                     attribution: resultAttribution(definition),
