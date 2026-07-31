@@ -141,7 +141,7 @@ export function explainCreativeRating({
         ? { performanceStatus: "within_range", recommendedAction: "hold" }
         : rating === "ÍT DỮ LIỆU"
           ? {
-              performanceStatus: "watch",
+              performanceStatus: "not_eligible",
               recommendedAction: "continue_test",
             }
           : { performanceStatus: "poor", recommendedAction: "review" };

@@ -19,6 +19,7 @@ export function createFreshness(input: FreshnessInput): Freshness {
   return {
     lastSyncedAt: input.lastSyncedAt,
     dataThroughAt: input.dataThroughAt,
+    syncVersion: input.syncVersion ?? null,
     syncStatus: input.syncStatus,
     freshnessSeconds: computeFreshnessSeconds(
       input.dataThroughAt,

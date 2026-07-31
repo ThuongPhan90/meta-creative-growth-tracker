@@ -2,7 +2,10 @@ import type postgres from "postgres";
 
 import type { DatabaseClient } from "./client";
 import { getDatabase, getOptionalDatabase } from "./client";
+import { computeResultMappingVersion } from "./result-mapping-version";
 import type {
+  ActionMetricDailyInput,
+  ActionValueDailyInput,
   AdAccountInput,
   AdCreativeLinkInput,
   AdInput,
@@ -14,6 +17,10 @@ import type {
   CampaignInventoryItem,
   CampaignInventoryPage,
   CampaignInput,
+  CanonicalCampaignResultTotals,
+  CanonicalCreativeFamilyResultTotals,
+  CanonicalResultTotals,
+  CanonicalResultTotalsFilters,
   ConnectionCoverage,
   ConnectionStatus,
   CreateSyncRunInput,
@@ -41,6 +48,9 @@ import type {
   MetaConnectionRecord,
   MetaConnectionSecretRecord,
   PageInput,
+  PeriodReachFilters,
+  PeriodReachResult,
+  PeriodReachSnapshotInput,
   SettingsAuditRecord,
   SyncRunRecord,
   TrackerSettings,
@@ -237,6 +247,239 @@ function mapSyncRun(row: DatabaseRow): SyncRunRecord {
       row.error_message === null ? null : String(row.error_message),
     createdAt: asIso(row.created_at),
     updatedAt: asIso(row.updated_at),
+  };
+}
+
+const CANONICAL_RESULT_KEY_PATTERN =
+  /^[a-z0-9][a-z0-9._-]*$/;
+
+function canonicalResultFactKey(
+  metric: DailyMetricInput,
+  canonicalResultKey: string,
+): string {
+  return [
+    metric.adId,
+    metric.metricDate,
+    canonicalResultKey,
+    metric.attributionWindow ?? "account_default",
+    metric.actionReportTime,
+  ].join("\u001f");
+}
+
+function canonicalResultFacts(
+  metrics: readonly DailyMetricInput[],
+): {
+  actionMetrics: ActionMetricDailyInput[];
+  actionValues: ActionValueDailyInput[];
+} {
+  type MetricAccumulator = Omit<
+    ActionMetricDailyInput,
+    "value" | "selectedActionTypes"
+  > & {
+    value: number;
+    selectedActionTypes: Set<string>;
+  };
+  type ValueAccumulator = Omit<
+    ActionValueDailyInput,
+    "value" | "selectedActionTypes"
+  > & {
+    value: number;
+    selectedActionTypes: Set<string>;
+  };
+
+  const actionMetrics = new Map<string, MetricAccumulator>();
+  const actionValues = new Map<string, ValueAccumulator>();
+
+  for (const metric of metrics) {
+    const currency = metric.currency.trim().toUpperCase();
+    const resultMappingVersion =
+      metric.resultMappingVersion?.trim() ?? "";
+    const hasCanonicalFacts =
+      (metric.canonicalResultMetrics?.length ?? 0) > 0 ||
+      (metric.canonicalResultValues?.length ?? 0) > 0;
+    if (!currency) {
+      throw new TypeError(
+        "Canonical result facts require a source currency.",
+      );
+    }
+    if (hasCanonicalFacts && !resultMappingVersion) {
+      throw new TypeError(
+        "Canonical result facts require a result mapping version.",
+      );
+    }
+    const base = {
+      metricDate: metric.metricDate,
+      adAccountId: metric.adAccountId,
+      campaignId: metric.campaignId,
+      adId: metric.adId,
+      attributionWindow:
+        metric.attributionWindow ?? "account_default",
+      actionReportTime: metric.actionReportTime,
+      currency,
+      syncVersion: metric.syncVersion,
+      resultMappingVersion,
+      fetchedAt: metric.fetchedAt,
+    };
+
+    for (const fact of metric.canonicalResultMetrics ?? []) {
+      const canonicalResultKey = fact.canonicalResultKey.trim();
+      const selectedActionType = fact.selectedActionType.trim();
+      if (
+        !CANONICAL_RESULT_KEY_PATTERN.test(canonicalResultKey) ||
+        !selectedActionType ||
+        !Number.isFinite(fact.value) ||
+        fact.value < 0
+      ) {
+        throw new TypeError(
+          "Canonical action metric fact is invalid.",
+        );
+      }
+      const key = canonicalResultFactKey(
+        metric,
+        canonicalResultKey,
+      );
+      const existing = actionMetrics.get(key);
+      if (existing) {
+        if (existing.currency !== currency) {
+          throw new TypeError(
+            "Canonical action metric fact cannot mix currencies.",
+          );
+        }
+        existing.value += fact.value;
+        existing.selectedActionTypes.add(selectedActionType);
+      } else {
+        actionMetrics.set(key, {
+          ...base,
+          canonicalResultKey,
+          value: fact.value,
+          selectedActionTypes: new Set([selectedActionType]),
+        });
+      }
+    }
+
+    for (const fact of metric.canonicalResultValues ?? []) {
+      const canonicalResultKey = fact.canonicalResultKey.trim();
+      const selectedActionType = fact.selectedActionType.trim();
+      if (
+        !CANONICAL_RESULT_KEY_PATTERN.test(canonicalResultKey) ||
+        !selectedActionType ||
+        !currency ||
+        !Number.isFinite(fact.value) ||
+        fact.value < 0
+      ) {
+        throw new TypeError(
+          "Canonical action value fact is invalid.",
+        );
+      }
+      const key = canonicalResultFactKey(
+        metric,
+        canonicalResultKey,
+      );
+      const existing = actionValues.get(key);
+      if (existing) {
+        if (existing.currency !== currency) {
+          throw new TypeError(
+            "Canonical action value fact cannot mix currencies.",
+          );
+        }
+        existing.value += fact.value;
+        existing.selectedActionTypes.add(selectedActionType);
+      } else {
+        actionValues.set(key, {
+          ...base,
+          canonicalResultKey,
+          currency,
+          value: fact.value,
+          selectedActionTypes: new Set([selectedActionType]),
+        });
+      }
+    }
+  }
+
+  return {
+    actionMetrics: [...actionMetrics.values()].map((fact) => ({
+      ...fact,
+      selectedActionTypes: [...fact.selectedActionTypes].sort(),
+    })),
+    actionValues: [...actionValues.values()].map((fact) => ({
+      ...fact,
+      selectedActionTypes: [...fact.selectedActionTypes].sort(),
+    })),
+  };
+}
+
+type CanonicalResultEntityGrain = "campaign" | "creative_family";
+
+function normalizeCanonicalEntityResultFilters(
+  input: CanonicalResultTotalsFilters,
+) {
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(input.dateFrom) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(input.dateTo) ||
+    input.dateFrom > input.dateTo ||
+    !input.attributionWindow.trim() ||
+    !input.syncVersion.trim() ||
+    !input.resultMappingVersion.trim()
+  ) {
+    throw new TypeError(
+      "Canonical entity result filters are invalid.",
+    );
+  }
+
+  const objectiveOwners = new Map<string, string>();
+  for (const mapping of input.objectiveMappings) {
+    const objectiveKey = mapping.objectiveKey
+      .trim()
+      .toLowerCase();
+    if (!objectiveKey) continue;
+    for (const rawKey of [
+      mapping.objectiveKey,
+      ...mapping.rawObjectiveKeys,
+    ]) {
+      const normalizedRawKey = rawKey.trim().toUpperCase();
+      if (!normalizedRawKey) continue;
+      const owner = objectiveOwners.get(normalizedRawKey);
+      if (owner && owner !== objectiveKey) {
+        throw new TypeError(
+          "One raw objective cannot map to multiple canonical objectives.",
+        );
+      }
+      objectiveOwners.set(normalizedRawKey, objectiveKey);
+    }
+  }
+
+  return {
+    adAccountIds: [
+      ...new Set(
+        (input.adAccountIds ?? [])
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    ],
+    campaignMetaIds: [
+      ...new Set(
+        (input.campaignMetaIds ?? [])
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    ],
+    objectiveKeys: [
+      ...new Set(
+        (input.objectiveKeys ?? [])
+          .map((value) => value.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    ],
+    objectiveMappingPayload: [...objectiveOwners].map(
+      ([rawObjectiveKey, objectiveKey]) => ({
+        objective_key: objectiveKey,
+        raw_objective_key: rawObjectiveKey,
+      }),
+    ),
+    currency: input.currency?.trim().toUpperCase() || null,
+    attributionWindow: input.attributionWindow.trim(),
+    syncVersion: input.syncVersion.trim(),
+    resultMappingVersion: input.resultMappingVersion.trim(),
   };
 }
 
@@ -1732,6 +1975,8 @@ export class TrackerRepository {
       platform_position: metric.platformPosition ?? "ALL",
       impression_device: metric.impressionDevice ?? "ALL",
       attribution_window: metric.attributionWindow ?? "account_default",
+      action_report_time: metric.actionReportTime ?? "mixed",
+      sync_version: metric.syncVersion ?? "legacy",
       account_timezone: metric.accountTimezone,
       currency: metric.currency,
       spend: metric.spend ?? 0,
@@ -1770,6 +2015,8 @@ export class TrackerRepository {
             platform_position text,
             impression_device text,
             attribution_window text,
+            action_report_time text,
+            sync_version text,
             account_timezone text,
             currency text,
             spend numeric,
@@ -1806,6 +2053,8 @@ export class TrackerRepository {
             platform_position,
             impression_device,
             attribution_window,
+            action_report_time,
+            sync_version,
             account_timezone,
             currency,
             spend,
@@ -1840,6 +2089,8 @@ export class TrackerRepository {
             platform_position,
             impression_device,
             attribution_window,
+            action_report_time,
+            sync_version,
             account_timezone,
             currency,
             spend,
@@ -1866,7 +2117,8 @@ export class TrackerRepository {
             publisher_platform,
             platform_position,
             impression_device,
-            attribution_window
+            attribution_window,
+            action_report_time
           ) do update set
             ad_account_id = excluded.ad_account_id,
             campaign_id = excluded.campaign_id,
@@ -1875,6 +2127,7 @@ export class TrackerRepository {
             creative_asset_id = excluded.creative_asset_id,
             metric_scope = excluded.metric_scope,
             allocation_method = excluded.allocation_method,
+            sync_version = excluded.sync_version,
             account_timezone = excluded.account_timezone,
             currency = excluded.currency,
             spend = excluded.spend,
@@ -1903,6 +2156,363 @@ export class TrackerRepository {
     return asNumber(rows[0]?.affected_count);
   }
 
+  async upsertActionMetricDaily(
+    facts: readonly ActionMetricDailyInput[],
+  ): Promise<number> {
+    if (facts.length === 0) return 0;
+    const payload = facts.map((fact) => ({
+      metric_date: fact.metricDate,
+      ad_account_id: fact.adAccountId,
+      campaign_id: fact.campaignId,
+      ad_id: fact.adId,
+      canonical_result_key: fact.canonicalResultKey,
+      attribution_window: fact.attributionWindow,
+      action_report_time: fact.actionReportTime,
+      currency: fact.currency,
+      value: fact.value,
+      selected_action_types: [...fact.selectedActionTypes],
+      sync_version: fact.syncVersion,
+      result_mapping_version: fact.resultMappingVersion,
+      fetched_at: fact.fetchedAt ?? new Date().toISOString(),
+    }));
+    const rows = await this.query<DatabaseRow>(
+      `
+        with input as (
+          select *
+          from jsonb_to_recordset($1::jsonb) as item(
+            metric_date date,
+            ad_account_id bigint,
+            campaign_id bigint,
+            ad_id bigint,
+            canonical_result_key text,
+            attribution_window text,
+            action_report_time text,
+            currency text,
+            value numeric,
+            selected_action_types text[],
+            sync_version text,
+            result_mapping_version text,
+            fetched_at timestamptz
+          )
+        ),
+        upserted as (
+          insert into tracker.action_metric_daily (
+            metric_date,
+            ad_account_id,
+            campaign_id,
+            ad_id,
+            canonical_result_key,
+            attribution_window,
+            action_report_time,
+            currency,
+            value,
+            selected_action_types,
+            sync_version,
+            result_mapping_version,
+            fetched_at
+          )
+          select
+            metric_date,
+            ad_account_id,
+            campaign_id,
+            ad_id,
+            canonical_result_key,
+            attribution_window,
+            action_report_time,
+            currency,
+            value,
+            selected_action_types,
+            sync_version,
+            result_mapping_version,
+            fetched_at
+          from input
+          on conflict (
+            ad_id,
+            metric_date,
+            canonical_result_key,
+            attribution_window,
+            action_report_time
+          ) do update set
+            ad_account_id = excluded.ad_account_id,
+            campaign_id = excluded.campaign_id,
+            currency = excluded.currency,
+            value = excluded.value,
+            selected_action_types = excluded.selected_action_types,
+            sync_version = excluded.sync_version,
+            result_mapping_version =
+              excluded.result_mapping_version,
+            fetched_at = excluded.fetched_at
+          returning 1
+        )
+        select count(*)::integer as affected_count
+        from upserted
+      `,
+      [jsonPayload(payload)],
+    );
+    return asNumber(rows[0]?.affected_count);
+  }
+
+  async upsertActionValueDaily(
+    facts: readonly ActionValueDailyInput[],
+  ): Promise<number> {
+    if (facts.length === 0) return 0;
+    const payload = facts.map((fact) => ({
+      metric_date: fact.metricDate,
+      ad_account_id: fact.adAccountId,
+      campaign_id: fact.campaignId,
+      ad_id: fact.adId,
+      canonical_result_key: fact.canonicalResultKey,
+      attribution_window: fact.attributionWindow,
+      action_report_time: fact.actionReportTime,
+      currency: fact.currency,
+      value: fact.value,
+      selected_action_types: [...fact.selectedActionTypes],
+      sync_version: fact.syncVersion,
+      result_mapping_version: fact.resultMappingVersion,
+      fetched_at: fact.fetchedAt ?? new Date().toISOString(),
+    }));
+    const rows = await this.query<DatabaseRow>(
+      `
+        with input as (
+          select *
+          from jsonb_to_recordset($1::jsonb) as item(
+            metric_date date,
+            ad_account_id bigint,
+            campaign_id bigint,
+            ad_id bigint,
+            canonical_result_key text,
+            attribution_window text,
+            action_report_time text,
+            currency text,
+            value numeric,
+            selected_action_types text[],
+            sync_version text,
+            result_mapping_version text,
+            fetched_at timestamptz
+          )
+        ),
+        upserted as (
+          insert into tracker.action_value_daily (
+            metric_date,
+            ad_account_id,
+            campaign_id,
+            ad_id,
+            canonical_result_key,
+            attribution_window,
+            action_report_time,
+            currency,
+            value,
+            selected_action_types,
+            sync_version,
+            result_mapping_version,
+            fetched_at
+          )
+          select
+            metric_date,
+            ad_account_id,
+            campaign_id,
+            ad_id,
+            canonical_result_key,
+            attribution_window,
+            action_report_time,
+            currency,
+            value,
+            selected_action_types,
+            sync_version,
+            result_mapping_version,
+            fetched_at
+          from input
+          on conflict (
+            ad_id,
+            metric_date,
+            canonical_result_key,
+            attribution_window,
+            action_report_time
+          ) do update set
+            ad_account_id = excluded.ad_account_id,
+            campaign_id = excluded.campaign_id,
+            currency = excluded.currency,
+            value = excluded.value,
+            selected_action_types = excluded.selected_action_types,
+            sync_version = excluded.sync_version,
+            result_mapping_version =
+              excluded.result_mapping_version,
+            fetched_at = excluded.fetched_at
+          returning 1
+        )
+        select count(*)::integer as affected_count
+        from upserted
+      `,
+      [jsonPayload(payload)],
+    );
+    return asNumber(rows[0]?.affected_count);
+  }
+
+  async upsertPeriodReachSnapshots(
+    connectionId: DatabaseId,
+    snapshots: readonly PeriodReachSnapshotInput[],
+  ): Promise<number> {
+    if (snapshots.length === 0) return 0;
+    const naturalKeys = new Set<string>();
+    for (const snapshot of snapshots) {
+      const campaignId = snapshot.campaignId ?? null;
+      const naturalKey = [
+        snapshot.scopeLevel,
+        snapshot.adAccountId,
+        campaignId ?? "",
+        snapshot.dateFrom,
+        snapshot.dateTo,
+        snapshot.attributionWindow,
+        snapshot.actionReportTime,
+        snapshot.syncVersion,
+      ].join("\u001f");
+      if (
+        !/^\d{4}-\d{2}-\d{2}$/.test(snapshot.dateFrom) ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(snapshot.dateTo) ||
+        snapshot.dateFrom > snapshot.dateTo ||
+        !snapshot.attributionWindow.trim() ||
+        !snapshot.syncVersion.trim() ||
+        !Number.isSafeInteger(snapshot.reach) ||
+        snapshot.reach < 0 ||
+        (snapshot.scopeLevel === "account" && campaignId !== null) ||
+        (snapshot.scopeLevel === "campaign" && campaignId === null) ||
+        naturalKeys.has(naturalKey)
+      ) {
+        throw new TypeError("Period Reach snapshot is invalid.");
+      }
+      naturalKeys.add(naturalKey);
+    }
+
+    const store = async (
+      scopeLevel: "account" | "campaign",
+      values: readonly PeriodReachSnapshotInput[],
+    ) => {
+      if (values.length === 0) return 0;
+      const campaignColumn =
+        scopeLevel === "campaign" ? "campaign_id," : "";
+      const campaignSelect =
+        scopeLevel === "campaign" ? "campaign_id," : "";
+      const campaignInput =
+        scopeLevel === "campaign" ? "campaign_id bigint," : "";
+      const campaignConflict =
+        scopeLevel === "campaign" ? "campaign_id," : "";
+      const payload = values.map((snapshot) => ({
+        ad_account_id: snapshot.adAccountId,
+        campaign_id: snapshot.campaignId ?? null,
+        date_from: snapshot.dateFrom,
+        date_to: snapshot.dateTo,
+        attribution_window: snapshot.attributionWindow.trim(),
+        action_report_time: snapshot.actionReportTime,
+        sync_version: snapshot.syncVersion.trim(),
+        reach: snapshot.reach,
+        fetched_at: snapshot.fetchedAt ?? new Date().toISOString(),
+      }));
+      const rows = await this.query<DatabaseRow>(
+        `
+          with input as (
+            select *
+            from jsonb_to_recordset($2::jsonb) as item(
+              ad_account_id bigint,
+              ${campaignInput}
+              date_from date,
+              date_to date,
+              attribution_window text,
+              action_report_time text,
+              sync_version text,
+              reach numeric,
+              fetched_at timestamptz
+            )
+          ),
+          scoped as (
+            select input.*
+            from input
+            join tracker.meta_ad_accounts account
+              on account.ad_account_id = input.ad_account_id
+              and account.connection_id = $1
+            ${
+              scopeLevel === "campaign"
+                ? `
+                  join tracker.meta_campaigns campaign
+                    on campaign.campaign_id = input.campaign_id
+                    and campaign.ad_account_id =
+                      input.ad_account_id
+                `
+                : ""
+            }
+          ),
+          upserted as (
+            insert into tracker.period_reach_snapshots (
+              connection_id,
+              ad_account_id,
+              ${campaignColumn}
+              scope_level,
+              date_from,
+              date_to,
+              attribution_window,
+              action_report_time,
+              sync_version,
+              reach,
+              fetched_at
+            )
+            select
+              $1,
+              ad_account_id,
+              ${campaignSelect}
+              '${scopeLevel}',
+              date_from,
+              date_to,
+              attribution_window,
+              action_report_time,
+              sync_version,
+              reach,
+              fetched_at
+            from scoped
+            on conflict (
+              connection_id,
+              ad_account_id,
+              ${campaignConflict}
+              date_from,
+              date_to,
+              attribution_window,
+              action_report_time,
+              sync_version
+            )
+            where scope_level = '${scopeLevel}'
+            do update set
+              reach = excluded.reach,
+              fetched_at = excluded.fetched_at
+            returning 1
+          )
+          select count(*)::integer as affected_count
+          from upserted
+        `,
+        [connectionId, jsonPayload(payload)],
+      );
+      const stored = asNumber(rows[0]?.affected_count);
+      if (stored !== values.length) {
+        throw new TypeError(
+          "Period Reach snapshot scope does not match its connection.",
+        );
+      }
+      return stored;
+    };
+
+    return (
+      (await store(
+        "account",
+        snapshots.filter(
+          (snapshot) => snapshot.scopeLevel === "account",
+        ),
+      )) +
+      (await store(
+        "campaign",
+        snapshots.filter(
+          (snapshot) => snapshot.scopeLevel === "campaign",
+        ),
+      ))
+    );
+  }
+
   /**
    * Atomically replaces one account's inclusive Insights window. This prevents
    * old rows from surviving when Meta changes a supported breakdown set or a
@@ -1927,8 +2537,25 @@ export class TrackerRepository {
     ) {
       throw new TypeError("Daily metric replacement scope is invalid.");
     }
+    const facts = canonicalResultFacts(input.metrics);
 
     return this.database.begin(async (transaction) => {
+      await transaction.unsafe(
+        `
+          delete from tracker.action_metric_daily
+          where ad_account_id = $1
+            and metric_date between $2::date and $3::date
+        `,
+        [input.adAccountId, input.dateFrom, input.dateTo],
+      );
+      await transaction.unsafe(
+        `
+          delete from tracker.action_value_daily
+          where ad_account_id = $1
+            and metric_date between $2::date and $3::date
+        `,
+        [input.adAccountId, input.dateFrom, input.dateTo],
+      );
       await transaction.unsafe(
         `
           delete from tracker.daily_metrics
@@ -1940,7 +2567,269 @@ export class TrackerRepository {
       const transactionRepository = new TrackerRepository(
         transaction as unknown as DatabaseClient,
       );
-      return transactionRepository.upsertDailyMetrics(input.metrics);
+      const stored = await transactionRepository.upsertDailyMetrics(
+        input.metrics,
+      );
+      await transactionRepository.upsertActionMetricDaily(
+        facts.actionMetrics,
+      );
+      await transactionRepository.upsertActionValueDaily(
+        facts.actionValues,
+      );
+      return stored;
+    });
+  }
+
+  /**
+   * Publishes every successfully fetched account window in one transaction and
+   * advances the reporting snapshot pointer only after all replacements are
+   * durable. Readers therefore observe either the previous snapshot or the
+   * complete new publish, never a per-account half state.
+   */
+  async publishDailyMetricWindows(input: {
+    connectionId: DatabaseId;
+    syncRunId: DatabaseId;
+    resultMappingVersion: string;
+    periodReachSnapshots: readonly PeriodReachSnapshotInput[];
+    replacements: readonly {
+      adAccountId: DatabaseId;
+      dateFrom: string;
+      dateTo: string;
+      metrics: readonly DailyMetricInput[];
+    }[];
+  }): Promise<number> {
+    const resultMappingVersion = input.resultMappingVersion.trim();
+    if (!resultMappingVersion) {
+      throw new TypeError(
+        "Atomic daily metric publish requires a result mapping version.",
+      );
+    }
+    const accountIds = new Set<DatabaseId>();
+    for (const replacement of input.replacements) {
+      if (
+        !/^\d{4}-\d{2}-\d{2}$/.test(replacement.dateFrom) ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(replacement.dateTo) ||
+        replacement.dateFrom > replacement.dateTo ||
+        accountIds.has(replacement.adAccountId) ||
+        replacement.metrics.some(
+          (metric) =>
+            metric.adAccountId !== replacement.adAccountId ||
+            metric.metricDate < replacement.dateFrom ||
+            metric.metricDate > replacement.dateTo,
+        )
+      ) {
+        throw new TypeError(
+          "Atomic daily metric publish scope is invalid.",
+        );
+      }
+      accountIds.add(replacement.adAccountId);
+    }
+
+    if (input.replacements.length === 0) {
+      if (input.periodReachSnapshots.length > 0) {
+        throw new TypeError(
+          "Period Reach cannot publish without a metric replacement.",
+        );
+      }
+      return 0;
+    }
+    const replacementsByAccount = new Map(
+      input.replacements.map((replacement) => [
+        replacement.adAccountId,
+        replacement,
+      ]),
+    );
+    const periodReachSnapshots = input.periodReachSnapshots.map(
+      (snapshot) => ({
+        ...snapshot,
+        syncVersion: input.syncRunId,
+      }),
+    );
+    for (const snapshot of periodReachSnapshots) {
+      const replacement = replacementsByAccount.get(
+        snapshot.adAccountId,
+      );
+      if (
+        !replacement ||
+        snapshot.dateFrom !== replacement.dateFrom ||
+        snapshot.dateTo !== replacement.dateTo
+      ) {
+        throw new TypeError(
+          "Period Reach snapshot does not match its publish window.",
+        );
+      }
+    }
+    for (const replacement of input.replacements) {
+      const accountSnapshots = periodReachSnapshots.filter(
+        (snapshot) =>
+          snapshot.adAccountId === replacement.adAccountId &&
+          snapshot.scopeLevel === "account",
+      );
+      if (accountSnapshots.length !== 1) {
+        throw new TypeError(
+          "Each published account requires one exact-period Reach snapshot.",
+        );
+      }
+    }
+    const windowStart = [...input.replacements]
+      .map((replacement) => replacement.dateFrom)
+      .sort()
+      .at(-1)!;
+    const windowEnd = [...input.replacements]
+      .map((replacement) => replacement.dateTo)
+      .sort()[0];
+    const metrics = input.replacements.flatMap((replacement) =>
+      replacement.metrics.map((metric) => ({
+        ...metric,
+        actionReportTime: metric.actionReportTime ?? "mixed",
+        syncVersion: input.syncRunId,
+        resultMappingVersion,
+      })),
+    );
+    const facts = canonicalResultFacts(metrics);
+
+    return this.database.begin(async (transaction) => {
+      const lockedConnections = await transaction.unsafe(
+        `
+          select connection_id
+          from tracker.meta_connections
+          where connection_id = $1
+            and owner_id = 1
+          for update
+        `,
+        [input.connectionId],
+      );
+      if (lockedConnections.length !== 1) {
+        throw new TypeError(
+          "Atomic daily metric publish connection scope is invalid.",
+        );
+      }
+      const transactionRepository = new TrackerRepository(
+        transaction as unknown as DatabaseClient,
+      );
+      const currentResultMappingVersion = computeResultMappingVersion(
+        await transactionRepository.listResultMappings(),
+      );
+      if (currentResultMappingVersion !== resultMappingVersion) {
+        throw new TypeError(
+          "Result mappings changed while Insights were syncing; the reporting snapshot was preserved.",
+        );
+      }
+
+      for (const replacement of input.replacements) {
+        await transaction.unsafe(
+          `
+            delete from tracker.period_reach_snapshots
+            where connection_id = $1
+              and ad_account_id = $2
+              and date_from = $3::date
+              and date_to = $4::date
+          `,
+          [
+            input.connectionId,
+            replacement.adAccountId,
+            replacement.dateFrom,
+            replacement.dateTo,
+          ],
+        );
+        await transaction.unsafe(
+          `
+            delete from tracker.action_metric_daily
+            where ad_account_id = $1
+              and metric_date between $2::date and $3::date
+          `,
+          [
+            replacement.adAccountId,
+            replacement.dateFrom,
+            replacement.dateTo,
+          ],
+        );
+        await transaction.unsafe(
+          `
+            delete from tracker.action_value_daily
+            where ad_account_id = $1
+              and metric_date between $2::date and $3::date
+          `,
+          [
+            replacement.adAccountId,
+            replacement.dateFrom,
+            replacement.dateTo,
+          ],
+        );
+        await transaction.unsafe(
+          `
+            delete from tracker.daily_metrics
+            where ad_account_id = $1
+              and metric_date between $2::date and $3::date
+          `,
+          [
+            replacement.adAccountId,
+            replacement.dateFrom,
+            replacement.dateTo,
+          ],
+        );
+      }
+
+      const stored = await transactionRepository.upsertDailyMetrics(
+        metrics,
+      );
+      await transactionRepository.upsertActionMetricDaily(
+        facts.actionMetrics,
+      );
+      await transactionRepository.upsertActionValueDaily(
+        facts.actionValues,
+      );
+      await transactionRepository.upsertPeriodReachSnapshots(
+        input.connectionId,
+        periodReachSnapshots,
+      );
+      await transaction.unsafe(
+        `
+          insert into tracker.reporting_snapshots (
+            connection_id,
+            sync_run_id,
+            sync_version,
+            result_mapping_version,
+            window_start,
+            window_end,
+            data_through_at,
+            normalized_results_require_resync,
+            result_mapping_invalidated_at,
+            published_at
+          ) values (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5::date,
+            $6::date,
+            ($6::date + interval '1 day' - interval '1 millisecond'),
+            false,
+            null,
+            now()
+          )
+          on conflict (connection_id) do update set
+            sync_run_id = excluded.sync_run_id,
+            sync_version = excluded.sync_version,
+            result_mapping_version =
+              excluded.result_mapping_version,
+            window_start = excluded.window_start,
+            window_end = excluded.window_end,
+            data_through_at = excluded.data_through_at,
+            normalized_results_require_resync = false,
+            result_mapping_invalidated_at = null,
+            published_at = excluded.published_at
+        `,
+        [
+          input.connectionId,
+          input.syncRunId,
+          input.syncRunId,
+          resultMappingVersion,
+          windowStart,
+          windowEnd,
+        ],
+      );
+      return stored;
     });
   }
 
@@ -1984,13 +2873,19 @@ export class TrackerRepository {
       `
         select
           checkpoint.last_successful_sync_at,
-          checkpoint.high_water_mark,
+          coalesce(
+            snapshot.data_through_at,
+            checkpoint.high_water_mark
+          ) as high_water_mark,
+          snapshot.sync_version,
           run.status as latest_status,
           run.trigger_source
         from (select $1::bigint as connection_id) input
         left join tracker.sync_checkpoints checkpoint
           on checkpoint.connection_id = input.connection_id
          and checkpoint.resource_key = 'meta:insights'
+        left join tracker.reporting_snapshots snapshot
+          on snapshot.connection_id = input.connection_id
         left join lateral (
           select status, trigger_source
           from tracker.sync_runs
@@ -2020,8 +2915,887 @@ export class TrackerRepository {
     return {
       lastSyncedAt: asNullableIso(row.last_successful_sync_at),
       dataThroughAt: asNullableIso(row.high_water_mark),
+      syncVersion:
+        row.sync_version === null || row.sync_version === undefined
+          ? null
+          : String(row.sync_version),
       syncStatus,
       syncMode: trigger === "cron" ? "scheduled" : "manual",
+    };
+  }
+
+  async getCanonicalResultTotals(
+    input: CanonicalResultTotalsFilters,
+  ): Promise<CanonicalResultTotals> {
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(input.dateFrom) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(input.dateTo) ||
+      input.dateFrom > input.dateTo ||
+      !input.attributionWindow.trim() ||
+      !input.syncVersion.trim() ||
+      !input.resultMappingVersion.trim()
+    ) {
+      throw new TypeError(
+        "Canonical result total filters are invalid.",
+      );
+    }
+
+    const objectiveOwners = new Map<string, string>();
+    for (const mapping of input.objectiveMappings) {
+      const objectiveKey = mapping.objectiveKey.trim().toLowerCase();
+      if (!objectiveKey) continue;
+      for (const rawKey of [
+        mapping.objectiveKey,
+        ...mapping.rawObjectiveKeys,
+      ]) {
+        const normalizedRawKey = rawKey.trim().toUpperCase();
+        if (!normalizedRawKey) continue;
+        const owner = objectiveOwners.get(normalizedRawKey);
+        if (owner && owner !== objectiveKey) {
+          throw new TypeError(
+            "One raw objective cannot map to multiple canonical objectives.",
+          );
+        }
+        objectiveOwners.set(normalizedRawKey, objectiveKey);
+      }
+    }
+    if (objectiveOwners.size === 0) {
+      return { results: [], spendByObjective: [] };
+    }
+
+    const objectiveMappingPayload = [...objectiveOwners].map(
+      ([rawObjectiveKey, objectiveKey]) => ({
+        objective_key: objectiveKey,
+        raw_objective_key: rawObjectiveKey,
+      }),
+    );
+    const adAccountIds = [
+      ...new Set(
+        (input.adAccountIds ?? [])
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    ];
+    const objectiveKeys = [
+      ...new Set(
+        (input.objectiveKeys ?? [])
+          .map((value) => value.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    ];
+    const campaignMetaIds = [
+      ...new Set(
+        (input.campaignMetaIds ?? [])
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    ];
+    const currency = input.currency?.trim().toUpperCase() || null;
+
+    const rows = await this.query<DatabaseRow>(
+      `
+        with snapshot_scope as (
+          select
+            snapshot.sync_version,
+            snapshot.result_mapping_version,
+            snapshot.normalized_results_require_resync
+          from tracker.reporting_snapshots snapshot
+          where snapshot.connection_id = $1
+            and snapshot.sync_version = $10
+        ),
+        objective_mapping as (
+          select distinct
+            item.objective_key,
+            item.raw_objective_key
+          from jsonb_to_recordset($9::jsonb) as item(
+            objective_key text,
+            raw_objective_key text
+          )
+        ),
+        campaign_scope as (
+          select
+            campaign.campaign_id,
+            account.ad_account_id,
+            objective.objective_key,
+            upper(account.currency) as account_currency,
+            snapshot.sync_version as snapshot_sync_version,
+            snapshot.result_mapping_version
+              as snapshot_result_mapping_version,
+            snapshot.normalized_results_require_resync
+          from tracker.meta_campaigns campaign
+          join tracker.meta_ad_accounts account
+            on account.ad_account_id = campaign.ad_account_id
+          join objective_mapping objective
+            on objective.raw_objective_key =
+              upper(coalesce(campaign.objective, ''))
+          cross join snapshot_scope snapshot
+          where account.connection_id = $1
+            and (
+              $4::text[] is null
+              or account.meta_ad_account_id = any($4::text[])
+            )
+            and (
+              $5::text[] is null
+              or objective.objective_key = any($5::text[])
+            )
+            and (
+              $12::text[] is null
+              or campaign.meta_campaign_id = any($12::text[])
+            )
+        ),
+        metric_totals as (
+          select
+            fact.canonical_result_key,
+            scope.objective_key,
+            upper(fact.currency) as currency,
+            'action'::text as metric_source,
+            sum(fact.value) as value
+          from tracker.action_metric_daily fact
+          join campaign_scope scope
+            on scope.campaign_id = fact.campaign_id
+            and scope.ad_account_id = fact.ad_account_id
+          where fact.metric_date between $2::date and $3::date
+            and fact.attribution_window = $7
+            and fact.action_report_time = $8
+            and fact.sync_version = scope.snapshot_sync_version
+            and not scope.normalized_results_require_resync
+            and scope.snapshot_result_mapping_version = $11
+            and fact.result_mapping_version =
+              scope.snapshot_result_mapping_version
+            and (
+              $6::text is null
+              or upper(fact.currency) = $6
+            )
+          group by
+            fact.canonical_result_key,
+            scope.objective_key,
+            upper(fact.currency)
+        ),
+        value_totals as (
+          select
+            fact.canonical_result_key,
+            scope.objective_key,
+            upper(fact.currency) as currency,
+            'action_value'::text as metric_source,
+            sum(fact.value) as value
+          from tracker.action_value_daily fact
+          join campaign_scope scope
+            on scope.campaign_id = fact.campaign_id
+            and scope.ad_account_id = fact.ad_account_id
+          where fact.metric_date between $2::date and $3::date
+            and fact.attribution_window = $7
+            and fact.action_report_time = $8
+            and fact.sync_version = scope.snapshot_sync_version
+            and not scope.normalized_results_require_resync
+            and scope.snapshot_result_mapping_version = $11
+            and fact.result_mapping_version =
+              scope.snapshot_result_mapping_version
+            and (
+              $6::text is null
+              or upper(fact.currency) = $6
+            )
+          group by
+            fact.canonical_result_key,
+            scope.objective_key,
+            upper(fact.currency)
+        ),
+        objective_spend as (
+          select
+            scope.objective_key,
+            upper(metric.currency) as currency,
+            sum(metric.spend) as objective_spend
+          from tracker.daily_metrics metric
+          join campaign_scope scope
+            on scope.campaign_id = metric.campaign_id
+            and scope.ad_account_id = metric.ad_account_id
+          where metric.metric_date between $2::date and $3::date
+            and metric.attribution_window = $7
+            and metric.action_report_time = $8
+            and metric.sync_version = scope.snapshot_sync_version
+            and (
+              $6::text is null
+              or upper(metric.currency) = $6
+            )
+          group by scope.objective_key, upper(metric.currency)
+        ),
+        canonical_totals as (
+          select * from metric_totals
+          union all
+          select * from value_totals
+        ),
+        report_rows as (
+          select
+            'result'::text as row_kind,
+            total.canonical_result_key,
+            total.objective_key,
+            total.metric_source,
+            total.currency,
+            total.value,
+            coalesce(spend.objective_spend, 0) as objective_spend
+          from canonical_totals total
+          left join objective_spend spend
+            on spend.objective_key = total.objective_key
+            and spend.currency = total.currency
+
+          union all
+
+          select
+            'objective_spend'::text as row_kind,
+            null::text as canonical_result_key,
+            spend.objective_key,
+            null::text as metric_source,
+            spend.currency,
+            null::numeric as value,
+            spend.objective_spend
+          from objective_spend spend
+        )
+        select *
+        from report_rows
+        order by
+          objective_key,
+          currency,
+          row_kind,
+          metric_source,
+          canonical_result_key
+      `,
+      [
+        input.connectionId,
+        input.dateFrom,
+        input.dateTo,
+        input.adAccountIds === undefined ? null : adAccountIds,
+        input.objectiveKeys === undefined ? null : objectiveKeys,
+        currency,
+        input.attributionWindow.trim(),
+        input.actionReportTime,
+        jsonPayload(objectiveMappingPayload),
+        input.syncVersion.trim(),
+        input.resultMappingVersion.trim(),
+        input.campaignMetaIds === undefined
+          ? null
+          : campaignMetaIds,
+      ],
+    );
+
+    return {
+      results: rows
+        .filter((row) => row.row_kind === "result")
+        .map((row) => ({
+          canonicalResultKey: String(row.canonical_result_key),
+          objectiveKey: String(row.objective_key),
+          metricSource: row.metric_source as
+            | "action"
+            | "action_value",
+          currency: String(row.currency),
+          value: asNumber(row.value),
+          objectiveSpend: asNumber(row.objective_spend),
+        })),
+      spendByObjective: rows
+        .filter((row) => row.row_kind === "objective_spend")
+        .map((row) => ({
+          objectiveKey: String(row.objective_key),
+          currency: String(row.currency),
+          spend: asNumber(row.objective_spend),
+      })),
+    };
+  }
+
+  private async queryCanonicalEntityResultTotals(
+    input: CanonicalResultTotalsFilters,
+    grain: CanonicalResultEntityGrain,
+  ): Promise<DatabaseRow[]> {
+    const normalized =
+      normalizeCanonicalEntityResultFilters(input);
+    const familyResolutionCtes =
+      grain === "creative_family"
+        ? `
+          ad_asset_counts as (
+            select
+              ad.ad_id,
+              count(distinct ad_link.creative_id) as wrapper_count,
+              count(distinct creative.creative_id)
+                as connection_wrapper_count,
+              count(distinct ad_link.creative_id) filter (
+                where asset.asset_type in ('video', 'image')
+                  and asset.is_active
+              ) as resolved_wrapper_count,
+              count(distinct asset_link.creative_asset_id)
+                as linked_asset_count,
+              count(distinct asset.creative_asset_id)
+                as total_asset_count,
+              count(distinct asset.creative_asset_id) filter (
+                where asset.asset_type in ('video', 'image')
+                  and asset.is_active
+              ) as physical_asset_count,
+              count(distinct asset.creative_family_id)
+                as family_count,
+              min(asset.creative_asset_id) as only_asset_id,
+              min(asset.creative_family_id) as only_family_id
+            from tracker.meta_ads ad
+            join campaign_scope scope
+              on scope.campaign_id = ad.campaign_id
+              and scope.ad_account_id = ad.ad_account_id
+            left join tracker.ad_creative_links ad_link
+              on ad_link.ad_id = ad.ad_id
+            left join tracker.meta_creatives creative
+              on creative.creative_id = ad_link.creative_id
+              and creative.connection_id = $1
+            left join tracker.creative_asset_links asset_link
+              on asset_link.creative_id = creative.creative_id
+            left join tracker.creative_assets asset
+              on asset.creative_asset_id =
+                asset_link.creative_asset_id
+              and asset.connection_id = $1
+            group by ad.ad_id
+          ),
+          ad_family_resolution as (
+            select
+              ad_id,
+              case
+                when wrapper_count > 0
+                  and wrapper_count = connection_wrapper_count
+                  and wrapper_count = resolved_wrapper_count
+                  and linked_asset_count = total_asset_count
+                  and total_asset_count = 1
+                  and physical_asset_count = 1
+                  and family_count = 1
+                then only_asset_id
+                else null
+              end as creative_asset_id,
+              case
+                when wrapper_count > 0
+                  and wrapper_count = connection_wrapper_count
+                  and wrapper_count = resolved_wrapper_count
+                  and linked_asset_count = total_asset_count
+                  and total_asset_count = 1
+                  and physical_asset_count = 1
+                  and family_count = 1
+                then only_family_id
+                else null
+              end as creative_family_id,
+              case
+                when wrapper_count > 0
+                  and wrapper_count = connection_wrapper_count
+                  and wrapper_count = resolved_wrapper_count
+                  and linked_asset_count = total_asset_count
+                  and total_asset_count = 1
+                  and physical_asset_count = 1
+                  and family_count = 1
+                then 'single_asset'
+                else 'unallocated'
+              end as allocation_method
+            from ad_asset_counts
+          ),
+          ad_daily_allocation as (
+            select
+              metric.ad_id,
+              metric.metric_date,
+              upper(metric.currency) as currency,
+              case
+                when bool_and(
+                  metric.metric_scope = 'asset'
+                  and metric.allocation_method in (
+                    'exact',
+                    'single_asset'
+                  )
+                  and metric.creative_asset_id is not null
+                )
+                  and count(distinct metric.creative_asset_id) = 1
+                then min(metric.creative_asset_id)
+                else null
+              end as creative_asset_id
+            from tracker.daily_metrics metric
+            join campaign_scope scope
+              on scope.campaign_id = metric.campaign_id
+              and scope.ad_account_id = metric.ad_account_id
+            where metric.metric_date between $2::date and $3::date
+              and metric.attribution_window = $7
+              and metric.action_report_time = $8
+              and metric.sync_version = scope.snapshot_sync_version
+              and scope.snapshot_sync_version = $10
+              and (
+                $6::text is null
+                or upper(metric.currency) = $6
+              )
+            group by
+              metric.ad_id,
+              metric.metric_date,
+              upper(metric.currency)
+          ),
+        `
+        : "";
+    const entityKey =
+      grain === "campaign"
+        ? "scope.campaign_meta_id"
+        : `
+          case
+            when daily_allocation.creative_asset_id =
+                resolution.creative_asset_id
+              and resolution.allocation_method = 'single_asset'
+            then resolution.creative_family_id
+            else null
+          end`;
+    const allocationMethod =
+      grain === "campaign"
+        ? "'campaign'::text"
+        : `
+          case
+            when daily_allocation.creative_asset_id =
+                resolution.creative_asset_id
+              and resolution.allocation_method = 'single_asset'
+            then 'single_asset'
+            else 'unallocated'
+          end`;
+    const entityJoin =
+      grain === "creative_family"
+        ? `
+          left join ad_daily_allocation daily_allocation
+            on daily_allocation.ad_id = fact.ad_id
+            and daily_allocation.metric_date = fact.metric_date
+            and daily_allocation.currency = upper(fact.currency)
+          left join ad_family_resolution resolution
+            on resolution.ad_id = fact.ad_id
+        `
+        : "";
+
+    return this.query<DatabaseRow>(
+      `
+        with snapshot_status as (
+          select
+            case
+              when snapshot.connection_id is null
+                then 'reporting_snapshot_unavailable'
+              when snapshot.sync_version <> $10
+                or snapshot.result_mapping_version <> $11
+                or snapshot.normalized_results_require_resync
+                then 'reporting_snapshot_stale'
+              else 'available'
+            end as snapshot_status,
+            snapshot.sync_version,
+            snapshot.result_mapping_version
+          from (select $1::bigint as connection_id) input
+          left join tracker.reporting_snapshots snapshot
+            on snapshot.connection_id = input.connection_id
+        ),
+        objective_mapping as (
+          select distinct
+            item.objective_key,
+            item.raw_objective_key
+          from jsonb_to_recordset($9::jsonb) as item(
+            objective_key text,
+            raw_objective_key text
+          )
+        ),
+        campaign_scope as (
+          select
+            campaign.campaign_id,
+            campaign.meta_campaign_id as campaign_meta_id,
+            account.ad_account_id,
+            account.meta_ad_account_id as account_meta_id,
+            objective.objective_key,
+            snapshot.sync_version as snapshot_sync_version,
+            snapshot.result_mapping_version
+              as snapshot_result_mapping_version
+          from tracker.meta_campaigns campaign
+          join tracker.meta_ad_accounts account
+            on account.ad_account_id = campaign.ad_account_id
+          join objective_mapping objective
+            on objective.raw_objective_key =
+              upper(coalesce(campaign.objective, ''))
+          cross join snapshot_status snapshot
+          where snapshot.snapshot_status = 'available'
+            and account.connection_id = $1
+            and (
+              $4::text[] is null
+              or account.meta_ad_account_id = any($4::text[])
+            )
+            and (
+              $5::text[] is null
+              or objective.objective_key = any($5::text[])
+            )
+            and (
+              $12::text[] is null
+              or campaign.meta_campaign_id = any($12::text[])
+            )
+        ),
+        ${familyResolutionCtes}
+        normalized_facts as (
+          select
+            fact.metric_date,
+            fact.ad_account_id,
+            fact.campaign_id,
+            fact.ad_id,
+            fact.canonical_result_key,
+            fact.attribution_window,
+            fact.action_report_time,
+            fact.currency,
+            fact.value,
+            fact.sync_version,
+            fact.result_mapping_version,
+            'action'::text as metric_source
+          from tracker.action_metric_daily fact
+          union all
+          select
+            fact.metric_date,
+            fact.ad_account_id,
+            fact.campaign_id,
+            fact.ad_id,
+            fact.canonical_result_key,
+            fact.attribution_window,
+            fact.action_report_time,
+            fact.currency,
+            fact.value,
+            fact.sync_version,
+            fact.result_mapping_version,
+            'action_value'::text as metric_source
+          from tracker.action_value_daily fact
+        ),
+        scoped_facts as (
+          select
+            scope.account_meta_id,
+            ${entityKey} as entity_key,
+            ${allocationMethod} as allocation_method,
+            fact.canonical_result_key,
+            scope.objective_key,
+            fact.metric_source,
+            upper(fact.currency) as currency,
+            fact.value
+          from normalized_facts fact
+          join campaign_scope scope
+            on scope.campaign_id = fact.campaign_id
+            and scope.ad_account_id = fact.ad_account_id
+          ${entityJoin}
+          where fact.metric_date between $2::date and $3::date
+            and fact.attribution_window = $7
+            and fact.action_report_time = $8
+            and fact.sync_version = scope.snapshot_sync_version
+            and fact.result_mapping_version =
+              scope.snapshot_result_mapping_version
+            and scope.snapshot_sync_version = $10
+            and scope.snapshot_result_mapping_version = $11
+            and (
+              $6::text is null
+              or upper(fact.currency) = $6
+            )
+        ),
+        canonical_totals as (
+          select
+            account_meta_id,
+            entity_key,
+            allocation_method,
+            canonical_result_key,
+            objective_key,
+            metric_source,
+            currency,
+            sum(value) as value
+          from scoped_facts
+          group by
+            account_meta_id,
+            entity_key,
+            allocation_method,
+            canonical_result_key,
+            objective_key,
+            metric_source,
+            currency
+        )
+        select
+          snapshot.snapshot_status,
+          snapshot.sync_version as snapshot_sync_version,
+          snapshot.result_mapping_version
+            as snapshot_result_mapping_version,
+          total.account_meta_id,
+          total.entity_key,
+          total.allocation_method,
+          total.canonical_result_key,
+          total.objective_key,
+          total.metric_source,
+          total.currency,
+          total.value
+        from snapshot_status snapshot
+        left join canonical_totals total
+          on snapshot.snapshot_status = 'available'
+        order by
+          total.account_meta_id,
+          total.objective_key,
+          total.entity_key nulls last,
+          total.currency,
+          total.metric_source,
+          total.canonical_result_key
+      `,
+      [
+        input.connectionId,
+        input.dateFrom,
+        input.dateTo,
+        input.adAccountIds === undefined
+          ? null
+          : normalized.adAccountIds,
+        input.objectiveKeys === undefined
+          ? null
+          : normalized.objectiveKeys,
+        normalized.currency,
+        normalized.attributionWindow,
+        input.actionReportTime,
+        jsonPayload(normalized.objectiveMappingPayload),
+        normalized.syncVersion,
+        normalized.resultMappingVersion,
+        input.campaignMetaIds === undefined
+          ? null
+          : normalized.campaignMetaIds,
+      ],
+    );
+  }
+
+  async getCanonicalCampaignResultTotals(
+    input: CanonicalResultTotalsFilters,
+  ): Promise<CanonicalCampaignResultTotals> {
+    const rows = await this.queryCanonicalEntityResultTotals(
+      input,
+      "campaign",
+    );
+    const snapshotStatus = String(
+      rows[0]?.snapshot_status ??
+        "reporting_snapshot_unavailable",
+    );
+    if (snapshotStatus !== "available") {
+      return {
+        available: false,
+        reason:
+          snapshotStatus === "reporting_snapshot_stale"
+            ? "reporting_snapshot_stale"
+            : "reporting_snapshot_unavailable",
+        results: [],
+      };
+    }
+    return {
+      available: true,
+      syncVersion: String(rows[0]?.snapshot_sync_version),
+      resultMappingVersion: String(
+        rows[0]?.snapshot_result_mapping_version,
+      ),
+      results: rows
+        .filter(
+          (row) =>
+            row.entity_key !== null &&
+            row.entity_key !== undefined &&
+            row.canonical_result_key !== null &&
+            row.canonical_result_key !== undefined,
+        )
+        .map((row) => ({
+          adAccountMetaId: String(row.account_meta_id),
+          campaignMetaId: String(row.entity_key),
+          canonicalResultKey: String(
+            row.canonical_result_key,
+          ),
+          objectiveKey: String(row.objective_key),
+          metricSource: row.metric_source as
+            | "action"
+            | "action_value",
+          currency: String(row.currency),
+          value: asNumber(row.value),
+        })),
+    };
+  }
+
+  async getCanonicalCreativeFamilyResultTotals(
+    input: CanonicalResultTotalsFilters,
+  ): Promise<CanonicalCreativeFamilyResultTotals> {
+    const rows = await this.queryCanonicalEntityResultTotals(
+      input,
+      "creative_family",
+    );
+    const snapshotStatus = String(
+      rows[0]?.snapshot_status ??
+        "reporting_snapshot_unavailable",
+    );
+    if (snapshotStatus !== "available") {
+      return {
+        available: false,
+        reason:
+          snapshotStatus === "reporting_snapshot_stale"
+            ? "reporting_snapshot_stale"
+            : "reporting_snapshot_unavailable",
+        results: [],
+      };
+    }
+    return {
+      available: true,
+      syncVersion: String(rows[0]?.snapshot_sync_version),
+      resultMappingVersion: String(
+        rows[0]?.snapshot_result_mapping_version,
+      ),
+      results: rows
+        .filter(
+          (row) =>
+            row.canonical_result_key !== null &&
+            row.canonical_result_key !== undefined,
+        )
+        .map((row) => {
+          const allocated =
+            row.allocation_method === "single_asset" &&
+            row.entity_key !== null &&
+            row.entity_key !== undefined;
+          return {
+            adAccountMetaId: String(row.account_meta_id),
+            creativeFamilyId: allocated
+              ? String(row.entity_key)
+              : null,
+            allocationMethod: allocated
+              ? ("single_asset" as const)
+              : ("unallocated" as const),
+            canonicalResultKey: String(
+              row.canonical_result_key,
+            ),
+            objectiveKey: String(row.objective_key),
+            metricSource: row.metric_source as
+              | "action"
+              | "action_value",
+            currency: String(row.currency),
+            value: asNumber(row.value),
+          };
+        }),
+    };
+  }
+
+  async getPeriodReach(
+    input: PeriodReachFilters,
+  ): Promise<PeriodReachResult> {
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(input.dateFrom) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(input.dateTo) ||
+      input.dateFrom > input.dateTo ||
+      !input.attributionWindow.trim() ||
+      !input.syncVersion.trim() ||
+      !input.resultMappingVersion.trim()
+    ) {
+      throw new TypeError("Period Reach filters are invalid.");
+    }
+    const adAccountIds = [
+      ...new Set(
+        input.adAccountIds
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    ];
+    if (adAccountIds.length === 0) {
+      return {
+        available: false,
+        reason: "exact_account_scope_required",
+      };
+    }
+    if (adAccountIds.length > 1) {
+      return {
+        available: false,
+        reason: "multi_account_overlap_unsafe",
+      };
+    }
+    const campaignIds = [
+      ...new Set(
+        (input.campaignIds ?? [])
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    ];
+    if (campaignIds.length > 1) {
+      return {
+        available: false,
+        reason: "multi_campaign_overlap_unsafe",
+      };
+    }
+    const scopeLevel =
+      campaignIds.length === 1 ? "campaign" : "account";
+    const rows = await this.query<DatabaseRow>(
+      `
+        select
+          snapshot.sync_version as snapshot_sync_version,
+          snapshot.result_mapping_version
+            as snapshot_result_mapping_version,
+          snapshot.normalized_results_require_resync,
+          period.period_reach_snapshot_id,
+          account.meta_ad_account_id,
+          campaign.meta_campaign_id,
+          period.reach,
+          period.date_from,
+          period.date_to,
+          period.attribution_window,
+          period.action_report_time,
+          period.sync_version
+        from (select 1 as anchor) input
+        left join tracker.reporting_snapshots snapshot
+          on snapshot.connection_id = $1
+        left join tracker.meta_ad_accounts account
+          on account.connection_id = $1
+          and account.meta_ad_account_id = $4
+        left join tracker.meta_campaigns campaign
+          on $5::text is not null
+          and campaign.ad_account_id = account.ad_account_id
+          and campaign.meta_campaign_id = $5
+        left join tracker.period_reach_snapshots period
+          on period.connection_id = $1
+          and period.ad_account_id = account.ad_account_id
+          and period.scope_level = $6
+          and (
+            ($6 = 'account' and period.campaign_id is null)
+            or ($6 = 'campaign' and period.campaign_id = campaign.campaign_id)
+          )
+          and period.date_from = $2::date
+          and period.date_to = $3::date
+          and period.attribution_window = $7
+          and period.action_report_time = $8
+          and period.sync_version = snapshot.sync_version
+      `,
+      [
+        input.connectionId,
+        input.dateFrom,
+        input.dateTo,
+        adAccountIds[0],
+        campaignIds[0] ?? null,
+        scopeLevel,
+        input.attributionWindow.trim(),
+        input.actionReportTime,
+      ],
+    );
+    const row = rows[0] ?? {};
+    if (!row.snapshot_sync_version) {
+      return {
+        available: false,
+        reason: "exact_snapshot_unavailable",
+      };
+    }
+    if (
+      String(row.snapshot_sync_version) !==
+        input.syncVersion.trim() ||
+      Boolean(row.normalized_results_require_resync) ||
+      String(row.snapshot_result_mapping_version ?? "") !==
+        input.resultMappingVersion.trim()
+    ) {
+      return {
+        available: false,
+        reason: "reporting_snapshot_stale",
+      };
+    }
+    if (!row.period_reach_snapshot_id) {
+      return {
+        available: false,
+        reason: "exact_snapshot_unavailable",
+      };
+    }
+    return {
+      available: true,
+      scopeLevel,
+      adAccountId: String(row.meta_ad_account_id),
+      campaignId:
+        row.meta_campaign_id === null ||
+        row.meta_campaign_id === undefined
+          ? null
+          : String(row.meta_campaign_id),
+      reach: asNumber(row.reach),
+      dateFrom: String(row.date_from),
+      dateTo: String(row.date_to),
+      attributionWindow: String(row.attribution_window),
+      actionReportTime: row.action_report_time as
+        | "impression"
+        | "conversion"
+        | "mixed",
+      syncVersion: String(row.sync_version),
     };
   }
 
@@ -2163,6 +3937,18 @@ export class TrackerRepository {
             and ($6::date is null or metric.metric_date >= $6::date)
             and ($7::date is null or metric.metric_date <= $7::date)
             and ($8::text is null or metric.currency = $8)
+            and (
+              $11::text is null
+              or metric.attribution_window = $11
+            )
+            and (
+              $12::text is null
+              or metric.action_report_time = $12
+            )
+            and (
+              $13::text is null
+              or metric.sync_version = $13
+            )
           group by metric.campaign_id, metric.currency
         ),
         campaign_performance as (
@@ -2218,6 +4004,11 @@ export class TrackerRepository {
               or campaign.meta_campaign_id ilike '%' || $5 || '%'
               or account.name ilike '%' || $5 || '%'
             )
+            and (
+              $14::text[] is null
+              or upper(coalesce(campaign.objective, ''))
+                = any($14::text[])
+            )
         )
         select filtered.*, count(*) over () as total_count
         from filtered
@@ -2244,6 +4035,14 @@ export class TrackerRepository {
         filters.currency?.trim() || null,
         limit,
         offset,
+        filters.attributionWindow?.trim() || null,
+        filters.actionReportTime ?? null,
+        filters.syncVersion?.trim() || null,
+        filters.objectiveRawKeys?.length
+          ? filters.objectiveRawKeys.map((key) =>
+              key.trim().toUpperCase(),
+            )
+          : null,
       ],
     );
 
@@ -2643,6 +4442,28 @@ export class TrackerRepository {
                   and selected_campaign.meta_campaign_id = $10
               )
             )
+            and (
+              $12::text is null
+              or metric.attribution_window = $12
+            )
+            and (
+              $13::text is null
+              or metric.action_report_time = $13
+            )
+            and (
+              $14::text is null
+              or metric.sync_version = $14
+            )
+            and (
+              $15::text[] is null
+              or exists (
+                select 1
+                from tracker.meta_campaigns objective_campaign
+                where objective_campaign.campaign_id = metric.campaign_id
+                  and upper(coalesce(objective_campaign.objective, ''))
+                    = any($15::text[])
+              )
+            )
           group by
             metric.attributed_asset_id,
             metric.operating_system,
@@ -2690,6 +4511,14 @@ export class TrackerRepository {
         filters.accountMetaId?.trim() || null,
         filters.campaignMetaId?.trim() || null,
         filters.creativeFamilyId?.trim() || null,
+        filters.attributionWindow?.trim() || null,
+        filters.actionReportTime ?? null,
+        filters.syncVersion?.trim() || null,
+        filters.objectiveRawKeys?.length
+          ? filters.objectiveRawKeys.map((key) =>
+              key.trim().toUpperCase(),
+            )
+          : null,
       ],
     );
 
@@ -2795,6 +4624,28 @@ export class TrackerRepository {
                 and selected_campaign.meta_campaign_id = $7
             )
           )
+          and (
+            $8::text is null
+            or metric.attribution_window = $8
+          )
+          and (
+            $9::text is null
+            or metric.action_report_time = $9
+          )
+          and (
+            $10::text is null
+            or metric.sync_version = $10
+          )
+          and (
+            $11::text[] is null
+            or exists (
+              select 1
+              from tracker.meta_campaigns objective_campaign
+              where objective_campaign.campaign_id = metric.campaign_id
+                and upper(coalesce(objective_campaign.objective, ''))
+                  = any($11::text[])
+            )
+          )
         group by operating_system, metric.currency
         order by metric.currency, operating_system
       `,
@@ -2806,6 +4657,14 @@ export class TrackerRepository {
         filters.currency ?? null,
         filters.accountMetaId?.trim() || null,
         filters.campaignMetaId?.trim() || null,
+        filters.attributionWindow?.trim() || null,
+        filters.actionReportTime ?? null,
+        filters.syncVersion?.trim() || null,
+        filters.objectiveRawKeys?.length
+          ? filters.objectiveRawKeys.map((key) =>
+              key.trim().toUpperCase(),
+            )
+          : null,
       ],
     );
 
@@ -2865,6 +4724,28 @@ export class TrackerRepository {
                 and selected_campaign.meta_campaign_id = $7
             )
           )
+          and (
+            $8::text is null
+            or metric.attribution_window = $8
+          )
+          and (
+            $9::text is null
+            or metric.action_report_time = $9
+          )
+          and (
+            $10::text is null
+            or metric.sync_version = $10
+          )
+          and (
+            $11::text[] is null
+            or exists (
+              select 1
+              from tracker.meta_campaigns objective_campaign
+              where objective_campaign.campaign_id = metric.campaign_id
+                and upper(coalesce(objective_campaign.objective, ''))
+                  = any($11::text[])
+            )
+          )
         group by metric.metric_date, metric.currency
         order by metric.metric_date, metric.currency
       `,
@@ -2876,6 +4757,14 @@ export class TrackerRepository {
         filters.currency?.trim() || null,
         filters.accountMetaId?.trim() || null,
         filters.campaignMetaId?.trim() || null,
+        filters.attributionWindow?.trim() || null,
+        filters.actionReportTime ?? null,
+        filters.syncVersion?.trim() || null,
+        filters.objectiveRawKeys?.length
+          ? filters.objectiveRawKeys.map((key) =>
+              key.trim().toUpperCase(),
+            )
+          : null,
       ],
     );
 
@@ -3306,6 +5195,472 @@ export class TrackerRepository {
         input.markSuccessful ?? false,
       ],
     );
+  }
+
+  async listReportingScopeInventory(connectionId: DatabaseId) {
+    const [businesses, adAccounts] = await Promise.all([
+      this.query<DatabaseRow>(
+        `
+          select
+            business.meta_business_id,
+            business.name,
+            business.is_active,
+            coalesce(
+              array_agg(distinct account.meta_ad_account_id)
+                filter (where account.meta_ad_account_id is not null),
+              '{}'::text[]
+            ) as ad_account_ids
+          from tracker.meta_businesses business
+          left join tracker.business_ad_accounts relation
+            on relation.business_id = business.business_id
+          left join tracker.meta_ad_accounts account
+            on account.ad_account_id = relation.ad_account_id
+            and account.connection_id = business.connection_id
+          where business.connection_id = $1
+          group by
+            business.business_id,
+            business.meta_business_id,
+            business.name,
+            business.is_active
+          order by business.is_active desc, business.name
+        `,
+        [connectionId],
+      ),
+      this.query<DatabaseRow>(
+        `
+          select
+            account.meta_ad_account_id,
+            account.name,
+            account.is_active,
+            account.account_status,
+            account.currency,
+            account.timezone_name,
+            coalesce(
+              array_agg(distinct business.meta_business_id)
+                filter (where business.meta_business_id is not null),
+              '{}'::text[]
+            ) as business_ids
+          from tracker.meta_ad_accounts account
+          left join tracker.business_ad_accounts relation
+            on relation.ad_account_id = account.ad_account_id
+          left join tracker.meta_businesses business
+            on business.business_id = relation.business_id
+            and business.connection_id = account.connection_id
+          where account.connection_id = $1
+          group by
+            account.ad_account_id,
+            account.meta_ad_account_id,
+            account.name,
+            account.is_active,
+            account.account_status,
+            account.currency,
+            account.timezone_name
+          order by
+            coalesce(account.is_active and account.account_status = 1, false)
+              desc,
+            account.is_active desc,
+            account.name
+        `,
+        [connectionId],
+      ),
+    ]);
+
+    return {
+      businesses: businesses.map((row) => ({
+        id: String(row.meta_business_id),
+        name: String(row.name),
+        isActive: Boolean(row.is_active),
+        adAccountIds: asStringArray(row.ad_account_ids),
+      })),
+      adAccounts: adAccounts.map((row) => ({
+        id: String(row.meta_ad_account_id),
+        name: String(row.name),
+        isActive: Boolean(row.is_active),
+        accountStatus: asNullableNumber(row.account_status),
+        currency: String(row.currency),
+        timezone: String(row.timezone_name),
+        businessIds: asStringArray(row.business_ids),
+      })),
+    };
+  }
+
+  async getReportingScope(connectionId: DatabaseId) {
+    const rows = await this.query<DatabaseRow>(
+      `
+        select
+          scope.confirmed_at,
+          scope.updated_at,
+          array(
+            select member.meta_business_id
+            from tracker.reporting_scope_business_members member
+            where member.connection_id = scope.connection_id
+            order by member.meta_business_id
+          ) as business_ids,
+          array(
+            select member.meta_ad_account_id
+            from tracker.reporting_scope_ad_account_members member
+            where member.connection_id = scope.connection_id
+            order by member.meta_ad_account_id
+          ) as ad_account_ids
+        from tracker.reporting_scopes scope
+        where scope.connection_id = $1
+        limit 1
+      `,
+      [connectionId],
+    );
+    const row = rows[0];
+    if (!row) {
+      return {
+        businessIds: [],
+        adAccountIds: [],
+        confirmedAt: null,
+        updatedAt: null,
+      };
+    }
+
+    return {
+      businessIds: asStringArray(row.business_ids),
+      adAccountIds: asStringArray(row.ad_account_ids),
+      confirmedAt: asNullableIso(row.confirmed_at),
+      updatedAt: asNullableIso(row.updated_at),
+    };
+  }
+
+  async saveReportingScope(input: {
+    connectionId: DatabaseId;
+    businessIds: readonly string[];
+    adAccountIds: readonly string[];
+  }) {
+    return this.database.begin(async (transaction) => {
+      await transaction.unsafe(
+        `
+          insert into tracker.reporting_scopes (
+            connection_id,
+            owner_id,
+            confirmed_at
+          )
+          select connection_id, owner_id, now()
+          from tracker.meta_connections
+          where connection_id = $1
+            and owner_id = 1
+          on conflict (connection_id) do update set
+            confirmed_at = now(),
+            updated_at = now()
+        `,
+        [input.connectionId],
+      );
+      await transaction.unsafe(
+        `
+          delete from tracker.reporting_scope_business_members
+          where connection_id = $1
+        `,
+        [input.connectionId],
+      );
+      await transaction.unsafe(
+        `
+          delete from tracker.reporting_scope_ad_account_members
+          where connection_id = $1
+        `,
+        [input.connectionId],
+      );
+      await transaction.unsafe(
+        `
+          with requested as (
+            select distinct jsonb_array_elements_text($2::jsonb)
+              as meta_business_id
+          )
+          insert into tracker.reporting_scope_business_members (
+            connection_id,
+            meta_business_id
+          )
+          select $1, business.meta_business_id
+          from requested
+          join tracker.meta_businesses business
+            on business.connection_id = $1
+            and business.meta_business_id = requested.meta_business_id
+        `,
+        [input.connectionId, jsonPayload(input.businessIds)],
+      );
+      await transaction.unsafe(
+        `
+          with requested as (
+            select distinct jsonb_array_elements_text($2::jsonb)
+              as meta_ad_account_id
+          )
+          insert into tracker.reporting_scope_ad_account_members (
+            connection_id,
+            meta_ad_account_id
+          )
+          select $1, account.meta_ad_account_id
+          from requested
+          join tracker.meta_ad_accounts account
+            on account.connection_id = $1
+            and account.meta_ad_account_id = requested.meta_ad_account_id
+        `,
+        [input.connectionId, jsonPayload(input.adAccountIds)],
+      );
+
+      const transactionRepository = new TrackerRepository(
+        transaction as unknown as DatabaseClient,
+      );
+      return transactionRepository.getReportingScope(input.connectionId);
+    });
+  }
+
+  async listResultDefinitions() {
+    const rows = await this.query<DatabaseRow>(
+      `
+        select *
+        from tracker.result_definitions
+        where owner_id = 1
+        order by enabled desc, canonical_key
+      `,
+    );
+    return rows.map((row) => ({
+      id: asId(row.result_definition_id),
+      canonicalKey: String(row.canonical_key),
+      label: String(row.label),
+      shortLabel: String(row.short_label),
+      objectiveKeys: asStringArray(row.objective_keys),
+      rawActionTypes: asStringArray(row.raw_action_types),
+      rawValueActionTypes: asStringArray(
+        row.raw_value_action_types,
+      ),
+      unit: row.unit as
+        | "count"
+        | "currency"
+        | "percent"
+        | "duration",
+      efficiencyMetric: row.efficiency_metric as
+        | "cost_per_result"
+        | "rate"
+        | "roas"
+        | "none",
+      direction: row.direction as
+        | "lower_is_better"
+        | "higher_is_better",
+      defaultForObjective: Boolean(row.default_for_objective),
+      minimumResults: asNumber(row.minimum_results),
+      minimumImpressions: asNumber(row.minimum_impressions),
+      enabled: Boolean(row.enabled),
+    }));
+  }
+
+  async listResultMappings() {
+    const rows = await this.query<DatabaseRow>(
+      `
+        select
+          mapping.result_mapping_id,
+          definition.canonical_key,
+          mapping.raw_action_type,
+          mapping.metric_source,
+          mapping.priority,
+          mapping.mapping_source,
+          mapping.enabled
+        from tracker.result_mappings mapping
+        join tracker.result_definitions definition
+          on definition.owner_id = mapping.owner_id
+          and definition.result_definition_id =
+            mapping.result_definition_id
+        where mapping.owner_id = 1
+        order by
+          definition.canonical_key,
+          mapping.metric_source,
+          mapping.priority,
+          mapping.raw_action_type
+      `,
+    );
+    return rows.map((row) => ({
+      id: asId(row.result_mapping_id),
+      canonicalResultKey: String(row.canonical_key),
+      rawActionType: String(row.raw_action_type),
+      metricSource: row.metric_source as "action" | "action_value",
+      priority: asNumber(row.priority),
+      mappingSource: row.mapping_source as "system" | "owner",
+      enabled: Boolean(row.enabled),
+    }));
+  }
+
+  async listCampaignResultOverrides(connectionId: DatabaseId) {
+    const rows = await this.query<DatabaseRow>(
+      `
+        select
+          campaign.meta_campaign_id,
+          definition.canonical_key,
+          override.enabled
+        from tracker.campaign_result_overrides override
+        join tracker.result_definitions definition
+          on definition.owner_id = override.owner_id
+          and definition.result_definition_id =
+            override.result_definition_id
+        join tracker.meta_campaigns campaign
+          on campaign.campaign_id = override.campaign_id
+        join tracker.meta_ad_accounts account
+          on account.ad_account_id = campaign.ad_account_id
+        where override.owner_id = 1
+          and account.connection_id = $1
+        order by campaign.meta_campaign_id
+      `,
+      [connectionId],
+    );
+    return rows.map((row) => ({
+      campaignId: String(row.meta_campaign_id),
+      canonicalResultKey: String(row.canonical_key),
+      enabled: Boolean(row.enabled),
+    }));
+  }
+
+  async saveResultMappings(input: {
+    connectionId: DatabaseId;
+    mappings: readonly {
+      canonicalResultKey: string;
+      rawActionType: string;
+      metricSource: "action" | "action_value";
+      priority: number;
+      enabled: boolean;
+    }[];
+  }) {
+    return this.database.begin(async (transaction) => {
+      const lockedConnections = await transaction.unsafe(
+        `
+          select connection_id
+          from tracker.meta_connections
+          where connection_id = $1
+            and owner_id = 1
+          for update
+        `,
+        [input.connectionId],
+      );
+      if (lockedConnections.length !== 1) {
+        throw new TypeError(
+          "Result mapping connection scope is invalid.",
+        );
+      }
+      const transactionRepository = new TrackerRepository(
+        transaction as unknown as DatabaseClient,
+      );
+      const before = await transactionRepository.listResultMappings();
+      const beforeVersion = computeResultMappingVersion(before);
+      await transaction.unsafe(
+        `
+          delete from tracker.result_mappings
+          where owner_id = (
+            select owner_id
+            from tracker.meta_connections
+            where connection_id = $1
+              and owner_id = 1
+          )
+        `,
+        [input.connectionId],
+      );
+      await transaction.unsafe(
+        `
+          with requested as (
+            select *
+            from jsonb_to_recordset($2::jsonb) as item(
+              canonical_result_key text,
+              raw_action_type text,
+              metric_source text,
+              priority integer,
+              enabled boolean
+            )
+          )
+          insert into tracker.result_mappings (
+            owner_id,
+            result_definition_id,
+            raw_action_type,
+            metric_source,
+            priority,
+            mapping_source,
+            enabled
+          )
+          select
+            definition.owner_id,
+            definition.result_definition_id,
+            requested.raw_action_type,
+            requested.metric_source,
+            requested.priority,
+            'owner',
+            requested.enabled
+          from requested
+          join tracker.result_definitions definition
+            on definition.owner_id = 1
+            and definition.canonical_key =
+              requested.canonical_result_key
+          where exists (
+            select 1
+            from tracker.meta_connections connection
+            where connection.connection_id = $1
+              and connection.owner_id = definition.owner_id
+          )
+        `,
+        [
+          input.connectionId,
+          jsonPayload(
+            input.mappings.map((mapping) => ({
+              canonical_result_key: mapping.canonicalResultKey,
+              raw_action_type: mapping.rawActionType,
+              metric_source: mapping.metricSource,
+              priority: mapping.priority,
+              enabled: mapping.enabled,
+            })),
+          ),
+        ],
+      );
+      const after = await transactionRepository.listResultMappings();
+      const afterVersion = computeResultMappingVersion(after);
+      const resultMappingsChanged = beforeVersion !== afterVersion;
+      const snapshotRows = await transaction.unsafe(
+        `
+          update tracker.reporting_snapshots
+          set
+            normalized_results_require_resync =
+              result_mapping_version is distinct from $2,
+            result_mapping_invalidated_at = case
+              when result_mapping_version is distinct from $2
+                then coalesce(result_mapping_invalidated_at, now())
+              else null
+            end
+          where connection_id = $1
+          returning normalized_results_require_resync
+        `,
+        [input.connectionId, afterVersion],
+      );
+      const normalizedResultsRequireResync =
+        snapshotRows.length > 0
+          ? Boolean(
+              snapshotRows[0]?.normalized_results_require_resync,
+            )
+          : resultMappingsChanged;
+      await transaction.unsafe(
+        `
+          insert into tracker.settings_audit_log (
+            owner_id,
+            changed_by,
+            before_state,
+            after_state
+          ) values (
+            1,
+            'owner:result_mappings',
+            $1::jsonb,
+            $2::jsonb
+          )
+        `,
+        [
+          jsonPayload({
+            resultMappings: before,
+            resultMappingVersion: beforeVersion,
+          }),
+          jsonPayload({
+            resultMappings: after,
+            resultMappingVersion: afterVersion,
+            resultMappingsChanged,
+            normalizedResultsRequireResync,
+          }),
+        ],
+      );
+      return after;
+    });
   }
 }
 

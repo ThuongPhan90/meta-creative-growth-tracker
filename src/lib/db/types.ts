@@ -213,6 +213,12 @@ export interface CreativeAssetInput {
   rawPayload?: JsonObject;
 }
 
+export interface CanonicalResultFactInput {
+  canonicalResultKey: string;
+  value: number;
+  selectedActionType: string;
+}
+
 export interface DailyMetricInput {
   metricDate: string;
   adAccountId: DatabaseId;
@@ -229,6 +235,8 @@ export interface DailyMetricInput {
   platformPosition?: string;
   impressionDevice?: string;
   attributionWindow?: string;
+  actionReportTime: "impression" | "conversion" | "mixed";
+  syncVersion: string;
   accountTimezone: string;
   currency: string;
   spend?: number;
@@ -243,10 +251,165 @@ export interface DailyMetricInput {
   video100Views?: number;
   rawActions?: JsonValue[];
   rawActionValues?: JsonValue[];
+  canonicalResultMetrics?: readonly CanonicalResultFactInput[];
+  canonicalResultValues?: readonly CanonicalResultFactInput[];
   rawPayload?: JsonObject;
   actionMappingVersion?: string;
+  resultMappingVersion?: string;
   fetchedAt?: string;
 }
+
+export interface ActionMetricDailyInput {
+  metricDate: string;
+  adAccountId: DatabaseId;
+  campaignId: DatabaseId;
+  adId: DatabaseId;
+  canonicalResultKey: string;
+  attributionWindow: string;
+  actionReportTime: "impression" | "conversion" | "mixed";
+  currency: string;
+  value: number;
+  selectedActionTypes: readonly string[];
+  syncVersion: string;
+  resultMappingVersion: string;
+  fetchedAt?: string;
+}
+
+export type ActionValueDailyInput = ActionMetricDailyInput;
+
+export interface PeriodReachSnapshotInput {
+  adAccountId: DatabaseId;
+  campaignId?: DatabaseId | null;
+  scopeLevel: "account" | "campaign";
+  dateFrom: string;
+  dateTo: string;
+  attributionWindow: string;
+  actionReportTime: "impression" | "conversion" | "mixed";
+  syncVersion: string;
+  reach: number;
+  fetchedAt?: string;
+}
+
+export interface PeriodReachFilters {
+  connectionId: DatabaseId;
+  dateFrom: string;
+  dateTo: string;
+  adAccountIds: readonly string[];
+  campaignIds?: readonly string[];
+  attributionWindow: string;
+  actionReportTime: "impression" | "conversion" | "mixed";
+  syncVersion: string;
+  resultMappingVersion: string;
+}
+
+export type PeriodReachResult =
+  | {
+      available: true;
+      scopeLevel: "account" | "campaign";
+      adAccountId: string;
+      campaignId: string | null;
+      reach: number;
+      dateFrom: string;
+      dateTo: string;
+      attributionWindow: string;
+      actionReportTime: "impression" | "conversion" | "mixed";
+      syncVersion: string;
+    }
+  | {
+      available: false;
+      reason:
+        | "exact_account_scope_required"
+        | "multi_account_overlap_unsafe"
+        | "multi_campaign_overlap_unsafe"
+        | "reporting_snapshot_stale"
+        | "exact_snapshot_unavailable";
+    };
+
+export interface CanonicalResultObjectiveMapping {
+  objectiveKey: string;
+  rawObjectiveKeys: readonly string[];
+}
+
+export interface CanonicalResultTotalsFilters {
+  connectionId: DatabaseId;
+  dateFrom: string;
+  dateTo: string;
+  adAccountIds?: readonly string[];
+  campaignMetaIds?: readonly string[];
+  objectiveKeys?: readonly string[];
+  objectiveMappings: readonly CanonicalResultObjectiveMapping[];
+  currency?: string;
+  attributionWindow: string;
+  actionReportTime: "impression" | "conversion" | "mixed";
+  syncVersion: string;
+  resultMappingVersion: string;
+}
+
+export interface CanonicalResultTotal {
+  canonicalResultKey: string;
+  objectiveKey: string;
+  metricSource: "action" | "action_value";
+  currency: string;
+  value: number;
+  objectiveSpend: number;
+}
+
+export interface CanonicalObjectiveSpendTotal {
+  objectiveKey: string;
+  currency: string;
+  spend: number;
+}
+
+export interface CanonicalResultTotals {
+  results: CanonicalResultTotal[];
+  spendByObjective: CanonicalObjectiveSpendTotal[];
+}
+
+export interface CanonicalCampaignResultTotal {
+  adAccountMetaId: string;
+  campaignMetaId: string;
+  canonicalResultKey: string;
+  objectiveKey: string;
+  metricSource: "action" | "action_value";
+  currency: string;
+  value: number;
+}
+
+export interface CanonicalCreativeFamilyResultTotal {
+  adAccountMetaId: string;
+  /**
+   * Null keeps mixed, dynamic, missing and otherwise ambiguous Ad-level facts
+   * visible without assigning them to a physical Creative Family.
+   */
+  creativeFamilyId: string | null;
+  allocationMethod: "single_asset" | "unallocated";
+  canonicalResultKey: string;
+  objectiveKey: string;
+  metricSource: "action" | "action_value";
+  currency: string;
+  value: number;
+}
+
+export type CanonicalResultBatch<T> =
+  | {
+      available: true;
+      syncVersion: string;
+      resultMappingVersion: string;
+      results: T[];
+    }
+  | {
+      available: false;
+      reason:
+        | "reporting_snapshot_unavailable"
+        | "reporting_snapshot_stale";
+      results: [];
+    };
+
+export type CanonicalCampaignResultTotals =
+  CanonicalResultBatch<CanonicalCampaignResultTotal>;
+
+export type CanonicalCreativeFamilyResultTotals =
+  CanonicalResultBatch<CanonicalCreativeFamilyResultTotal>;
 
 export interface AssetRelationshipInput {
   businessId: DatabaseId;
@@ -376,6 +539,7 @@ export interface CreativeLibraryItem {
 export interface InsightsFreshnessRecord {
   lastSyncedAt: string | null;
   dataThroughAt: string | null;
+  syncVersion: string | null;
   syncStatus: "healthy" | "warning" | "partial" | "error";
   syncMode: "scheduled" | "manual" | "webhook";
 }
@@ -388,6 +552,10 @@ export interface CreativePerformanceFilters {
   adAccountId?: DatabaseId;
   accountMetaId?: string;
   campaignMetaId?: string;
+  attributionWindow?: string;
+  actionReportTime?: "impression" | "conversion" | "mixed";
+  syncVersion?: string;
+  objectiveRawKeys?: readonly string[];
   assetType?: "video" | "image" | "unknown";
   currency?: string;
   limit?: number;
@@ -427,6 +595,10 @@ export interface DeliveryPerformanceFilters {
   adAccountId?: DatabaseId;
   accountMetaId?: string;
   campaignMetaId?: string;
+  attributionWindow?: string;
+  actionReportTime?: "impression" | "conversion" | "mixed";
+  syncVersion?: string;
+  objectiveRawKeys?: readonly string[];
   currency?: string;
 }
 
@@ -470,6 +642,10 @@ export interface CampaignInventoryFilters {
   dateTo?: string;
   currency?: string;
   accountMetaId?: string;
+  attributionWindow?: string;
+  actionReportTime?: "impression" | "conversion" | "mixed";
+  syncVersion?: string;
+  objectiveRawKeys?: readonly string[];
   includeInactiveAccounts?: boolean;
   status?: string;
   search?: string;
@@ -485,6 +661,8 @@ export interface CampaignPerformanceItem {
   registrations: number;
   cpi: number | null;
   costPerRegistration: number | null;
+  /** Snapshot-pinned normalized Meta results keyed by canonical Result. */
+  resultValues?: Record<string, number | null>;
 }
 
 export interface CampaignInventoryItem {
