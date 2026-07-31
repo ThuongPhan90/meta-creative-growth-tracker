@@ -2788,6 +2788,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     snapshots: PeriodReachSnapshotInput[];
     rowsFetched: number;
     omittedZeroReachRows: number;
+    accountAttributionWindow: string;
   }> {
     const path = `${canonicalAdAccountId(account.graph)}/insights`;
     const timeRange = JSON.stringify({
@@ -2933,9 +2934,11 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         scopeLevel: "campaign",
         dateFrom,
         dateTo,
-        attributionWindow:
-          optionalString(row?.attribution_setting) ??
-          accountAttributionWindow,
+        // Both period reads explicitly request the account attribution
+        // setting. Meta can still echo an ad set or campaign setting in the
+        // campaign row, so use the account row as the canonical descriptor
+        // for every scope in this atomic account snapshot.
+        attributionWindow: accountAttributionWindow,
         actionReportTime: "mixed",
         syncVersion: context.syncRunId,
         reach: parsedReach(row, {
@@ -2948,6 +2951,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       snapshots,
       rowsFetched: accountRows.length + campaignRows.length,
       omittedZeroReachRows,
+      accountAttributionWindow,
     };
   }
 
@@ -3095,6 +3099,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         snapshots: PeriodReachSnapshotInput[];
         rowsFetched: number;
         omittedZeroReachRows: number;
+        accountAttributionWindow: string;
       };
       try {
         const campaignMetaIdByInternalId = new Map<DatabaseId, string>();
@@ -3349,10 +3354,12 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
             optionalString(row.platform_position) ?? "ALL",
           impressionDevice:
             optionalString(row.impression_device) ?? "ALL",
-          attributionWindow:
-            optionalString(row.attribution_setting) ??
-            optionalString(row.attribution_window) ??
-            "account_default",
+          // The Insights reads use `use_account_attribution_setting=true`.
+          // Meta may still echo heterogeneous ad/ad-set settings per row;
+          // those labels do not describe different query windows. Pin every
+          // daily fact to the account-period descriptor so daily, action, and
+          // period Reach facts share one atomic attribution window.
+          attributionWindow: periodReachResult.accountAttributionWindow,
           actionReportTime: "mixed",
           syncVersion: context.syncRunId,
           resultMappingVersion:

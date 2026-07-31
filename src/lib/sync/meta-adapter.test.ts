@@ -1083,6 +1083,85 @@ describe("MetaMarketingApiSyncAdapter", () => {
     expect(result.checkpoint).toBeUndefined();
   });
 
+  it("pins heterogeneous row labels to the account-period attribution window", async () => {
+    const client = singleAccountSyncClient({
+      dailyRows: [
+        {
+          date_start: "2026-07-20",
+          date_stop: "2026-07-20",
+          account_id: "100",
+          account_currency: "USD",
+          campaign_id: "campaign-1",
+          adset_id: "adset-1",
+          ad_id: "ad-1",
+          spend: "10",
+          impressions: "100",
+          attribution_setting: "1d_click",
+        },
+        {
+          date_start: "2026-07-21",
+          date_stop: "2026-07-21",
+          account_id: "100",
+          account_currency: "USD",
+          campaign_id: "campaign-1",
+          adset_id: "adset-1",
+          ad_id: "ad-1",
+          spend: "20",
+          impressions: "200",
+          attribution_setting: "1d_view_1d_click_1d_ev",
+        },
+      ],
+      accountPeriodRows: [
+        {
+          date_start: "2026-07-20",
+          date_stop: "2026-07-21",
+          account_id: "100",
+          attribution_setting: "7d_click",
+          reach: "180",
+        },
+      ],
+      campaignPeriodRows: [
+        {
+          date_start: "2026-07-20",
+          date_stop: "2026-07-21",
+          account_id: "100",
+          campaign_id: "campaign-1",
+          attribution_setting: "1d_click",
+          reach: "170",
+        },
+      ],
+    });
+    const harness = repositoryHarness();
+    const adapter = new MetaMarketingApiSyncAdapter({ client });
+    const syncContext = context(harness.repository);
+
+    await adapter.syncAssets(syncContext);
+    const result = await adapter.syncInsights(syncContext);
+
+    expect(harness.metricBatches.flat()).toHaveLength(2);
+    expect(
+      new Set(
+        harness.metricBatches
+          .flat()
+          .map((metric) => metric.attributionWindow),
+      ),
+    ).toEqual(new Set(["7d_click"]));
+    expect(
+      new Set(
+        harness.publishCalls[0].periodReachSnapshots.map(
+          (snapshot) => snapshot.attributionWindow,
+        ),
+      ),
+    ).toEqual(new Set(["7d_click"]));
+    expect(result.stats).toMatchObject({
+      accounts_succeeded: 1,
+      accounts_published: 1,
+      metrics_upserted: 2,
+      period_reach_snapshots_published: 2,
+    });
+    expect(result.checkpoint).toBeDefined();
+  });
+
   it("preserves the previous snapshot when period Reach repeats one campaign scope", async () => {
     const campaignReachRow: MetaInsightRow = {
       date_start: "2026-07-20",
