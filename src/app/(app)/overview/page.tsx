@@ -6,11 +6,16 @@ import { OverviewV2 } from "@/components/overview-v2";
 import { EntityDrawer } from "@/components/ui/entity-drawer";
 import {
   getApplicationSnapshot,
+  buildApplicationResultMetrics,
+  getCanonicalResultsForReport,
   getCreativeRowsForReport,
+  getDeliveryForReport,
   getOverviewTrendForReport,
+  resolveApplicationReportContext,
 } from "@/lib/app-data";
-import { addReportDays, resolveReportContext } from "@/lib/reporting";
-import { formatFreshnessLabel } from "@/lib/presentation/formatters";
+import { addReportDays } from "@/lib/reporting";
+import { formatFreshnessFields } from "@/lib/presentation/freshness-presentation";
+import { buildReportingBarModel } from "@/lib/presentation/reporting-bar";
 
 export const dynamic = "force-dynamic";
 
@@ -42,26 +47,18 @@ export default async function OverviewPage({
     getApplicationSnapshot(),
     searchParams,
   ]);
-  const context = resolveReportContext({
-    query: {
-      from: first(query.from),
-      to: first(query.to),
-      account: first(query.account),
-      currency: first(query.currency),
-      compare: first(query.compare),
-    },
-    timeZone: snapshot.settings.timezone,
-    lookbackDays: snapshot.settings.lookbackDays,
-    reportingCurrency: snapshot.settings.currency,
-    compareDefault: snapshot.settings.compareDefault,
-  });
+  const context = resolveApplicationReportContext(snapshot, query);
   const reportFilters = {
     snapshot,
     dateFrom: context.dateFrom,
     dateTo: context.dateTo,
-    accountMetaId: context.account || undefined,
+    accountMetaIds: context.adAccountIds,
     campaignMetaId: first(query.campaign),
     currency: context.currency || null,
+    attributionWindow: context.attributionSettingKey,
+    actionReportTime: context.actionReportTime,
+    syncVersion: context.syncVersion,
+    reportContext: context,
   };
   const periodDays =
     Math.round(
@@ -74,17 +71,30 @@ export default async function OverviewPage({
     previousDateTo,
     -(periodDays - 1),
   );
-  const [report, trend, previousReport] = await Promise.all([
+  const [report, trend, previousDelivery, canonicalResults] =
+    await Promise.all([
     getCreativeRowsForReport(reportFilters),
     getOverviewTrendForReport(reportFilters),
     context.compare === "previous_period"
-      ? getCreativeRowsForReport({
+      ? getDeliveryForReport({
           ...reportFilters,
           dateFrom: previousDateFrom,
           dateTo: previousDateTo,
         })
-      : Promise.resolve({ creatives: [], truncated: false }),
+      : Promise.resolve([]),
+    getCanonicalResultsForReport({ snapshot, context }),
   ]);
+  const previousCanonicalResults =
+    context.compare === "previous_period"
+      ? await getCanonicalResultsForReport({
+          snapshot,
+          context: {
+            ...context,
+            dateFrom: previousDateFrom,
+            dateTo: previousDateTo,
+          },
+        })
+      : null;
   const families = groupCreativeFamiliesForView(report.creatives);
   const selectedId = first(query.selected);
   const selected = selectedId
@@ -94,12 +104,39 @@ export default async function OverviewPage({
     snapshot.demoMode ||
     (snapshot.authenticated &&
       snapshot.connection?.status === "connected");
+  const resultMetrics = buildApplicationResultMetrics({
+    context,
+    delivery: report.delivery,
+    definitions: canonicalResults.definitions,
+    periodReach: canonicalResults.periodReach,
+    ...(canonicalResults.state === "demo_legacy_bridge"
+      ? {}
+      : { canonicalResults: canonicalResults.values }),
+  });
+  const previousResultMetrics = previousDelivery.length
+    ? buildApplicationResultMetrics({
+        context,
+        delivery: previousDelivery,
+        definitions:
+          previousCanonicalResults?.definitions ??
+          canonicalResults.definitions,
+        periodReach:
+          previousCanonicalResults?.periodReach ?? null,
+        ...(previousCanonicalResults?.state ===
+        "demo_legacy_bridge"
+          ? {}
+          : {
+              canonicalResults:
+                previousCanonicalResults?.values ?? [],
+            }),
+      })
+    : undefined;
 
   return (
     <OverviewV2
       dashboard={snapshot.dashboard}
       creatives={report.creatives}
-      previousCreatives={previousReport.creatives}
+      delivery={report.delivery}
       trend={trend}
       connected={connected}
       query={query}
@@ -116,14 +153,27 @@ export default async function OverviewPage({
           ),
         ),
       ]}
-      compare={context.compare}
+      compare={context.compareMode}
       accounts={snapshot.assets
         .filter((asset) => asset.kind === "Ad Account")
         .map((asset) => ({ id: asset.id, name: asset.name }))}
-      freshness={formatFreshnessLabel(
+      freshness={formatFreshnessFields(
         snapshot.freshness,
         snapshot.settings.timezone,
       )}
+      reportingBar={buildReportingBarModel(
+        snapshot.reportingScope,
+        context,
+        {
+          persistScope:
+            !snapshot.demoMode &&
+            snapshot.authenticated &&
+            Boolean(snapshot.connection),
+        },
+        canonicalResults.definitions,
+      )}
+      resultMetrics={resultMetrics}
+      previousResultMetrics={previousResultMetrics}
       selectedDrawer={
         selected ? (
           <EntityDrawer
@@ -135,6 +185,7 @@ export default async function OverviewPage({
             <CreativeDrawerContent
               family={selected}
               query={query}
+              resultMetrics={resultMetrics}
               originPathname="/overview"
             />
           </EntityDrawer>

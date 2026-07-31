@@ -1,7 +1,11 @@
 export const SHARED_NAVIGATION_KEYS = [
   "from",
   "to",
+  "business_ids",
+  "account_ids",
   "account",
+  "objective",
+  "result",
   "campaign",
   "os",
   "format",
@@ -9,6 +13,9 @@ export const SHARED_NAVIGATION_KEYS = [
   "data_status",
   "currency",
   "compare",
+  "attribution",
+  "action_report_time",
+  "sync_version",
 ] as const;
 
 export const DETAIL_NAVIGATION_KEYS = [
@@ -21,6 +28,19 @@ export const DETAIL_NAVIGATION_KEYS = [
 
 export const CREATIVE_DRILLDOWN_METRICS = [
   "spend",
+  "impressions",
+  "reach",
+  "frequency",
+  "cpm",
+  "link_clicks",
+  "link_ctr",
+  "cpc_link",
+  "primary_result",
+  "cost_per_result",
+  "result_rate",
+  "value",
+  "roas",
+  // Legacy URL values remain readable so existing saved links do not break.
   "installs",
   "registrations",
   "cpi",
@@ -69,10 +89,18 @@ export type NavigationQueryOverrides = Partial<
 };
 
 const DATE_KEYS = new Set<NavigationQueryKey>(["from", "to"]);
+const ID_LIST_KEYS = new Set<NavigationQueryKey>([
+  "business_ids",
+  "account_ids",
+]);
 const MAX_VALUE_LENGTH: Record<NavigationQueryKey, number> = {
   from: 10,
   to: 10,
+  business_ids: 2_000,
+  account_ids: 2_000,
   account: 160,
+  objective: 128,
+  result: 128,
   campaign: 160,
   os: 64,
   format: 64,
@@ -80,10 +108,13 @@ const MAX_VALUE_LENGTH: Record<NavigationQueryKey, number> = {
   data_status: 64,
   currency: 3,
   compare: 15,
+  attribution: 64,
+  action_report_time: 10,
+  sync_version: 160,
   selected: 160,
   tab: 64,
   compare_ids: 500,
-  metric: 24,
+  metric: 32,
   sort: 4,
 };
 
@@ -104,12 +135,41 @@ function sanitizeNavigationValue(
   const normalized = value.trim().slice(0, MAX_VALUE_LENGTH[key]);
   if (!normalized) return undefined;
   if (DATE_KEYS.has(key) && !isDate(normalized)) return undefined;
+  if (ID_LIST_KEYS.has(key)) {
+    const ids = normalized
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(id))
+      .slice(0, 50);
+    return ids.length ? [...new Set(ids)].join(",") : undefined;
+  }
   if (key === "currency") {
     const currency = normalized.toUpperCase();
     return /^[A-Z]{3}$/.test(currency) ? currency : undefined;
   }
   if (key === "compare") {
     return normalized === "previous_period" || normalized === "none"
+      ? normalized
+      : undefined;
+  }
+  if (key === "objective") {
+    return normalized === "all" ||
+      /^[a-z0-9][a-z0-9._-]{0,127}$/.test(normalized)
+      ? normalized
+      : undefined;
+  }
+  if (key === "result") {
+    return /^[a-z0-9][a-z0-9._-]{0,127}$/.test(normalized)
+      ? normalized
+      : undefined;
+  }
+  if (key === "action_report_time") {
+    return ["impression", "conversion", "mixed"].includes(normalized)
+      ? normalized
+      : undefined;
+  }
+  if (key === "attribution" || key === "sync_version") {
+    return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(normalized)
       ? normalized
       : undefined;
   }
@@ -163,8 +223,15 @@ export function parseNavigationQuery(
   const parsed: NavigationQuery = {};
 
   for (const [key, rawValue] of queryEntries(input)) {
-    if (!navigationKey(key) || parsed[key] !== undefined) continue;
-    const value = sanitizeNavigationValue(key, rawValue);
+    if (!navigationKey(key)) continue;
+    const repeatedIdList = ID_LIST_KEYS.has(key);
+    if (!repeatedIdList && parsed[key] !== undefined) continue;
+    const value = sanitizeNavigationValue(
+      key,
+      repeatedIdList && parsed[key]
+        ? `${parsed[key]},${rawValue}`
+        : rawValue,
+    );
     if (value !== undefined) {
       const writable = parsed as Partial<
         Record<NavigationQueryKey, string>
@@ -174,6 +241,32 @@ export function parseNavigationQuery(
   }
 
   return parsed;
+}
+
+const REPORTING_HIDDEN_KEYS = [
+  "business_ids",
+  "account_ids",
+  "objective",
+  "result",
+  "attribution",
+  "action_report_time",
+  "sync_version",
+] as const satisfies readonly SharedNavigationKey[];
+
+/**
+ * Preserves V2 fields that are not yet represented by native controls in the
+ * compact reporting form. This prevents Apply from dropping a shared scope,
+ * result selection, attribution contract, or pinned sync snapshot.
+ */
+export function reportingContextHiddenFields(
+  input: NavigationQueryInput,
+): Record<string, string> {
+  const parsed = parseNavigationQuery(input);
+  return Object.fromEntries(
+    REPORTING_HIDDEN_KEYS.flatMap((key) =>
+      parsed[key] ? [[key, parsed[key]]] : [],
+    ),
+  );
 }
 
 function splitDestination(destination: string) {

@@ -2,9 +2,20 @@ import { ConnectionView } from "@/components/connection-view";
 import {
   SourcesV2,
   type SourceTab,
+  type SourcesResultRegistry,
 } from "@/components/sources-v2";
-import { getApplicationSnapshot } from "@/lib/app-data";
+import {
+  getApplicationSnapshot,
+  type ApplicationSnapshot,
+} from "@/lib/app-data";
+import { createTrackerRepository } from "@/lib/db";
 import { evaluateMetaConnectionLifecycle } from "@/lib/meta";
+import {
+  DEFAULT_RESULT_DEFINITIONS,
+  hydrateResultDefinitions,
+  type PersistedResultMapping,
+  type ResultDefinition,
+} from "@/lib/reporting/result-definition";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +24,8 @@ const SOURCE_TABS: SourceTab[] = [
   "businesses",
   "ad-accounts",
   "pages",
-  "events",
+  "reporting-scope",
+  "results",
 ];
 
 const oauthErrors: Record<string, string> = {
@@ -35,9 +47,99 @@ function first(value: string | string[] | undefined) {
 }
 
 function sourceTab(value: string | undefined): SourceTab {
+  if (value === "events") return "results";
+  if (value === "scope") return "reporting-scope";
   return SOURCE_TABS.includes(value as SourceTab)
     ? (value as SourceTab)
     : "connection";
+}
+
+function cloneBuiltInDefinitions(): ResultDefinition[] {
+  return DEFAULT_RESULT_DEFINITIONS.filter(
+    (definition) => definition.enabled,
+  ).map((definition) => ({
+    ...definition,
+    objectiveKeys: [...definition.objectiveKeys],
+    rawActionTypes: [...definition.rawActionTypes],
+    rawValueActionTypes: [
+      ...(definition.rawValueActionTypes ?? []),
+    ],
+  }));
+}
+
+function builtInMappings(
+  definitions: readonly ResultDefinition[],
+): PersistedResultMapping[] {
+  return definitions.flatMap((definition) => [
+    ...definition.rawActionTypes.map((rawActionType, priority) => ({
+      id: `built_in:${definition.canonicalKey}:action:${priority}`,
+      canonicalResultKey: definition.canonicalKey,
+      rawActionType,
+      metricSource: "action" as const,
+      priority,
+      mappingSource: "system" as const,
+      enabled: true,
+    })),
+    ...(definition.rawValueActionTypes ?? []).map(
+      (rawActionType, priority) => ({
+        id: `built_in:${definition.canonicalKey}:action_value:${priority}`,
+        canonicalResultKey: definition.canonicalKey,
+        rawActionType,
+        metricSource: "action_value" as const,
+        priority,
+        mappingSource: "system" as const,
+        enabled: true,
+      }),
+    ),
+  ]);
+}
+
+function fallbackResultRegistry(
+  warning: string | null,
+): SourcesResultRegistry {
+  const definitions = cloneBuiltInDefinitions();
+  return {
+    definitions,
+    mappings: builtInMappings(definitions),
+    source: "built_in_defaults",
+    warning,
+  };
+}
+
+export async function loadSourcesResultRegistry(
+  snapshot: ApplicationSnapshot,
+): Promise<SourcesResultRegistry> {
+  if (snapshot.demoMode) return fallbackResultRegistry(null);
+  if (!snapshot.authenticated || !snapshot.connection) {
+    return fallbackResultRegistry(
+      "Cần phiên owner hợp lệ để tải Result Registry đã lưu.",
+    );
+  }
+
+  try {
+    const repository = await createTrackerRepository();
+    const [definitions, mappings] = await Promise.all([
+      repository.listResultDefinitions(),
+      repository.listResultMappings(),
+    ]);
+    if (definitions.length === 0) {
+      throw new Error("Result registry has no definitions.");
+    }
+    return {
+      definitions: hydrateResultDefinitions({
+        definitions,
+        mappings,
+      }).filter((definition) => definition.enabled),
+      mappings,
+      source: "database",
+      warning: null,
+    };
+  } catch (error) {
+    console.error("[sources-result-registry-fallback]", error);
+    return fallbackResultRegistry(
+      "Không thể tải registry đã lưu; đang hiển thị built-in defaults.",
+    );
+  }
 }
 
 export default async function SourcesPage({
@@ -60,6 +162,7 @@ export default async function SourcesPage({
     snapshot.authenticated &&
     snapshot.connection?.status === "connected" &&
     connectionLifecycle !== "needs_reauth";
+  const resultRegistry = await loadSourcesResultRegistry(snapshot);
 
   return (
     <SourcesV2
@@ -68,6 +171,9 @@ export default async function SourcesPage({
       assets={snapshot.assets}
       dashboard={snapshot.dashboard}
       connected={connected}
+      reportingScope={snapshot.reportingScope}
+      resultRegistry={resultRegistry}
+      scopePersistEnabled={connected && !snapshot.demoMode}
       connectionContent={
         <ConnectionView
           configured={snapshot.configuredForLive}

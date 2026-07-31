@@ -25,10 +25,12 @@ import {
 import { buildDataHealthCoverage } from "@/lib/presentation/data-health-coverage";
 import { formatDataHealthEntityType } from "@/lib/presentation/data-health-entity-label";
 import { dataHealthEntityHref } from "@/lib/presentation/data-health-links";
+import { buildContextHref } from "@/lib/navigation/query";
 import type {
   CreativeRow,
   DashboardViewModel,
   DataHealthIssue,
+  EventHealth,
   ReadinessStatus,
   SyncRunView,
 } from "@/types/view-models";
@@ -101,6 +103,15 @@ function overallStatus(
       label: "Đang cập nhật",
       detail: "Kết quả sẽ được làm mới khi đồng bộ hoàn tất.",
       status: "pending",
+      tone: "warning",
+    };
+  }
+  if (latest.status === "cancelled") {
+    return {
+      label: "Đã hủy",
+      detail:
+        "Lần đồng bộ mới nhất đã bị hủy; dữ liệu vẫn giữ ở snapshot thành công trước đó.",
+      status: "warning",
       tone: "warning",
     };
   }
@@ -192,15 +203,9 @@ function IssueDrawer({
                     {formatDataHealthEntityType(entity.entityType)}
                   </span>
                   <strong>{entity.label ?? entity.entityId}</strong>
-                  {entityHref ? (
-                    <Link className="v2-link" href={entityHref}>
-                      Mở thực thể
-                    </Link>
-                  ) : (
-                    <small>
-                      Chưa có đủ quan hệ canonical để mở đúng thực thể
-                    </small>
-                  )}
+                  <Link className="v2-link" href={entityHref}>
+                    Mở thực thể
+                  </Link>
                 </li>
               );
             })}
@@ -219,6 +224,129 @@ function IssueDrawer({
             </div>
           </dl>
         </details>
+      </div>
+    </EntityDrawer>
+  );
+}
+
+function CoverageDrawer({
+  dimension,
+  query,
+  creatives,
+  events,
+}: {
+  dimension: ReturnType<typeof buildDataHealthCoverage>[number];
+  query: Query;
+  creatives: CreativeRow[];
+  events: EventHealth[];
+}) {
+  const missing = dimension.missingFamilyIds.flatMap((familyId) => {
+    const creative = creatives.find(
+      (item) => (item.creativeFamilyId?.trim() || item.id) === familyId,
+    );
+    return creative ? [creative] : [];
+  });
+  const missingEvents =
+    dimension.key === "event"
+      ? events.flatMap((event) =>
+          (["android", "ios"] as const).flatMap((platform) =>
+            event[platform] === "ready"
+              ? []
+              : [
+                  {
+                    key: `${event.name}:${platform}`,
+                    label: event.name,
+                    platform,
+                    status: event[platform],
+                  },
+                ],
+          ),
+        )
+      : [];
+
+  return (
+    <EntityDrawer
+      title={`${dimension.label} · danh sách thiếu`}
+      closeHref={href(query, { coverage: null })}
+      restoreFocusId={`coverage-${dimension.key}`}
+    >
+      <div className="v2-drawer__body">
+        <section className="v2-drawer__section">
+          <h3>Định nghĩa</h3>
+          <p className="v2-muted">{dimension.detail}</p>
+          <dl className="v2-detail-list">
+            <div>
+              <dt>Đã đủ</dt>
+              <dd>{formatNumber(dimension.covered)}</dd>
+            </div>
+            <div>
+              <dt>Tổng đã đồng bộ</dt>
+              <dd>{formatNumber(dimension.total)}</dd>
+            </div>
+            <div>
+              <dt>Còn thiếu</dt>
+              <dd>{formatNumber(Math.max(0, dimension.total - dimension.covered))}</dd>
+            </div>
+          </dl>
+        </section>
+        <section className="v2-drawer__section">
+          <h3>
+            {dimension.key === "event"
+              ? "Mapping cần kiểm tra"
+              : "Creative Family cần kiểm tra"}
+          </h3>
+          {missing.length ? (
+            <ul className="v2-affected-entities">
+              {missing.map((creative) => (
+                <li key={creative.id}>
+                  <span className="v2-chip">{creative.format}</span>
+                  <strong>{creative.name}</strong>
+                  <Link
+                    className="v2-link"
+                    href={buildContextHref("/creatives", query, {
+                      selected:
+                        creative.creativeFamilyId?.trim() || creative.id,
+                      tab: "usage",
+                    })}
+                  >
+                    Mở Creative
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          ) : missingEvents.length ? (
+            <ul className="v2-affected-entities">
+              {missingEvents.map((event) => (
+                <li key={event.key}>
+                  <span className="v2-chip">
+                    {event.platform === "android" ? "Android" : "iOS"}
+                  </span>
+                  <strong>{event.label}</strong>
+                  <small>
+                    {event.status === "warning"
+                      ? "Mapping cần kiểm tra"
+                      : "Chưa có mapping"}
+                  </small>
+                  <Link
+                    className="v2-link"
+                    href={buildContextHref("/settings", query, {
+                      tab: "results",
+                    })}
+                  >
+                    Mở cài đặt mapping
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="v2-compact-empty">
+              <CheckCircle2 aria-hidden="true" size={22} />
+              <p>
+                Không có Creative Family thiếu liên kết trong dữ liệu đã đồng bộ.
+              </p>
+            </div>
+          )}
+        </section>
       </div>
     </EntityDrawer>
   );
@@ -245,6 +373,10 @@ export function DataHealthV2({
   const selected = selectedId
     ? issues.find((issue) => issue.issueId === selectedId)
     : undefined;
+  const selectedCoverageKey = first(query.coverage);
+  const selectedCoverage = coverage.find(
+    (dimension) => dimension.key === selectedCoverageKey,
+  );
   const permission = dashboard.checklist.find(
     (item) => item.label === "Quyền truy cập",
   );
@@ -268,7 +400,7 @@ export function DataHealthV2({
           <h1>Chất lượng dữ liệu</h1>
           <p>
             Một trạng thái thống nhất từ lần đồng bộ mới nhất, coverage,
-            freshness và event mapping; raw code chỉ nằm trong chi tiết kỹ thuật.
+            freshness và Kết quả &amp; Mapping; raw code chỉ nằm trong chi tiết kỹ thuật.
           </p>
         </div>
         <span className={`v2-health-badge v2-health-badge--${overall.tone}`}>
@@ -290,7 +422,7 @@ export function DataHealthV2({
         <StatusPill status={overall.status} />
       </section>
       <section className="v2-health-dimensions" aria-label="Các chiều chất lượng">
-        <article>
+        <article id="health-access">
           <ShieldCheck aria-hidden="true" size={19} />
           <span>Quyền truy cập</span>
           <strong>
@@ -300,9 +432,9 @@ export function DataHealthV2({
         </article>
         <article>
           <Gauge aria-hidden="true" size={19} />
-          <span>Coverage sự kiện</span>
+          <span>Coverage Kết quả &amp; Mapping</span>
           <strong>{formatPercent(eventCoverage * 100, 0)}</strong>
-          <small>{eventMapping?.detail ?? "Chưa có event mapping"}</small>
+          <small>{eventMapping?.detail ?? "Chưa có Kết quả & Mapping"}</small>
         </article>
         <article>
           <Clock3 aria-hidden="true" size={19} />
@@ -339,9 +471,29 @@ export function DataHealthV2({
         </div>
         <div className="v2-coverage-grid">
           {coverage.map((dimension) => (
-            <article key={dimension.key}>
+            <Link
+              className={`v2-coverage-card${
+                dimension.ratio < 0.8
+                  ? " v2-coverage-card--warning"
+                  : ""
+              }`}
+              href={href(query, {
+                coverage: dimension.key,
+                selected: null,
+              })}
+              id={`coverage-${dimension.key}`}
+              key={dimension.key}
+              aria-haspopup="dialog"
+            >
               <span>{dimension.label}</span>
-              <strong>{formatPercent(dimension.ratio * 100, 0)}</strong>
+              <strong>
+                {formatPercent(dimension.ratio * 100, 0)}
+                <small>
+                  {dimension.ratio < 0.8
+                    ? " · Cần kiểm tra"
+                    : " · Đạt"}
+                </small>
+              </strong>
               <div
                 className="v2-coverage-meter"
                 role="progressbar"
@@ -353,11 +505,14 @@ export function DataHealthV2({
                 <i style={{ width: `${dimension.ratio * 100}%` }} />
               </div>
               <small>{dimension.detail}</small>
-            </article>
+              <small className="v2-link">
+                Xem {Math.max(0, dimension.total - dimension.covered)} mục thiếu
+              </small>
+            </Link>
           ))}
         </div>
       </section>
-      <section className="v2-panel">
+      <section className="v2-panel" id="health-issues">
         <div className="v2-panel__header">
           <div>
             <h2>Vấn đề cần kiểm tra</h2>
@@ -374,7 +529,10 @@ export function DataHealthV2({
           <div className="v2-issues-list">
             {issues.map((issue) => (
               <Link
-                href={href(query, { selected: issue.issueId })}
+                href={href(query, {
+                  selected: issue.issueId,
+                  coverage: null,
+                })}
                 key={issue.issueId}
                 data-entity-trigger={issue.issueId}
                 aria-haspopup="dialog"
@@ -403,7 +561,7 @@ export function DataHealthV2({
           </div>
         )}
       </section>
-      <section className="v2-panel">
+      <section className="v2-panel" id="sync-history">
         <div className="v2-panel__header">
           <div>
             <h2>Lịch sử đồng bộ</h2>
@@ -501,6 +659,14 @@ export function DataHealthV2({
           issue={selected}
           query={query}
           creatives={creatives}
+        />
+      ) : null}
+      {selectedCoverage ? (
+        <CoverageDrawer
+          dimension={selectedCoverage}
+          query={query}
+          creatives={creatives}
+          events={dashboard.events}
         />
       ) : null}
     </div>

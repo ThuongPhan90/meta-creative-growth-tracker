@@ -1,12 +1,14 @@
 "use client";
 
 import {
+  AlertTriangle,
   ArrowRight,
   Bell,
   CalendarClock,
   Check,
   CircleGauge,
   History,
+  ListChecks,
   Plus,
   Save,
   ShieldCheck,
@@ -18,79 +20,189 @@ import { useEffect, useMemo, useState } from "react";
 
 import { SyncButton } from "@/components/sync-button";
 import type { TrackerSettings } from "@/lib/db";
+import { validateActionTypeMapping } from "@/lib/reporting/action-type-mapping";
 import {
-  validateActionTypeMapping,
-} from "@/lib/reporting/action-type-mapping";
+  validateResultMappings,
+  type CampaignResultOverride,
+  type PersistedResultMapping,
+  type RawActionMetricSource,
+  type ResultDefinition,
+  type ResultMappingWrite,
+} from "@/lib/reporting/result-definition";
 import type { SettingsAuditEntryView } from "@/lib/settings-audit";
 
-type SettingsTab = "reporting" | "events" | "benchmark" | "sync";
+type SettingsTab = "reporting" | "results" | "benchmark" | "sync";
+
+type SettingsReportingContract = {
+  reportingTimezoneMode: "account_local";
+  currencyMode: "single" | "split";
+  businessIds: string[];
+  adAccountIds: string[];
+  defaultObjectiveKey: string;
+  defaultPrimaryResultKey: string | null;
+  attributionSettingKey: string;
+  actionReportTime: "impression" | "conversion" | "mixed";
+  syncVersion: string;
+};
+
+type SettingsResultRegistry = {
+  definitions: ResultDefinition[];
+  mappings: PersistedResultMapping[];
+  campaignOverrides: CampaignResultOverride[];
+  source: "database" | "built_in_defaults";
+  warning: string | null;
+};
 
 const TABS: { value: SettingsTab; label: string }[] = [
   { value: "reporting", label: "Báo cáo" },
-  { value: "events", label: "Sự kiện" },
-  { value: "benchmark", label: "Benchmark & đánh giá" },
-  { value: "sync", label: "Đồng bộ & bảo mật" },
+  { value: "results", label: "Kết quả & Mapping" },
+  { value: "benchmark", label: "Benchmark & Đánh giá" },
+  { value: "sync", label: "Đồng bộ & Bảo mật" },
 ];
 
-function ActionTypeEditor({
-  label,
-  values,
-  onChange,
+function mappingKey(
+  canonicalResultKey: string,
+  metricSource: RawActionMetricSource,
+  rawActionType: string,
+) {
+  return [canonicalResultKey, metricSource, rawActionType].join(":");
+}
+
+function metricSourceFor(definition: ResultDefinition) {
+  return definition.unit === "currency"
+    ? ("action_value" as const)
+    : ("action" as const);
+}
+
+function mappingSourceLabel(
+  mapping: PersistedResultMapping | undefined,
+  registrySource: SettingsResultRegistry["source"],
+) {
+  if (mapping?.mappingSource === "owner") return "Owner override";
+  if (mapping?.mappingSource === "system") return "Seed hệ thống";
+  return registrySource === "database"
+    ? "Owner draft"
+    : "Built-in fallback";
+}
+
+function ResultMappingEditor({
+  definition,
+  mappings,
+  sourceByKey,
+  registrySource,
+  editable,
+  onAdd,
+  onRemove,
 }: {
-  label: string;
-  values: string[];
-  onChange: (values: string[]) => void;
+  definition: ResultDefinition;
+  mappings: ResultMappingWrite[];
+  sourceByKey: Map<string, PersistedResultMapping>;
+  registrySource: SettingsResultRegistry["source"];
+  editable: boolean;
+  onAdd: (
+    definition: ResultDefinition,
+    rawActionType: string,
+  ) => string | null;
+  onRemove: (mapping: ResultMappingWrite) => void;
 }) {
   const [draft, setDraft] = useState("");
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const metricSource = metricSourceFor(definition);
+  const resultMappings = mappings
+    .filter(
+      (mapping) =>
+        mapping.canonicalResultKey === definition.canonicalKey &&
+        mapping.metricSource === metricSource,
+    )
+    .sort((left, right) => left.priority - right.priority);
 
   function add() {
-    const value = draft.trim().toLowerCase();
-    if (!value || values.includes(value)) return;
-    onChange([...values, value]);
-    setDraft("");
+    const error = onAdd(definition, draft);
+    setDraftError(error);
+    if (!error) setDraft("");
   }
 
   return (
     <fieldset className="v2-action-editor">
-      <legend>{label}</legend>
+      <legend>{definition.label}</legend>
+      <small>
+        {definition.canonicalKey} · Objective:{" "}
+        {definition.objectiveKeys.join(", ") || "không giới hạn"} ·{" "}
+        {metricSource}
+      </small>
       <div className="v2-action-editor__chips">
-        {values.map((value) => (
-          <span className="v2-action-chip" key={value}>
-            {value}
+        {resultMappings.map((mapping) => (
+          <span
+            className="v2-action-chip"
+            title={mappingSourceLabel(
+              sourceByKey.get(
+                mappingKey(
+                  mapping.canonicalResultKey,
+                  mapping.metricSource,
+                  mapping.rawActionType,
+                ),
+              ),
+              registrySource,
+            )}
+            key={mappingKey(
+              mapping.canonicalResultKey,
+              mapping.metricSource,
+              mapping.rawActionType,
+            )}
+          >
+            {mapping.rawActionType}
             <button
               type="button"
-              aria-label={`Xóa ${value}`}
-              onClick={() =>
-                onChange(values.filter((candidate) => candidate !== value))
-              }
+              aria-label={`Xóa ${mapping.rawActionType} khỏi ${definition.label}`}
+              disabled={!editable}
+              onClick={() => onRemove(mapping)}
             >
               <Trash2 aria-hidden="true" size={13} />
             </button>
           </span>
         ))}
+        {resultMappings.length === 0 ? (
+          <span className="v2-chip v2-chip--warning">Chưa có raw alias</span>
+        ) : null}
       </div>
       <div className="v2-action-editor__input">
         <input
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          disabled={!editable}
+          aria-label={`Raw action type cho ${definition.label}`}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setDraftError(null);
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
               add();
             }
           }}
-          placeholder="Thêm action type"
+          placeholder={
+            editable ? "Thêm raw action type" : "Mapping chỉ đọc"
+          }
           spellCheck={false}
         />
         <button
           className="button button--secondary"
           type="button"
+          disabled={!editable}
           onClick={add}
         >
           <Plus aria-hidden="true" size={15} />
           Thêm
         </button>
       </div>
+      {draftError ? (
+        <small role="alert">{draftError}</small>
+      ) : (
+        <small>
+          Tối thiểu {definition.minimumImpressions.toLocaleString("vi-VN")}{" "}
+          impressions và {definition.minimumResults} results để đánh giá.
+        </small>
+      )}
     </fieldset>
   );
 }
@@ -98,6 +210,8 @@ function ActionTypeEditor({
 export function SettingsV2({
   initial,
   activeTab,
+  reportingContract,
+  resultRegistry,
   auditLog,
   canSave,
   tokenExpiresAt,
@@ -106,6 +220,8 @@ export function SettingsV2({
 }: {
   initial: TrackerSettings;
   activeTab: SettingsTab;
+  reportingContract: SettingsReportingContract;
+  resultRegistry: SettingsResultRegistry;
   auditLog: SettingsAuditEntryView[];
   canSave: boolean;
   tokenExpiresAt: string | null;
@@ -121,48 +237,81 @@ export function SettingsV2({
     initial.compareDefault,
   );
   const [lookback, setLookback] = useState(initial.syncLookbackDays);
-  const [minimumInstalls, setMinimumInstalls] = useState(
-    initial.minimumInstallThreshold,
-  );
-  const [minimumRegistrations, setMinimumRegistrations] = useState(
-    initial.minimumRegistrationThreshold,
-  );
-  const [installActions, setInstallActions] = useState(
-    initial.installActionTypes,
-  );
-  const [registrationActions, setRegistrationActions] = useState(
-    initial.registrationActionTypes,
-  );
   const [benchmarkWindow, setBenchmarkWindow] = useState(
-    initial.benchmarkWindowDays,
+    [7, 14, 30].includes(initial.benchmarkWindowDays)
+      ? initial.benchmarkWindowDays
+      : 30,
   );
   const [benchmarkByOs, setBenchmarkByOs] = useState(initial.benchmarkByOs);
   const [benchmarkByFormat, setBenchmarkByFormat] = useState(
     initial.benchmarkByFormat,
   );
-  const [weights, setWeights] = useState(initial.scoringWeights);
   const [syncCadence, setSyncCadence] = useState(initial.syncCadence);
   const [alertChannel, setAlertChannel] = useState(initial.alertChannel);
   const [currentTab, setCurrentTab] = useState(activeTab);
+  const [resultMappings, setResultMappings] = useState<ResultMappingWrite[]>(
+    resultRegistry.mappings
+      .filter((mapping) => mapping.enabled)
+      .map((mapping) => ({
+        canonicalResultKey: mapping.canonicalResultKey,
+        rawActionType: mapping.rawActionType,
+        metricSource: mapping.metricSource,
+        priority: mapping.priority,
+        enabled: true,
+      })),
+  );
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const actionMapping = useMemo(
+
+  const legacyActionMapping = useMemo(
     () =>
       validateActionTypeMapping({
-        installActionTypes: installActions,
-        registrationActionTypes: registrationActions,
+        installActionTypes: initial.installActionTypes,
+        registrationActionTypes: initial.registrationActionTypes,
       }),
-    [installActions, registrationActions],
+    [initial.installActionTypes, initial.registrationActionTypes],
   );
-  const weightTotal =
-    weights.cpi + weights.cpa + weights.hook + weights.hold;
+  const legacyWeightTotal =
+    initial.scoringWeights.cpi +
+    initial.scoringWeights.cpa +
+    initial.scoringWeights.hook +
+    initial.scoringWeights.hold;
+  const resultMappingValidation = useMemo(
+    () =>
+      validateResultMappings({
+        mappings: resultMappings,
+        definitions: resultRegistry.definitions,
+      }),
+    [resultMappings, resultRegistry.definitions],
+  );
+  const sourceByKey = useMemo(
+    () =>
+      new Map(
+        resultRegistry.mappings.map((mapping) => [
+          mappingKey(
+            mapping.canonicalResultKey,
+            mapping.metricSource,
+            mapping.rawActionType,
+          ),
+          mapping,
+        ]),
+      ),
+    [resultRegistry.mappings],
+  );
+  const totalAliases = resultMappings.length;
+  const mappedResults = new Set(
+    resultMappings.map((mapping) => mapping.canonicalResultKey),
+  ).size;
+  const resultMappingEditable =
+    canSave && resultRegistry.source === "database";
 
   useEffect(() => {
     function syncTabFromUrl() {
       const requested = new URL(window.location.href).searchParams.get("tab");
-      const valid = TABS.some((tab) => tab.value === requested);
-      setCurrentTab(valid ? (requested as SettingsTab) : "reporting");
+      const normalized = requested === "events" ? "results" : requested;
+      const valid = TABS.some((tab) => tab.value === normalized);
+      setCurrentTab(valid ? (normalized as SettingsTab) : "reporting");
     }
     window.addEventListener("popstate", syncTabFromUrl);
     return () => window.removeEventListener("popstate", syncTabFromUrl);
@@ -173,63 +322,194 @@ export function SettingsV2({
     url.searchParams.set("tab", tab);
     window.history.pushState(null, "", url);
     setCurrentTab(tab);
+    setMessage(null);
+    setError(null);
+  }
+
+  function addResultMapping(
+    definition: ResultDefinition,
+    rawActionType: string,
+  ) {
+    const normalized = rawActionType.trim();
+    if (!normalized) return "Hãy nhập raw action type.";
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(normalized)) {
+      return "Raw action type chỉ dùng chữ, số, dấu chấm, gạch dưới hoặc gạch ngang.";
+    }
+    const metricSource = metricSourceFor(definition);
+    if (
+      resultMappings.some(
+        (mapping) =>
+          mapping.metricSource === metricSource &&
+          mapping.rawActionType === normalized,
+      )
+    ) {
+      return "Raw action type này đã thuộc một canonical Result.";
+    }
+    const priority =
+      Math.max(
+        -1,
+        ...resultMappings
+          .filter(
+            (mapping) =>
+              mapping.canonicalResultKey === definition.canonicalKey &&
+              mapping.metricSource === metricSource,
+          )
+          .map((mapping) => mapping.priority),
+      ) + 1;
+    setResultMappings((current) => [
+      ...current,
+      {
+        canonicalResultKey: definition.canonicalKey,
+        rawActionType: normalized,
+        metricSource,
+        priority,
+        enabled: true,
+      },
+    ]);
+    return null;
+  }
+
+  function removeResultMapping(mapping: ResultMappingWrite) {
+    setResultMappings((current) =>
+      current.filter(
+        (candidate) =>
+          mappingKey(
+            candidate.canonicalResultKey,
+            candidate.metricSource,
+            candidate.rawActionType,
+          ) !==
+          mappingKey(
+            mapping.canonicalResultKey,
+            mapping.metricSource,
+            mapping.rawActionType,
+          ),
+      ),
+    );
+  }
+
+  async function saveResultRegistry() {
+    if (!resultMappingEditable) {
+      setError(
+        resultRegistry.source === "database"
+          ? "Cần phiên owner đã kết nối Meta để lưu Result Mapping."
+          : "Built-in fallback chỉ đọc; không thể lưu đè lên registry owner.",
+      );
+      return;
+    }
+    if (resultMappings.length === 0) {
+      setError("Result Registry phải còn ít nhất một raw action mapping.");
+      return;
+    }
+    if (!resultMappingValidation.ok) {
+      setError(resultMappingValidation.error);
+      return;
+    }
+
+    const response = await fetch("/api/result-mappings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mappings: resultMappingValidation.mappings,
+      }),
+    });
+    const result = (await response.json()) as {
+      message?: string;
+      error?: string;
+      data?: {
+        message?: string;
+      };
+    };
+    if (!response.ok) {
+      throw new Error(result.error ?? "Không thể lưu Result Mapping.");
+    }
+    setMessage(
+      result.data?.message ??
+        result.message ??
+        "Đã lưu Result Mapping.",
+    );
+  }
+
+  async function saveSettings() {
+    if (!canSave) {
+      setError("Cần phiên owner đã kết nối Meta để lưu cài đặt.");
+      return;
+    }
+    if (!legacyActionMapping.ok) {
+      setError(legacyActionMapping.error);
+      return;
+    }
+    if (legacyWeightTotal !== 100) {
+      setError(
+        "Cấu hình chấm điểm legacy không hợp lệ; tổng trọng số phải bằng 100%.",
+      );
+      return;
+    }
+
+    const response = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        timezone,
+        reportingCurrency: currency || null,
+        numberFormat,
+        compareDefault,
+        lookbackDays: lookback,
+        minimumInstallThreshold: initial.minimumInstallThreshold,
+        minimumRegistrationThreshold:
+          initial.minimumRegistrationThreshold,
+        benchmarkMode: "custom",
+        benchmarkWindowDays: benchmarkWindow,
+        benchmarkByOs,
+        benchmarkByFormat,
+        scoringWeights: initial.scoringWeights,
+        syncCadence,
+        alertChannel,
+        installActionTypes: legacyActionMapping.installActionTypes,
+        registrationActionTypes:
+          legacyActionMapping.registrationActionTypes,
+      }),
+    });
+    const result = (await response.json()) as {
+      message?: string;
+      error?: string;
+    };
+    if (!response.ok) throw new Error(result.error ?? "Không thể lưu.");
+    setMessage(result.message ?? "Đã lưu cài đặt.");
   }
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
     setMessage(null);
     setError(null);
-    if (!canSave) {
-      setError("Cần phiên owner đã kết nối Meta để lưu cài đặt.");
-      return;
-    }
-    if (!actionMapping.ok) {
-      setError(actionMapping.error);
-      return;
-    }
-    if (weightTotal !== 100) {
-      setError("Tổng trọng số đánh giá phải bằng 100%.");
-      return;
-    }
     setSaving(true);
     try {
-      const response = await fetch("/api/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          timezone,
-          reportingCurrency: currency || null,
-          numberFormat,
-          compareDefault,
-          lookbackDays: lookback,
-          minimumInstallThreshold: minimumInstalls,
-          minimumRegistrationThreshold: minimumRegistrations,
-          benchmarkMode: "custom",
-          benchmarkWindowDays: benchmarkWindow,
-          benchmarkByOs,
-          benchmarkByFormat,
-          scoringWeights: weights,
-          syncCadence,
-          alertChannel,
-          installActionTypes: actionMapping.installActionTypes,
-          registrationActionTypes:
-            actionMapping.registrationActionTypes,
-        }),
-      });
-      const result = (await response.json()) as {
-        message?: string;
-        error?: string;
-      };
-      if (!response.ok) throw new Error(result.error ?? "Không thể lưu.");
-      setMessage(result.message ?? "Đã lưu cài đặt.");
+      if (currentTab === "results") {
+        await saveResultRegistry();
+      } else {
+        await saveSettings();
+      }
     } catch (caught) {
       setError(
-        caught instanceof Error ? caught.message : "Không thể lưu cài đặt.",
+        caught instanceof Error
+          ? caught.message
+          : "Không thể lưu cài đặt.",
       );
     } finally {
       setSaving(false);
     }
   }
+
+  const scopeLabel =
+    reportingContract.businessIds.length ||
+    reportingContract.adAccountIds.length
+      ? `${reportingContract.businessIds.length} Business · ${reportingContract.adAccountIds.length} Ad Account`
+      : "Chưa xác nhận scope mặc định";
+  const resultSaveDisabled =
+    !resultMappingEditable ||
+    resultMappings.length === 0 ||
+    !resultMappingValidation.ok;
+  const settingsSaveDisabled =
+    !canSave || !legacyActionMapping.ok || legacyWeightTotal !== 100;
 
   return (
     <div className="v2-page">
@@ -237,15 +517,16 @@ export function SettingsV2({
         <div>
           <h1>Cài đặt</h1>
           <p>
-            Các tùy chọn chỉ ảnh hưởng cách ứng dụng đọc, benchmark và hiển thị
-            dữ liệu; không ghi sang Meta.
+            Thiết lập reporting contract, Result Mapping, benchmark và đồng
+            bộ nội bộ; ứng dụng không ghi thay đổi sang Meta.
           </p>
         </div>
         <span className="v2-chip v2-chip--success">
           <ShieldCheck aria-hidden="true" size={14} />
-          Chỉ đọc
+          Meta read-only
         </span>
       </header>
+
       <nav className="v2-tabs" aria-label="Nhóm cài đặt">
         {TABS.map((tab) => (
           <button
@@ -259,6 +540,7 @@ export function SettingsV2({
           </button>
         ))}
       </nav>
+
       <form className="v2-settings-form" onSubmit={save}>
         {currentTab === "reporting" ? (
           <section className="v2-panel v2-settings-section">
@@ -269,13 +551,15 @@ export function SettingsV2({
               <div>
                 <h2>Báo cáo</h2>
                 <p>
-                  Múi giờ, tiền tệ và ngữ cảnh so sánh mặc định cho mọi màn.
+                  Các trường có thể lưu dùng API Settings; trường contract
+                  chưa có API được khóa và ghi rõ nguồn.
                 </p>
               </div>
             </div>
+
             <div className="v2-settings-grid">
               <label>
-                <span>Múi giờ báo cáo</span>
+                <span>Múi giờ hiển thị ứng dụng</span>
                 <select
                   value={timezone}
                   onChange={(event) => setTimezone(event.target.value)}
@@ -287,36 +571,41 @@ export function SettingsV2({
                   <option value="UTC">UTC</option>
                 </select>
                 <small>
-                  Metric date vẫn giữ ngày cục bộ của từng tài khoản nguồn.
+                  Có API lưu. Metric vẫn giữ ngày account-local của nguồn.
                 </small>
               </label>
               <label>
-                <span>Tiền tệ báo cáo</span>
+                <span>Chế độ tiền tệ</span>
                 <select
                   value={currency}
                   onChange={(event) => setCurrency(event.target.value)}
                 >
-                  <option value="">Theo từng tài khoản</option>
-                  <option value="VND">VND</option>
-                  <option value="USD">USD</option>
-                  <option value="SGD">SGD</option>
+                  <option value="">Tách theo từng tài khoản</option>
+                  <option value="VND">Một tiền tệ: VND</option>
+                  <option value="USD">Một tiền tệ: USD</option>
+                  <option value="SGD">Một tiền tệ: SGD</option>
                 </select>
-                <small>Ứng dụng không quy đổi tỷ giá.</small>
+                <small>
+                  Có API lưu. Không quy đổi tỷ giá hoặc cộng chéo tiền tệ.
+                </small>
               </label>
               <label>
                 <span>Định dạng số</span>
                 <select
                   value={numberFormat}
                   onChange={(event) =>
-                    setNumberFormat(event.target.value as "vi-VN" | "en-US")
+                    setNumberFormat(
+                      event.target.value as "vi-VN" | "en-US",
+                    )
                   }
                 >
                   <option value="vi-VN">Việt Nam (1.234,56)</option>
                   <option value="en-US">Quốc tế (1,234.56)</option>
                 </select>
+                <small>Có API lưu.</small>
               </label>
               <label>
-                <span>Khoảng dữ liệu mặc định</span>
+                <span>Khoảng ngày mặc định</span>
                 <select
                   value={lookback}
                   onChange={(event) => setLookback(Number(event.target.value))}
@@ -326,6 +615,7 @@ export function SettingsV2({
                   <option value={30}>30 ngày</option>
                   <option value={90}>90 ngày</option>
                 </select>
+                <small>Có API lưu.</small>
               </label>
               <label>
                 <span>So sánh mặc định</span>
@@ -337,54 +627,230 @@ export function SettingsV2({
                     )
                   }
                 >
-                  <option value="previous_period">Kỳ trước cùng độ dài</option>
+                  <option value="previous_period">
+                    Kỳ trước cùng độ dài
+                  </option>
                   <option value="none">Không so sánh</option>
                 </select>
+                <small>Có API lưu.</small>
+              </label>
+              <label>
+                <span>Business / Ad Account mặc định</span>
+                <input disabled value={scopeLabel} readOnly />
+                <small>
+                  Scope chỉ đọc tại đây.{" "}
+                  <Link className="v2-link" href="/sources?tab=scope">
+                    Quản lý tại Nguồn dữ liệu
+                  </Link>
+                  .
+                </small>
+              </label>
+              <label>
+                <span>Default Objective</span>
+                <input
+                  disabled
+                  value={reportingContract.defaultObjectiveKey}
+                  readOnly
+                />
+                <small>Chưa có API lưu workspace default.</small>
+              </label>
+              <label>
+                <span>Default Primary Result</span>
+                <input
+                  disabled
+                  value={
+                    reportingContract.defaultPrimaryResultKey ??
+                    "Theo Objective + Result Registry"
+                  }
+                  readOnly
+                />
+                <small>Chưa có API lưu workspace default.</small>
               </label>
             </div>
-          </section>
-        ) : null}
-        {currentTab === "events" ? (
-          <section className="v2-panel v2-settings-section">
-            <div className="v2-settings-section__intro">
-              <span aria-hidden="true">
-                <Check size={19} />
-              </span>
+
+            <div className="v2-security-grid">
+              <article>
+                <CalendarClock aria-hidden="true" size={18} />
+                <span title="Ngày metric giữ theo múi giờ của từng Ad Account">
+                  Reporting timezone mode
+                </span>
+                <strong>account_local</strong>
+              </article>
+              <article>
+                <CircleGauge aria-hidden="true" size={18} />
+                <span title="Single chỉ lọc một currency; split không cộng chéo currency">
+                  Currency mode
+                </span>
+                <strong>{reportingContract.currencyMode}</strong>
+              </article>
+              <article>
+                <Check aria-hidden="true" size={18} />
+                <span title="Attribution setting dùng nhất quán cho mọi màn báo cáo">
+                  Attribution setting
+                </span>
+                <strong>{reportingContract.attributionSettingKey}</strong>
+              </article>
+              <article>
+                <History aria-hidden="true" size={18} />
+                <span title="Thời điểm Meta gán action cho ngày báo cáo">
+                  Action report time
+                </span>
+                <strong>{reportingContract.actionReportTime}</strong>
+              </article>
+              <article>
+                <ShieldCheck aria-hidden="true" size={18} />
+                <span>Sync version</span>
+                <strong>{reportingContract.syncVersion}</strong>
+              </article>
+            </div>
+
+            <div className="v2-source-note">
+              <ShieldCheck aria-hidden="true" size={18} />
               <div>
-                <h2>Mapping sự kiện</h2>
+                <strong>Contract được hiển thị, không bị âm thầm đổi</strong>
                 <p>
-                  Chỉ quyết định action type nào được đọc từ Insights; không sửa
-                  Events Manager.
+                  Attribution và action report time là tham số đọc dữ liệu,
+                  không phải thao tác chỉnh quảng cáo. Trường chỉ đọc sẽ chỉ
+                  mở khi có API lưu tương ứng.
                 </p>
               </div>
             </div>
-            <div className="v2-settings-stack">
-              <ActionTypeEditor
-                label="Install action types"
-                values={installActions}
-                onChange={setInstallActions}
-              />
-              <ActionTypeEditor
-                label="Registration action types"
-                values={registrationActions}
-                onChange={setRegistrationActions}
-              />
-              <div className="v2-source-note">
-                <ShieldCheck aria-hidden="true" size={18} />
-                <div>
-                  <strong>Cần đồng bộ lại sau khi đổi mapping</strong>
-                  <p>
-                    Các metric đã lưu không tự đổi cho đến khi Insights của
-                    khoảng ngày liên quan được đồng bộ lại.
-                  </p>
-                </div>
-                <Link className="v2-link" href="/data-health">
-                  Xem chất lượng dữ liệu
-                </Link>
+          </section>
+        ) : null}
+
+        {currentTab === "results" ? (
+          <section className="v2-panel v2-settings-section">
+            <div className="v2-settings-section__intro">
+              <span aria-hidden="true">
+                <ListChecks size={19} />
+              </span>
+              <div>
+                <h2>Kết quả &amp; Mapping</h2>
+                <p>
+                  Result Registry theo Objective; Install chỉ là một Result,
+                  không phải mặc định bắt buộc cho mọi buyer.
+                </p>
               </div>
+            </div>
+
+            {resultRegistry.warning ? (
+              <div className="v2-source-note" role="status">
+                <AlertTriangle aria-hidden="true" size={18} />
+                <div>
+                  <strong>Đang dùng fallback chỉ đọc</strong>
+                  <p>{resultRegistry.warning}</p>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="v2-security-grid">
+              <article>
+                <ListChecks aria-hidden="true" size={18} />
+                <span>Result definitions</span>
+                <strong>{resultRegistry.definitions.length} canonical results</strong>
+              </article>
+              <a
+                className="v2-security-card-link"
+                href="#result-mapping-coverage"
+                aria-label="Mở chi tiết Mapping coverage"
+              >
+                <Check aria-hidden="true" size={18} />
+                <span>Mapping coverage preview</span>
+                <strong>
+                  {mappedResults}/{resultRegistry.definitions.length} results ·{" "}
+                  {totalAliases} raw aliases
+                </strong>
+                <ArrowRight aria-hidden="true" size={16} />
+              </a>
+              <article>
+                <ShieldCheck aria-hidden="true" size={18} />
+                <span>Nguồn registry</span>
+                <strong>
+                  {resultRegistry.source === "database"
+                    ? "Database owner"
+                    : "Built-in defaults"}
+                </strong>
+              </article>
+              <article>
+                <History aria-hidden="true" size={18} />
+                <span>Campaign override hiện có</span>
+                <strong>
+                  {resultRegistry.campaignOverrides.length} override · chỉ đọc
+                </strong>
+              </article>
+            </div>
+
+            <section
+              className="v2-settings-stack"
+              id="result-mapping-coverage"
+              aria-label="Chi tiết Mapping coverage"
+              tabIndex={-1}
+            >
+              {resultRegistry.definitions.map((definition) => (
+                <ResultMappingEditor
+                  definition={definition}
+                  mappings={resultMappings}
+                  sourceByKey={sourceByKey}
+                  registrySource={resultRegistry.source}
+                  editable={resultMappingEditable}
+                  onAdd={addResultMapping}
+                  onRemove={removeResultMapping}
+                  key={definition.id}
+                />
+              ))}
+            </section>
+
+            <div className="v2-settings-grid">
+              <label>
+                <span>Campaign override</span>
+                <input
+                  disabled
+                  value={`${resultRegistry.campaignOverrides.length} cấu hình`}
+                  readOnly
+                />
+                <small>
+                  Backend hiện chỉ đọc override; Settings chưa có API lưu.
+                </small>
+              </label>
+              <label>
+                <span>Secondary Result</span>
+                <input disabled value="Chưa cấu hình" readOnly />
+                <small>Chưa có API lưu.</small>
+              </label>
+              <label>
+                <span>Funnel stage</span>
+                <input disabled value="Theo Result definition" readOnly />
+                <small>Chưa có API lưu.</small>
+              </label>
+            </div>
+
+            {!resultMappingValidation.ok ? (
+              <div className="v2-source-note" role="alert">
+                <AlertTriangle aria-hidden="true" size={18} />
+                <div>
+                  <strong>Mapping chưa hợp lệ</strong>
+                  <p>{resultMappingValidation.error}</p>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="v2-source-note">
+              <ShieldCheck aria-hidden="true" size={18} />
+              <div>
+                <strong>Meta-attributed · không khóa vào Install</strong>
+                <p>
+                  Mapping chỉ đổi cách ứng dụng đọc Insights và benchmark nội
+                  bộ. Không tạo event, không chỉnh Campaign, không ghi sang
+                  Meta.
+                </p>
+              </div>
+              <Link className="v2-link" href="/sources?tab=results">
+                Xem registry tại Nguồn
+              </Link>
             </div>
           </section>
         ) : null}
+
         {currentTab === "benchmark" ? (
           <section className="v2-panel v2-settings-section">
             <div className="v2-settings-section__intro">
@@ -392,38 +858,15 @@ export function SettingsV2({
                 <CircleGauge size={19} />
               </span>
               <div>
-                <h2>Benchmark & đánh giá</h2>
+                <h2>Benchmark &amp; Đánh giá</h2>
                 <p>
-                  Cohort tiền tệ luôn tách biệt; OS và định dạng có thể bật tắt
-                  có chủ đích.
+                  Cohort minh bạch theo Account, Objective, Result, Format,
+                  Currency và cửa sổ thời gian.
                 </p>
               </div>
             </div>
+
             <div className="v2-settings-grid">
-              <label>
-                <span>Ngưỡng Install tối thiểu</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={10_000}
-                  value={minimumInstalls}
-                  onChange={(event) =>
-                    setMinimumInstalls(Number(event.target.value))
-                  }
-                />
-              </label>
-              <label>
-                <span>Ngưỡng Registration tối thiểu</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={100_000}
-                  value={minimumRegistrations}
-                  onChange={(event) =>
-                    setMinimumRegistrations(Number(event.target.value))
-                  }
-                />
-              </label>
               <label>
                 <span>Cửa sổ benchmark</span>
                 <select
@@ -435,20 +878,8 @@ export function SettingsV2({
                   <option value={7}>7 ngày</option>
                   <option value={14}>14 ngày</option>
                   <option value={30}>30 ngày</option>
-                  <option value={60}>60 ngày</option>
-                  <option value={90}>90 ngày</option>
                 </select>
-              </label>
-              <label className="v2-settings-toggle">
-                <input
-                  type="checkbox"
-                  checked={benchmarkByOs}
-                  onChange={(event) => setBenchmarkByOs(event.target.checked)}
-                />
-                <span>
-                  Tách theo hệ điều hành
-                  <small>Android, iOS và chưa xác định.</small>
-                </span>
+                <small>Có API lưu. Chỉ hỗ trợ 7, 14 hoặc 30 ngày.</small>
               </label>
               <label className="v2-settings-toggle">
                 <input
@@ -460,48 +891,74 @@ export function SettingsV2({
                 />
                 <span>
                   Tách theo định dạng
-                  <small>Video, image và dynamic.</small>
+                  <small>Video, image và dynamic. Có API lưu.</small>
+                </span>
+              </label>
+              <label className="v2-settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={benchmarkByOs}
+                  onChange={(event) => setBenchmarkByOs(event.target.checked)}
+                />
+                <span>
+                  Tách thêm theo hệ điều hành
+                  <small>Android, iOS và chưa xác định. Có API lưu.</small>
                 </span>
               </label>
             </div>
-            <div className="v2-weight-grid">
-              {(
-                [
-                  ["cpi", "CPI"],
-                  ["cpa", "CPA Registration"],
-                  ["hook", "Hook rate"],
-                  ["hold", "Hold rate"],
-                ] as const
-              ).map(([key, label]) => (
-                <label key={key}>
-                  <span>{label}</span>
-                  <div>
-                    <input
-                      type="number"
-                      min={0}
-                      max={100}
-                      value={weights[key]}
-                      onChange={(event) =>
-                        setWeights((current) => ({
-                          ...current,
-                          [key]: Number(event.target.value),
-                        }))
-                      }
-                    />
-                    <span>%</span>
-                  </div>
-                </label>
-              ))}
-              <div
-                className={`v2-weight-total${
-                  weightTotal === 100 ? "" : " v2-weight-total--error"
-                }`}
-              >
-                Tổng trọng số: <strong>{weightTotal}%</strong>
+
+            <div className="v2-security-grid">
+              <article>
+                <CircleGauge aria-hidden="true" size={18} />
+                <span>Minimum impressions</span>
+                <strong>1.000 mặc định · theo từng Result</strong>
+              </article>
+              <article>
+                <Check aria-hidden="true" size={18} />
+                <span>Minimum results</span>
+                <strong>5 mặc định · theo từng Result</strong>
+              </article>
+              <article>
+                <ArrowRight aria-hidden="true" size={18} />
+                <span>Ngưỡng tốt hơn / kém hơn</span>
+                <strong>±15% · chưa có API lưu</strong>
+              </article>
+              <article>
+                <CalendarClock aria-hidden="true" size={18} />
+                <span>Cửa sổ fatigue</span>
+                <strong>Chưa cấu hình · chưa có API lưu</strong>
+              </article>
+            </div>
+
+            <div className="v2-source-note">
+              <CircleGauge aria-hidden="true" size={18} />
+              <div>
+                <strong>Không dựng benchmark giả</strong>
+                <p>
+                  Creative chỉ đủ điều kiện khi đạt ngưỡng impressions và đủ
+                  results, hoặc spend đủ để đánh giá theo cost median. Khi
+                  cohort hẹp không đủ dữ liệu, fallback lần lượt: Ad Account +
+                  Objective + Result + Format; Ad Account + Objective + Result;
+                  Selected Business + Objective + Result + Format; Selected
+                  scope + Objective + Result. Sau đó phải báo “Chưa đủ mẫu so
+                  sánh”; không trộn currency.
+                </p>
+              </div>
+            </div>
+            <div className="v2-source-note">
+              <ShieldCheck aria-hidden="true" size={18} />
+              <div>
+                <strong>Chỉ hỗ trợ quyết định</strong>
+                <p>
+                  Điểm performance và tín hiệu fatigue là hai lớp riêng. Ứng
+                  dụng không tự đổi budget, pause ad hoặc ghi quyết định sang
+                  Meta.
+                </p>
               </div>
             </div>
           </section>
         ) : null}
+
         {currentTab === "sync" ? (
           <section className="v2-panel v2-settings-section">
             <div className="v2-settings-section__intro">
@@ -509,13 +966,14 @@ export function SettingsV2({
                 <CalendarClock size={19} />
               </span>
               <div>
-                <h2>Đồng bộ & bảo mật</h2>
+                <h2>Đồng bộ &amp; Bảo mật</h2>
                 <p>
-                  Trạng thái thực của token và lịch deployment; không mô phỏng
-                  lịch chạy nếu hạ tầng chưa cấu hình.
+                  Nhịp sync, token, permission scope, backfill và audit được
+                  phân biệt rõ giữa trạng thái thật và khả năng chưa có API.
                 </p>
               </div>
             </div>
+
             <div className="v2-settings-grid">
               <label>
                 <span>Nhịp đồng bộ</span>
@@ -531,7 +989,7 @@ export function SettingsV2({
                   <option value="manual">Chỉ thủ công</option>
                 </select>
                 <small>
-                  Lịch cụ thể được xác định bởi cấu hình deployment hiện tại.
+                  Có API lưu. Lịch cụ thể do deployment đang chạy quyết định.
                 </small>
               </label>
               <label>
@@ -545,13 +1003,24 @@ export function SettingsV2({
                   }
                 >
                   <option value="none">Không gửi cảnh báo</option>
-                  <option value="email">Email đã cấu hình ngoài ứng dụng</option>
+                  <option value="email">
+                    Email đã cấu hình ngoài ứng dụng
+                  </option>
                 </select>
                 <small>
-                  Chọn Email chỉ khi deployment đã có dịch vụ gửi mail.
+                  Có API lưu; chọn Email không tự tạo dịch vụ gửi mail.
+                </small>
+              </label>
+              <label>
+                <span>Backfill lịch sử</span>
+                <input disabled value="Chưa có API backfill tại Settings" readOnly />
+                <small>
+                  Không tạo nút chạy giả. Khi có endpoint an toàn, control mới
+                  được mở.
                 </small>
               </label>
             </div>
+
             <div className="v2-security-grid">
               <article>
                 <ShieldCheck aria-hidden="true" size={18} />
@@ -584,6 +1053,7 @@ export function SettingsV2({
                 </strong>
               </article>
             </div>
+
             <section
               className="v2-settings-audit"
               aria-labelledby="settings-audit-title"
@@ -594,8 +1064,8 @@ export function SettingsV2({
                   <div>
                     <h3 id="settings-audit-title">Nhật ký cài đặt</h3>
                     <p>
-                      Toàn bộ lịch sử cài đặt lưu trong ứng dụng. Token và bí
-                      mật kết nối không thuộc nhật ký này.
+                      Lịch sử cài đặt nội bộ. Token và bí mật kết nối không
+                      xuất hiện trong nhật ký này.
                     </p>
                   </div>
                 </div>
@@ -640,8 +1110,8 @@ export function SettingsV2({
                         ) : null}
                         {entry.hasHiddenChanges ? (
                           <p className="v2-settings-audit__hidden">
-                            Một thay đổi nội bộ không thuộc các trường cài đặt
-                            được phép hiển thị.
+                            Một thay đổi nội bộ không thuộc các trường được
+                            phép hiển thị.
                           </p>
                         ) : null}
                       </article>
@@ -654,6 +1124,7 @@ export function SettingsV2({
                 </p>
               )}
             </section>
+
             <div className="v2-manual-sync">
               <div>
                 <strong>Đồng bộ thủ công</strong>
@@ -662,10 +1133,17 @@ export function SettingsV2({
                   liệu.
                 </p>
               </div>
-              {canSave ? <SyncButton kind="incremental" /> : null}
+              {canSave ? (
+                <SyncButton kind="incremental" />
+              ) : (
+                <span className="v2-chip v2-chip--warning">
+                  Cần phiên owner
+                </span>
+              )}
             </div>
           </section>
         ) : null}
+
         <footer className="v2-settings-footer">
           <span>
             <ShieldCheck aria-hidden="true" size={16} />
@@ -675,16 +1153,23 @@ export function SettingsV2({
             className="button button--primary"
             disabled={
               saving ||
-              !canSave ||
-              !actionMapping.ok ||
-              weightTotal !== 100
+              (currentTab === "results"
+                ? resultSaveDisabled
+                : settingsSaveDisabled)
             }
           >
             <Save aria-hidden="true" size={16} />
-            {saving ? "Đang lưu…" : "Lưu cài đặt"}
+            {saving
+              ? "Đang lưu…"
+              : currentTab === "results"
+                ? resultMappingEditable
+                  ? "Lưu Result Mapping"
+                  : "Result Mapping chỉ đọc"
+                : "Lưu cài đặt"}
           </button>
         </footer>
       </form>
+
       {error ? (
         <p className="inline-notice" role="alert">
           {error}
@@ -699,4 +1184,8 @@ export function SettingsV2({
   );
 }
 
-export type { SettingsTab };
+export type {
+  SettingsReportingContract,
+  SettingsResultRegistry,
+  SettingsTab,
+};

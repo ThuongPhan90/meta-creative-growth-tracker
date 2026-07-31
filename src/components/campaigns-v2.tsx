@@ -4,7 +4,10 @@ import Link from "next/link";
 import { ContextualEntityLink } from "@/components/ui/contextual-entity-link";
 import { CopyIdButton } from "@/components/ui/copy-id-button";
 import { EntityDrawer } from "@/components/ui/entity-drawer";
-import { ReportingContext } from "@/components/ui/reporting-context";
+import {
+  ReportingContext,
+  type ReportingFreshness,
+} from "@/components/ui/reporting-context";
 import type {
   CampaignInventoryItem,
   CampaignInventoryPage,
@@ -13,7 +16,21 @@ import {
   formatCompactNumber,
   formatMoney,
   formatNumber,
+  formatPercent,
 } from "@/lib/presentation/formatters";
+import type { ReportingBarModel } from "@/lib/presentation/reporting-bar";
+import {
+  objectiveLabel,
+  summarizeDelivery,
+  type DeliveryMetricRow,
+  type DynamicResultMetricsModel,
+  type DynamicResultTableColumn,
+  type ResultKpiCard,
+} from "@/lib/reporting";
+import {
+  NAVIGATION_QUERY_KEYS,
+  reportingContextHiddenFields,
+} from "@/lib/navigation/query";
 
 type Query = Record<string, string | string[] | undefined>;
 
@@ -26,12 +43,21 @@ function href(
   query: Query,
   overrides: Record<string, string | null | undefined> = {},
 ) {
+  const allowed = new Set<string>([
+    ...NAVIGATION_QUERY_KEYS,
+    "q",
+    "status",
+    "page",
+    "showInactive",
+  ]);
   const params = new URLSearchParams();
   for (const [key, raw] of Object.entries(query)) {
+    if (!allowed.has(key)) continue;
     const value = first(raw);
     if (value) params.set(key, value.slice(0, 500));
   }
   for (const [key, value] of Object.entries(overrides)) {
+    if (!allowed.has(key)) continue;
     if (!value) params.delete(key);
     else params.set(key, value);
   }
@@ -58,33 +84,72 @@ function status(campaign: CampaignInventoryItem) {
 }
 
 function objective(value: string | null) {
-  const raw = value?.trim().toUpperCase();
-  if (!raw) return "Chưa xác định";
-  const labels: Record<string, string> = {
-    OUTCOME_APP_PROMOTION: "Quảng bá ứng dụng",
-    APP_INSTALLS: "Lượt cài đặt ứng dụng",
-    OUTCOME_SALES: "Doanh số",
-    OUTCOME_TRAFFIC: "Lưu lượng truy cập",
-    OUTCOME_LEADS: "Khách hàng tiềm năng",
-    OUTCOME_ENGAGEMENT: "Tương tác",
-    LINK_CLICKS: "Lượt nhấp liên kết",
-    CONVERSIONS: "Chuyển đổi",
-  };
-  return labels[raw] ?? "Mục tiêu khác";
+  return value ? objectiveLabel(value) : "Chưa xác định";
 }
 
 function primaryPerformance(campaign: CampaignInventoryItem) {
-  return [...campaign.performance].sort(
-    (left, right) => right.spend - left.spend,
-  )[0];
+  return campaign.performance.length === 1
+    ? campaign.performance[0]
+    : undefined;
+}
+
+function campaignResultValue(
+  campaign: CampaignInventoryItem,
+  canonicalResultKey: string,
+) {
+  const performance = primaryPerformance(campaign);
+  if (!performance) return null;
+  const normalized = performance.resultValues?.[canonicalResultKey];
+  return typeof normalized === "number" &&
+    Number.isFinite(normalized)
+    ? normalized
+    : null;
+}
+
+function campaignColumnValue(
+  campaign: CampaignInventoryItem,
+  column: DynamicResultTableColumn,
+) {
+  const performance = primaryPerformance(campaign);
+  if (!performance) return null;
+  const result = campaignResultValue(
+    campaign,
+    column.canonicalResultKey,
+  );
+  if (column.key.startsWith("result:")) return result;
+  if (result === null || result <= 0) return null;
+  if (column.valueType === "currency") {
+    return performance.spend / result;
+  }
+  return null;
+}
+
+function formatDynamicValue(
+  value: number | null,
+  valueType: ResultKpiCard["valueType"],
+  currency: string | null,
+) {
+  if (value === null) return "—";
+  if (valueType === "currency") {
+    return currency ? formatMoney(value, currency) : "—";
+  }
+  if (valueType === "percent") return formatPercent(value);
+  if (valueType === "ratio") {
+    return `${value.toLocaleString("vi-VN", {
+      maximumFractionDigits: 2,
+    })}×`;
+  }
+  return formatCompactNumber(value);
 }
 
 function CampaignDrawer({
   campaign,
   query,
+  resultMetrics,
 }: {
   campaign: CampaignInventoryItem;
   query: Query;
+  resultMetrics: DynamicResultMetricsModel;
 }) {
   const performance = primaryPerformance(campaign);
   return (
@@ -127,28 +192,23 @@ function CampaignDrawer({
                 </strong>
               </div>
               <div>
-                <span>Install</span>
-                <strong>{formatNumber(performance.installs)}</strong>
-              </div>
-              <div>
-                <span>Registration</span>
-                <strong>{formatNumber(performance.registrations)}</strong>
-              </div>
-              <div>
-                <span>CPI</span>
+                <span>Impressions</span>
                 <strong>
-                  {formatMoney(performance.cpi, performance.currency)}
+                  {formatCompactNumber(performance.impressions)}
                 </strong>
               </div>
-              <div>
-                <span>CPA Registration</span>
-                <strong>
-                  {formatMoney(
-                    performance.costPerRegistration,
-                    performance.currency,
-                  )}
-                </strong>
-              </div>
+              {resultMetrics.dynamicTableColumns.map((column) => (
+                <div key={column.key}>
+                  <span>{column.label}</span>
+                  <strong>
+                    {formatDynamicValue(
+                      campaignColumnValue(campaign, column),
+                      column.valueType,
+                      performance.currency,
+                    )}
+                  </strong>
+                </div>
+              ))}
             </div>
           ) : (
             <p className="v2-muted">
@@ -184,6 +244,7 @@ function CampaignDrawer({
 
 export function CampaignsV2({
   data,
+  delivery,
   query,
   connected,
   dateFrom,
@@ -194,8 +255,11 @@ export function CampaignsV2({
   currencyOptions,
   compare,
   freshness,
+  reportingBar,
+  resultMetrics,
 }: {
   data: CampaignInventoryPage;
+  delivery: readonly DeliveryMetricRow[];
   query: Query;
   connected: boolean;
   dateFrom: string;
@@ -205,7 +269,9 @@ export function CampaignsV2({
   reportingCurrency: string;
   currencyOptions: string[];
   compare: "previous_period" | "none";
-  freshness: string;
+  freshness: ReportingFreshness;
+  reportingBar: ReportingBarModel;
+  resultMetrics: DynamicResultMetricsModel;
 }) {
   const selectedId = first(query.selected);
   const selected = selectedId
@@ -213,17 +279,26 @@ export function CampaignsV2({
     : undefined;
   const page = Math.floor(data.offset / data.limit) + 1;
   const pageCount = Math.max(1, Math.ceil(data.total / data.limit));
-  const performances = data.items.flatMap((campaign) => campaign.performance);
-  const currencies = [...new Set(performances.map((item) => item.currency))];
-  const currency = currencies.length === 1 ? currencies[0] : null;
-  const spend = currency
-    ? performances.reduce((sum, item) => sum + item.spend, 0)
-    : null;
-  const installs = performances.reduce((sum, item) => sum + item.installs, 0);
-  const registrations = performances.reduce(
-    (sum, item) => sum + item.registrations,
-    0,
-  );
+  const deliverySummary = summarizeDelivery(delivery);
+  const currency = deliverySummary.singleCurrency?.currency ?? null;
+  const campaignGridTemplate = [
+    "minmax(240px, 1.5fr)",
+    "minmax(170px, 1fr)",
+    "minmax(130px, 0.75fr)",
+    "minmax(145px, 0.85fr)",
+    "minmax(125px, 0.8fr)",
+    "minmax(115px, 0.75fr)",
+    ...resultMetrics.dynamicTableColumns.map(
+      () => "minmax(118px, 0.78fr)",
+    ),
+    "minmax(78px, 0.55fr)",
+    "minmax(78px, 0.55fr)",
+    "minmax(90px, 0.6fr)",
+  ].join(" ");
+  const campaignGridStyle = {
+    gridTemplateColumns: campaignGridTemplate,
+    minWidth: `${1180 + resultMetrics.dynamicTableColumns.length * 118}px`,
+  };
 
   return (
     <div className="v2-page">
@@ -238,6 +313,7 @@ export function CampaignsV2({
         <span className="v2-chip v2-chip--success">Chỉ đọc</span>
       </header>
       <ReportingContext
+        {...reportingBar}
         action="/campaigns"
         dateFrom={dateFrom}
         dateTo={dateTo}
@@ -248,6 +324,7 @@ export function CampaignsV2({
         compare={compare}
         freshness={freshness}
         preserved={{
+          ...reportingContextHiddenFields(query),
           ...(first(query.q) ? { q: first(query.q)! } : {}),
           ...(first(query.status) ? { status: first(query.status)! } : {}),
         }}
@@ -258,47 +335,25 @@ export function CampaignsV2({
           <strong>{formatNumber(data.total)}</strong>
           <small>{data.items.length} trên trang hiện tại</small>
         </article>
-        <article className="v2-kpi">
-          <span className="v2-kpi__label">Spend</span>
-          <strong>
-            {currency
-              ? formatMoney(spend, currency)
-              : currencies.length
-                ? "Nhiều tiền tệ"
-                : "—"}
-          </strong>
-          <small>
-            {currencies.length > 1 ? "Không cộng gộp tiền tệ" : "Trong kỳ"}
-          </small>
-        </article>
-        <article className="v2-kpi">
-          <span className="v2-kpi__label">Install</span>
-          <strong>{formatCompactNumber(installs)}</strong>
-          <small>Meta-attributed</small>
-        </article>
-        <article className="v2-kpi">
-          <span className="v2-kpi__label">Registration</span>
-          <strong>{formatCompactNumber(registrations)}</strong>
-          <small>Meta-attributed</small>
-        </article>
-        <article className="v2-kpi">
-          <span className="v2-kpi__label">CPI</span>
-          <strong>
-            {currency && installs > 0
-              ? formatMoney((spend ?? 0) / installs, currency)
-              : "—"}
-          </strong>
-          <small>Spend / Install</small>
-        </article>
-        <article className="v2-kpi">
-          <span className="v2-kpi__label">CPA Registration</span>
-          <strong>
-            {currency && registrations > 0
-              ? formatMoney((spend ?? 0) / registrations, currency)
-              : "—"}
-          </strong>
-          <small>Spend / Registration</small>
-        </article>
+        {resultMetrics.kpiCards.map((card) => (
+          <article className="v2-kpi" title={card.formula} key={card.key}>
+            <span className="v2-kpi__label">{card.label}</span>
+            <strong>
+              {formatDynamicValue(
+                card.value,
+                card.valueType,
+                currency,
+              )}
+            </strong>
+            <small>
+              {card.unavailableReason === "split_currency"
+                ? "Chọn một tiền tệ để so sánh"
+                : card.attribution === "meta_attributed"
+                  ? "Meta-attributed · Chỉ đọc"
+                  : card.formula}
+            </small>
+          </article>
+        ))}
       </section>
       <form className="v2-filter-bar v2-campaign-filters" action="/campaigns">
         <input type="hidden" name="from" value={dateFrom} />
@@ -347,15 +402,26 @@ export function CampaignsV2({
           aria-label="Danh sách Campaign"
           tabIndex={0}
         >
-          <div className="v2-campaign-table__head" role="row">
+          <div
+            className="v2-campaign-table__head"
+            role="row"
+            style={campaignGridStyle}
+          >
             <span role="columnheader">Campaign</span>
             <span role="columnheader">Tài khoản</span>
             <span role="columnheader">Trạng thái</span>
             <span role="columnheader">Mục tiêu</span>
             <span role="columnheader">Spend</span>
-            <span role="columnheader">Install</span>
-            <span role="columnheader">Registration</span>
-            <span role="columnheader">CPI</span>
+            <span role="columnheader">Impressions</span>
+            {resultMetrics.dynamicTableColumns.map((column) => (
+              <span
+                role="columnheader"
+                title={column.formula}
+                key={column.key}
+              >
+                {column.label}
+              </span>
+            ))}
             <span role="columnheader">Ad Sets</span>
             <span role="columnheader">Ads</span>
             <span role="columnheader">Creative</span>
@@ -376,6 +442,7 @@ export function CampaignsV2({
                 className="v2-campaign-table__row"
                 role="row"
                 key={campaign.campaignId}
+                style={campaignGridStyle}
               >
                 <span role="cell">
                   <ContextualEntityLink
@@ -413,16 +480,23 @@ export function CampaignsV2({
                     : "—"}
                 </span>
                 <span role="cell">
-                  {formatNumber(performance?.installs ?? 0)}
-                </span>
-                <span role="cell">
-                  {formatNumber(performance?.registrations ?? 0)}
-                </span>
-                <span role="cell">
                   {performance
-                    ? formatMoney(performance.cpi, performance.currency)
+                    ? formatCompactNumber(performance.impressions)
                     : "—"}
                 </span>
+                {resultMetrics.dynamicTableColumns.map((column) => (
+                  <span
+                    role="cell"
+                    title={column.formula}
+                    key={column.key}
+                  >
+                    {formatDynamicValue(
+                      campaignColumnValue(campaign, column),
+                      column.valueType,
+                      performance?.currency ?? null,
+                    )}
+                  </span>
+                ))}
                 <span role="cell">
                   <Link
                     className="v2-link"
@@ -521,7 +595,13 @@ export function CampaignsV2({
           </Link>
         </nav>
       ) : null}
-      {selected ? <CampaignDrawer campaign={selected} query={query} /> : null}
+      {selected ? (
+        <CampaignDrawer
+          campaign={selected}
+          query={query}
+          resultMetrics={resultMetrics}
+        />
+      ) : null}
     </div>
   );
 }

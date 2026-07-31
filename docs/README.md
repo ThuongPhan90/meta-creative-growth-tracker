@@ -17,7 +17,8 @@
 5. [Kiến trúc](architecture.md)
 6. [Fidelity ledger](fidelity-ledger.md)
 7. [Ngữ nghĩa dữ liệu](data-semantics.md)
-8. [Troubleshooting](troubleshooting.md)
+8. [Universal Buyer V2](universal-buyer-v2.md)
+9. [Troubleshooting](troubleshooting.md)
 
 ### Người dùng repo cho khóa học
 

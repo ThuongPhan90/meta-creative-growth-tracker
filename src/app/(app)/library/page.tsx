@@ -1,10 +1,13 @@
 import { CreativeLibraryV2 } from "@/components/creative-library-v2";
 import {
+  buildApplicationResultMetrics,
   getApplicationSnapshot,
+  getCanonicalResultsForReport,
   getCreativeRowsForReport,
+  resolveApplicationReportContext,
 } from "@/lib/app-data";
-import { resolveReportContext } from "@/lib/reporting";
-import { formatFreshnessLabel } from "@/lib/presentation/formatters";
+import { formatFreshnessFields } from "@/lib/presentation/freshness-presentation";
+import { buildReportingBarModel } from "@/lib/presentation/reporting-bar";
 
 export const dynamic = "force-dynamic";
 
@@ -19,38 +22,27 @@ export default async function LibraryPage({
     getApplicationSnapshot(),
     searchParams,
   ]);
-  const context = resolveReportContext({
-    query: {
-      from: Array.isArray(query.from) ? query.from[0] : query.from,
-      to: Array.isArray(query.to) ? query.to[0] : query.to,
-      account: Array.isArray(query.account)
-        ? query.account[0]
-        : query.account,
-      currency: Array.isArray(query.currency)
-        ? query.currency[0]
-        : query.currency,
-      compare: Array.isArray(query.compare)
-        ? query.compare[0]
-        : query.compare,
-    },
-    timeZone: snapshot.settings.timezone,
-    lookbackDays: snapshot.settings.lookbackDays,
-    reportingCurrency: snapshot.settings.currency,
-    compareDefault: snapshot.settings.compareDefault,
-  });
+  const context = resolveApplicationReportContext(snapshot, query);
   const accounts = snapshot.assets
     .filter((asset) => asset.kind === "Ad Account")
     .map((asset) => ({ id: asset.id, name: asset.name }));
-  const report = await getCreativeRowsForReport({
-    snapshot,
-    dateFrom: context.dateFrom,
-    dateTo: context.dateTo,
-    accountMetaId: context.account || undefined,
-    campaignMetaId: Array.isArray(query.campaign)
-      ? query.campaign[0]
-      : query.campaign,
-    currency: context.currency || null,
-  });
+  const [report, canonicalResults] = await Promise.all([
+    getCreativeRowsForReport({
+      snapshot,
+      dateFrom: context.dateFrom,
+      dateTo: context.dateTo,
+      accountMetaIds: context.adAccountIds,
+      campaignMetaId: Array.isArray(query.campaign)
+        ? query.campaign[0]
+        : query.campaign,
+      currency: context.currency || null,
+      attributionWindow: context.attributionSettingKey,
+      actionReportTime: context.actionReportTime,
+      syncVersion: context.syncVersion,
+      reportContext: context,
+    }),
+    getCanonicalResultsForReport({ snapshot, context }),
+  ]);
 
   return (
     <CreativeLibraryV2
@@ -76,11 +68,31 @@ export default async function LibraryPage({
           ),
         ),
       ]}
-      compare={context.compare}
-      freshness={formatFreshnessLabel(
+      compare={context.compareMode}
+      freshness={formatFreshnessFields(
         snapshot.freshness,
         snapshot.settings.timezone,
       )}
+      reportingBar={buildReportingBarModel(
+        snapshot.reportingScope,
+        context,
+        {
+          persistScope:
+            !snapshot.demoMode &&
+            snapshot.authenticated &&
+            Boolean(snapshot.connection),
+        },
+        canonicalResults.definitions,
+      )}
+      resultMetrics={buildApplicationResultMetrics({
+        context,
+        delivery: report.delivery,
+        definitions: canonicalResults.definitions,
+        periodReach: canonicalResults.periodReach,
+        ...(canonicalResults.state === "demo_legacy_bridge"
+          ? {}
+          : { canonicalResults: canonicalResults.values }),
+      })}
     />
   );
 }

@@ -10,11 +10,14 @@ import {
 } from "@/components/creative-performance-v2";
 import { CopyIdButton } from "@/components/ui/copy-id-button";
 import {
+  buildApplicationResultMetrics,
   getApplicationSnapshot,
+  getCanonicalResultsForReport,
   getCreativeFamilyRowsForReport,
+  getDeliveryForReport,
+  resolveApplicationReportContext,
 } from "@/lib/app-data";
 import { canonicalDetailId } from "@/lib/detail-api/contracts";
-import { resolveReportContext } from "@/lib/reporting";
 
 export const dynamic = "force-dynamic";
 
@@ -41,30 +44,57 @@ export default async function CreativeFamilyPage({
     route.creativeFamilyId,
   );
   if (!creativeFamilyId) notFound();
-  const context = resolveReportContext({
-    query: {
-      from: first(query.from),
-      to: first(query.to),
-      account: first(query.account),
-    },
-    timeZone: snapshot.settings.timezone,
-    lookbackDays: snapshot.settings.lookbackDays,
-  });
-  const rows = await getCreativeFamilyRowsForReport({
-    snapshot,
-    creativeFamilyId,
-    dateFrom: context.dateFrom,
-    dateTo: context.dateTo,
-    currency: first(query.currency),
-    accountMetaId: context.account || undefined,
-    campaignMetaId: first(query.campaign),
-  });
+  const context = resolveApplicationReportContext(snapshot, query);
+  const campaignMetaId = first(query.campaign);
+  const [rows, canonicalResults, delivery] = await Promise.all([
+    getCreativeFamilyRowsForReport({
+      snapshot,
+      creativeFamilyId,
+      dateFrom: context.dateFrom,
+      dateTo: context.dateTo,
+      currency: context.currency || undefined,
+      accountMetaIds: context.adAccountIds,
+      campaignMetaId,
+      attributionWindow: context.attributionSettingKey,
+      actionReportTime: context.actionReportTime,
+      syncVersion: context.syncVersion,
+      reportContext: context,
+    }),
+    getCanonicalResultsForReport({
+      snapshot,
+      context,
+      ...(campaignMetaId
+        ? { campaignMetaIds: [campaignMetaId] }
+        : {}),
+    }),
+    getDeliveryForReport({
+      snapshot,
+      dateFrom: context.dateFrom,
+      dateTo: context.dateTo,
+      accountMetaIds: context.adAccountIds,
+      campaignMetaId,
+      currency: context.currency || null,
+      attributionWindow: context.attributionSettingKey,
+      actionReportTime: context.actionReportTime,
+      syncVersion: context.syncVersion,
+      reportContext: context,
+    }),
+  ]);
   const family = groupCreativeFamiliesForView(rows ?? []).find(
     (item) => item.id === creativeFamilyId,
   );
   if (!family) notFound();
 
   const backHref = creativeDetailBackHref(query);
+  const resultMetrics = buildApplicationResultMetrics({
+    context,
+    delivery,
+    definitions: canonicalResults.definitions,
+    periodReach: canonicalResults.periodReach,
+    ...(canonicalResults.state === "demo_legacy_bridge"
+      ? {}
+      : { canonicalResults: canonicalResults.values }),
+  });
 
   return (
     <div className="v2-page v2-full-detail">
@@ -84,7 +114,12 @@ export default async function CreativeFamilyPage({
         <span className="v2-chip v2-chip--success">Chỉ đọc</span>
       </header>
       <section className="v2-panel">
-        <CreativeDrawerContent family={family} query={query} fullPage />
+        <CreativeDrawerContent
+          family={family}
+          query={query}
+          resultMetrics={resultMetrics}
+          fullPage
+        />
       </section>
     </div>
   );

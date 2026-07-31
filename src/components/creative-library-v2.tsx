@@ -8,7 +8,9 @@ import Image from "next/image";
 import Link from "next/link";
 
 import {
+  CreativeEvaluationStatus,
   CreativeDrawerContent,
+  creativePerformanceGroup,
   creativeFullDetailHref,
   groupCreativeFamiliesForView,
   type CreativeFamilyViewItem,
@@ -16,12 +18,25 @@ import {
 import { ContextualEntityLink } from "@/components/ui/contextual-entity-link";
 import { CopyIdButton } from "@/components/ui/copy-id-button";
 import { EntityDrawer } from "@/components/ui/entity-drawer";
-import { PerformanceRating } from "@/components/ui/performance-rating";
-import { ReportingContext } from "@/components/ui/reporting-context";
 import {
+  ReportingContext,
+  type ReportingFreshness,
+} from "@/components/ui/reporting-context";
+import {
+  NAVIGATION_QUERY_KEYS,
+  reportingContextHiddenFields,
+} from "@/lib/navigation/query";
+import {
+  formatCompactNumber,
   formatMoney,
   formatNumber,
+  formatPercent,
 } from "@/lib/presentation/formatters";
+import type { ReportingBarModel } from "@/lib/presentation/reporting-bar";
+import type {
+  DynamicResultMetricsModel,
+  ResultKpiCard,
+} from "@/lib/reporting";
 import type { CreativeRow } from "@/types/view-models";
 
 type Query = Record<string, string | string[] | undefined>;
@@ -35,16 +50,79 @@ function href(
   query: Query,
   overrides: Record<string, string | null | undefined> = {},
 ) {
+  const allowed = new Set<string>([
+    ...NAVIGATION_QUERY_KEYS,
+    "q",
+    "view",
+    "page",
+  ]);
   const params = new URLSearchParams();
   for (const [key, raw] of Object.entries(query)) {
+    if (!allowed.has(key)) continue;
     const value = first(raw);
     if (value) params.set(key, value.slice(0, 500));
   }
   for (const [key, value] of Object.entries(overrides)) {
+    if (!allowed.has(key)) continue;
     if (!value) params.delete(key);
     else params.set(key, value);
   }
   return `${pathname}${params.size ? `?${params.toString()}` : ""}`;
+}
+
+function familyResultValue(
+  family: CreativeFamilyViewItem,
+  canonicalResultKey: string | null,
+) {
+  const performance = family.performance;
+  if (!performance || !canonicalResultKey) return null;
+  const normalized = performance.resultValues?.[canonicalResultKey];
+  return typeof normalized === "number" &&
+    Number.isFinite(normalized)
+    ? normalized
+    : null;
+}
+
+function familyEfficiencyValue(
+  family: CreativeFamilyViewItem,
+  resultKey: string | null,
+  valueType: ResultKpiCard["valueType"] | null,
+) {
+  const performance = family.performance;
+  const result = familyResultValue(family, resultKey);
+  if (!performance || result === null || result <= 0) return null;
+  if (valueType === "currency") return performance.spend / result;
+  if (valueType === "percent") {
+    const clicks =
+      performance.linkCtr === null
+        ? null
+        : (performance.linkCtr / 100) * performance.impressions;
+    return clicks && clicks > 0 ? (result / clicks) * 100 : null;
+  }
+  if (valueType === "ratio" && resultKey === "purchase_value") {
+    return performance.spend > 0
+      ? result / performance.spend
+      : null;
+  }
+  return null;
+}
+
+function formatDynamicValue(
+  value: number | null,
+  valueType: ResultKpiCard["valueType"],
+  currency: string | null,
+) {
+  if (value === null) return "—";
+  if (valueType === "currency") {
+    return currency ? formatMoney(value, currency) : "—";
+  }
+  if (valueType === "percent") return formatPercent(value);
+  if (valueType === "ratio") {
+    return `${value.toLocaleString("vi-VN", {
+      maximumFractionDigits: 2,
+    })}×`;
+  }
+  return formatCompactNumber(value);
 }
 
 function matches(
@@ -64,6 +142,9 @@ function matches(
       family.id,
       family.assetKey,
       family.aliases.join(" "),
+      family.entityLinks?.assetId ?? "",
+      ...(family.entityLinks?.metaCreativeIds ?? []),
+      ...(family.entityLinks?.adIds ?? []),
     ]
       .join(" ")
       .toLocaleLowerCase("vi-VN")
@@ -92,16 +173,12 @@ function matches(
     return false;
   }
   if (filters.performance) {
-    const rating = family.performance?.rating;
-    const group =
-      rating === "TỐT"
-        ? "good"
-        : rating === "ỔN"
-          ? "stable"
-          : rating === "ÍT DỮ LIỆU"
-            ? "limited"
-            : "poor";
-    if (group !== filters.performance) return false;
+    if (
+      creativePerformanceGroup(family.performance) !==
+      filters.performance
+    ) {
+      return false;
+    }
   }
   return true;
 }
@@ -109,10 +186,12 @@ function matches(
 function CreativeCard({
   family,
   query,
+  resultMetrics,
   priority = false,
 }: {
   family: CreativeFamilyViewItem;
   query: Query;
+  resultMetrics: DynamicResultMetricsModel;
   priority?: boolean;
 }) {
   const detailHref = creativeFullDetailHref({
@@ -126,7 +205,23 @@ function CreativeCard({
     tab: "preview",
   });
   const performance = family.performance;
-
+  const resultKey = resultMetrics.metadata.primaryResultKey;
+  const resultCard = resultMetrics.kpiCards.find(
+    (card) => card.key === `result:${resultKey ?? ""}`,
+  );
+  const efficiencyCard = resultMetrics.kpiCards.find(
+    (card) => card.key === `efficiency:${resultKey ?? ""}`,
+  );
+  const resultDefinition =
+    resultMetrics.availableResults.find(
+      (result) => result.canonicalKey === resultKey,
+    ) ?? null;
+  const resultValue = familyResultValue(family, resultKey);
+  const efficiencyValue = familyEfficiencyValue(
+    family,
+    resultKey,
+    efficiencyCard?.valueType ?? null,
+  );
   return (
     <article className="v2-library-card">
       <ContextualEntityLink
@@ -200,25 +295,44 @@ function CreativeCard({
             </dd>
           </div>
           <div>
-            <dt>Install</dt>
-            <dd>{formatNumber(performance?.installs ?? 0)}</dd>
-          </div>
-          <div>
-            <dt>Registration</dt>
-            <dd>{formatNumber(performance?.registrations ?? 0)}</dd>
-          </div>
-          <div>
-            <dt>CPI</dt>
+            <dt>Impressions</dt>
             <dd>
               {performance
-                ? formatMoney(performance.cpi, performance.currency)
+                ? formatCompactNumber(performance.impressions)
                 : "—"}
             </dd>
           </div>
+          {resultDefinition && resultCard ? (
+            <div>
+              <dt>{resultDefinition.shortLabel}</dt>
+              <dd>
+                {formatDynamicValue(
+                  resultValue,
+                  resultCard.valueType,
+                  performance?.currency ?? null,
+                )}
+              </dd>
+            </div>
+          ) : null}
+          {efficiencyCard ? (
+            <div>
+              <dt>{efficiencyCard.label}</dt>
+              <dd>
+                {formatDynamicValue(
+                  efficiencyValue,
+                  efficiencyCard.valueType,
+                  performance?.currency ?? null,
+                )}
+              </dd>
+            </div>
+          ) : null}
         </dl>
       </div>
       <footer className="v2-library-card__footer">
-        <PerformanceRating rating={performance?.rating ?? null} />
+        <CreativeEvaluationStatus
+          performance={performance}
+          resultKey={resultKey}
+        />
         <small>
           Tin cậy{" "}
           {performance?.confidence?.confidence === "high"
@@ -238,10 +352,28 @@ function CreativeCard({
 function LibraryTable({
   families,
   query,
+  resultMetrics,
 }: {
   families: CreativeFamilyViewItem[];
   query: Query;
+  resultMetrics: DynamicResultMetricsModel;
 }) {
+  const gridTemplateColumns = [
+    "minmax(280px, 1.55fr)",
+    "minmax(170px, 0.95fr)",
+    "minmax(135px, 0.7fr)",
+    "minmax(155px, 0.85fr)",
+    "minmax(130px, 0.75fr)",
+    "minmax(115px, 0.7fr)",
+    ...resultMetrics.dynamicTableColumns.map(
+      () => "minmax(118px, 0.72fr)",
+    ),
+    "minmax(145px, 0.8fr)",
+  ].join(" ");
+  const gridStyle = {
+    gridTemplateColumns,
+    minWidth: `${1030 + resultMetrics.dynamicTableColumns.length * 118}px`,
+  };
   return (
     <section
       className="v2-library-table"
@@ -249,13 +381,26 @@ function LibraryTable({
       aria-label="Bảng thư viện Creative Family"
       tabIndex={0}
     >
-      <div className="v2-library-table__head" role="row">
+      <div
+        className="v2-library-table__head"
+        role="row"
+        style={gridStyle}
+      >
         <span role="columnheader">Creative Family</span>
         <span role="columnheader">Định dạng / OS</span>
         <span role="columnheader">Nơi sử dụng</span>
         <span role="columnheader">Trạng thái dữ liệu</span>
         <span role="columnheader">Spend</span>
-        <span role="columnheader">CPI</span>
+        <span role="columnheader">Impressions</span>
+        {resultMetrics.dynamicTableColumns.map((column) => (
+          <span
+            role="columnheader"
+            title={column.formula}
+            key={column.key}
+          >
+            {column.label}
+          </span>
+        ))}
         <span role="columnheader">Đánh giá</span>
       </div>
       {families.map((family) => {
@@ -274,7 +419,12 @@ function LibraryTable({
           tab: "rating",
         });
         return (
-          <div className="v2-library-table__row" role="row" key={family.id}>
+          <div
+            className="v2-library-table__row"
+            role="row"
+            key={family.id}
+            style={gridStyle}
+          >
             <span role="cell">
               <ContextualEntityLink
                 className="v2-creative-identity"
@@ -340,23 +490,52 @@ function LibraryTable({
             </span>
             <span role="cell">
               {family.performance
-                ? formatMoney(
-                    family.performance.cpi,
-                    family.performance.currency,
+                ? formatCompactNumber(
+                    family.performance.impressions,
                   )
                 : "—"}
             </span>
+            {resultMetrics.dynamicTableColumns.map((column) => {
+              const value = column.key.startsWith("result:")
+                ? familyResultValue(
+                    family,
+                    column.canonicalResultKey,
+                  )
+                : familyEfficiencyValue(
+                    family,
+                    column.canonicalResultKey,
+                    column.valueType,
+                  );
+              return (
+                <span role="cell" title={column.formula} key={column.key}>
+                  {formatDynamicValue(
+                    value,
+                    column.valueType,
+                    family.performance?.currency ?? null,
+                  )}
+                </span>
+              );
+            })}
             <span role="cell">
-              <Link
-                className="v2-rating-detail-link"
-                href={ratingDrawer}
-                aria-label={`Mở chi tiết đánh giá ${family.name}`}
-                scroll={false}
-              >
-                <PerformanceRating
-                  rating={family.performance?.rating ?? null}
-                />
-              </Link>
+              {resultMetrics.metadata.primaryResultKey ? (
+                <Link
+                  className="v2-rating-detail-link"
+                  href={ratingDrawer}
+                  aria-label={`Mở chi tiết đánh giá ${family.name}`}
+                  scroll={false}
+                >
+                  <CreativeEvaluationStatus
+                    performance={family.performance}
+                    resultKey={
+                      resultMetrics.metadata.primaryResultKey
+                    }
+                  />
+                </Link>
+              ) : (
+                <span className="v2-chip v2-chip--warning">
+                  Chưa thể đánh giá
+                </span>
+              )}
             </span>
           </div>
         );
@@ -378,6 +557,8 @@ export function CreativeLibraryV2({
   currencyOptions,
   compare,
   freshness,
+  reportingBar,
+  resultMetrics,
 }: {
   creatives: CreativeRow[];
   connected: boolean;
@@ -390,14 +571,19 @@ export function CreativeLibraryV2({
   reportingCurrency: string;
   currencyOptions: string[];
   compare: "previous_period" | "none";
-  freshness: string;
+  freshness: ReportingFreshness;
+  reportingBar: ReportingBarModel;
+  resultMetrics: DynamicResultMetricsModel;
 }) {
   const filters = {
     query: first(query.q)?.trim().slice(0, 200) ?? "",
     format: first(query.format)?.trim().toLocaleLowerCase("vi-VN") ?? "",
     os: first(query.os)?.trim().toLocaleLowerCase("vi-VN") ?? "",
     dataStatus: first(query.data_status)?.trim().slice(0, 64) ?? "",
-    performance: first(query.performance)?.trim().slice(0, 64) ?? "",
+    performance:
+      resultMetrics.metadata.primaryResultKey
+        ? first(query.performance)?.trim().slice(0, 64) ?? ""
+        : "",
   };
   const view = first(query.view) === "table" ? "table" : "grid";
   const all = groupCreativeFamiliesForView(creatives);
@@ -430,6 +616,7 @@ export function CreativeLibraryV2({
         </div>
       </header>
       <ReportingContext
+        {...reportingBar}
         action="/library"
         dateFrom={dateFrom}
         dateTo={dateTo}
@@ -440,6 +627,7 @@ export function CreativeLibraryV2({
         compare={compare}
         freshness={freshness}
         preserved={{
+          ...reportingContextHiddenFields(query),
           ...(filters.query ? { q: filters.query } : {}),
           ...(filters.format ? { format: filters.format } : {}),
           ...(filters.os ? { os: filters.os } : {}),
@@ -494,17 +682,19 @@ export function CreativeLibraryV2({
           <option value="stale">Dữ liệu cũ</option>
           <option value="partial">Đồng bộ một phần</option>
         </select>
-        <select
-          name="performance"
-          defaultValue={filters.performance}
-          aria-label="Hiệu suất"
-        >
-          <option value="">Tất cả hiệu suất</option>
-          <option value="good">Tốt</option>
-          <option value="stable">Ổn định</option>
-          <option value="limited">Ít dữ liệu</option>
-          <option value="poor">Cần xử lý</option>
-        </select>
+        {resultMetrics.metadata.primaryResultKey ? (
+          <select
+            name="performance"
+            defaultValue={filters.performance}
+            aria-label="Hiệu suất"
+          >
+            <option value="">Tất cả hiệu suất</option>
+            <option value="good">Tốt hơn benchmark</option>
+            <option value="stable">Trong ngưỡng</option>
+            <option value="limited">Chưa thể đánh giá</option>
+            <option value="poor">Cần theo dõi</option>
+          </select>
+        ) : null}
         <button className="button button--primary" type="submit">
           Lọc
         </button>
@@ -587,13 +777,18 @@ export function CreativeLibraryV2({
           </div>
         </section>
       ) : view === "table" ? (
-        <LibraryTable families={visible} query={query} />
+        <LibraryTable
+          families={visible}
+          query={query}
+          resultMetrics={resultMetrics}
+        />
       ) : (
         <section className="v2-library-grid" aria-label="Lưới Creative Family">
           {visible.map((family, index) => (
             <CreativeCard
               family={family}
               query={query}
+              resultMetrics={resultMetrics}
               priority={index === 0}
               key={family.id}
             />
@@ -646,6 +841,7 @@ export function CreativeLibraryV2({
           <CreativeDrawerContent
             family={selected}
             query={query}
+            resultMetrics={resultMetrics}
             originPathname="/library"
           />
         </EntityDrawer>
