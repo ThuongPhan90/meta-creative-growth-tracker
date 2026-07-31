@@ -4,8 +4,15 @@ import { notFound } from "next/navigation";
 
 import { CopyIdButton } from "@/components/ui/copy-id-button";
 import { getApplicationSnapshot } from "@/lib/app-data";
-import { formatMetaVerificationStatus } from "@/lib/presentation/source-status";
-import type { MetaAssetKind, MetaAssetRow } from "@/types/view-models";
+import {
+  sourceAccountCampaignsHref,
+  sourceBusinessAccountsHref,
+} from "@/lib/presentation/source-navigation";
+import {
+  formatMetaVerificationStatus,
+  sourceAssetStatus,
+} from "@/lib/presentation/source-status";
+import type { MetaAssetKind } from "@/types/view-models";
 
 export const dynamic = "force-dynamic";
 
@@ -32,16 +39,6 @@ function backHref(
   }
   params.set("tab", tab);
   return `/sources?${params.toString()}`;
-}
-
-function statusLabel(asset: MetaAssetRow) {
-  const status = asset.status.trim().toUpperCase();
-  if (asset.isCurrent === false) {
-    return "Không còn trong lần đồng bộ mới nhất";
-  }
-  if (status === "ACTIVE") return "Đang hoạt động";
-  if (status === "INACTIVE") return "Không hoạt động";
-  return "Cần kiểm tra trên Meta";
 }
 
 function seenLabel(value?: string | null) {
@@ -108,10 +105,25 @@ export default async function SourceEntityPage({
             <code>{asset.id}</code>
             <CopyIdButton value={asset.id} />
           </div>
+          {asset.kind === "Business" ? (
+            <Link
+              className="button button--primary"
+              href={sourceBusinessAccountsHref(asset.id, query)}
+            >
+              Xem Ad Account thuộc Business
+            </Link>
+          ) : asset.kind === "Ad Account" ? (
+            <Link
+              className="button button--primary"
+              href={sourceAccountCampaignsHref(asset.id, query)}
+            >
+              Xem Campaign của tài khoản
+            </Link>
+          ) : null}
           <dl className="v2-detail-list">
             <div>
               <dt>Trạng thái</dt>
-              <dd>{statusLabel(asset)}</dd>
+              <dd>{sourceAssetStatus(asset).label}</dd>
             </div>
             <div>
               <dt>Business</dt>

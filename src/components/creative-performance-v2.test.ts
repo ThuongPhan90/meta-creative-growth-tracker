@@ -46,6 +46,10 @@ function family(
           holdRate: null,
           osBaselineCpi: null,
           rating: null,
+          resultValues: {
+            install: metrics.installs,
+            complete_registration: metrics.registrations,
+          },
           dateFrom: "2026-07-01",
           dateTo: "2026-07-30",
         }
@@ -71,18 +75,19 @@ describe("Creative metric drill-down ordering", () => {
   const missing = family("missing", null);
 
   it.each([
-    ["spend", "desc", ["high-scale", "high-conversion", "missing"]],
-    ["installs", "desc", ["high-scale", "high-conversion", "missing"]],
-    ["registrations", "desc", ["high-conversion", "high-scale", "missing"]],
-    ["cpi", "asc", ["high-scale", "high-conversion", "missing"]],
-    ["cpa", "asc", ["high-conversion", "high-scale", "missing"]],
-    ["conversion", "desc", ["high-conversion", "high-scale", "missing"]],
-  ] as const)("sorts %s %s and keeps missing data last", (metric, sort, ids) => {
+    ["spend", "desc", ["high-scale", "high-conversion", "missing"], undefined],
+    ["installs", "desc", ["high-scale", "high-conversion", "missing"], "install"],
+    ["registrations", "desc", ["high-conversion", "high-scale", "missing"], "complete_registration"],
+    ["cpi", "asc", ["high-conversion", "high-scale", "missing"], "install"],
+    ["cpa", "asc", ["high-conversion", "high-scale", "missing"], "complete_registration"],
+    ["conversion", "desc", ["high-conversion", "high-scale", "missing"], "complete_registration"],
+  ] as const)("sorts %s %s and keeps missing data last", (metric, sort, ids, resultKey) => {
     expect(
       sortCreativeFamiliesForMetric(
         [missing, highConversion, highScale],
         metric,
         sort,
+        resultKey,
       ).map((item) => item.id),
     ).toEqual(ids);
   });

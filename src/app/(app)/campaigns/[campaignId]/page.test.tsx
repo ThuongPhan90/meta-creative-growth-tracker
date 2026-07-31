@@ -8,9 +8,69 @@ import {
 import { createTrackerRepository } from "@/lib/db";
 import CampaignDetailPage from "./page";
 
-vi.mock("@/lib/app-data", () => ({
-  getApplicationSnapshot: vi.fn(),
-}));
+vi.mock("@/lib/app-data", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/app-data")>();
+  return {
+    ...actual,
+    getApplicationSnapshot: vi.fn(),
+    getDeliveryForReport: vi.fn().mockResolvedValue([]),
+    getCanonicalResultsForReport: vi.fn().mockResolvedValue({
+      definitions: [],
+      values: [],
+      state: "demo_legacy_bridge",
+      warning: null,
+    }),
+    resolveApplicationReportContext: vi.fn((_snapshot, query) => ({
+      businessIds: [],
+      adAccountIds: [
+        Array.isArray(query.account)
+          ? query.account[0]
+          : query.account ?? "act_600000000000001",
+      ],
+      dateFrom: Array.isArray(query.from)
+        ? query.from[0]
+        : query.from ?? "2026-07-01",
+      dateTo: Array.isArray(query.to)
+        ? query.to[0]
+        : query.to ?? "2026-07-30",
+      compare: "previous_period",
+      compareMode: "previous_period",
+      objective: "all",
+      objectiveKey: "all",
+      currency: "VND",
+      currencyMode: "single",
+      account: "act_600000000000001",
+      reportingTimezoneMode: "account_local",
+      attributionSettingKey: "account_default",
+      actionReportTime: "mixed",
+      syncVersion: "sync_test",
+    })),
+    buildApplicationResultMetrics: vi.fn(() => ({
+      kpiCards: [],
+      dynamicTableColumns: [],
+      scatter: {
+        enabled: false,
+        x: {
+          metric: "spend",
+          label: "Spend",
+          valueType: "currency",
+        },
+        y: null,
+        bubbleSize: null,
+        unavailableReason: "all_objectives",
+      },
+      crossObjectiveSections: [],
+      availableResults: [],
+      metadata: {
+        resultAttribution: "meta_attributed",
+        costSortMode: "disabled_cross_objective",
+        currencyMode: "single",
+        primaryResultKey: null,
+      },
+    })),
+  };
+});
 
 vi.mock("@/lib/db", () => ({
   createTrackerRepository: vi.fn(),

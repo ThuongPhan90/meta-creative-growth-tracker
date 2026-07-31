@@ -10,20 +10,30 @@ import { notFound } from "next/navigation";
 import {
   campaignObjectiveLabel,
   campaignStatusPresentation,
-  primaryCampaignPerformance,
 } from "@/components/campaigns-v2";
 import { CopyIdButton } from "@/components/ui/copy-id-button";
-import { getApplicationSnapshot } from "@/lib/app-data";
+import {
+  buildApplicationResultMetrics,
+  getCanonicalResultsForReport,
+  getApplicationSnapshot,
+  getDeliveryForReport,
+  resolveApplicationReportContext,
+} from "@/lib/app-data";
 import { createTrackerRepository } from "@/lib/db";
 import { getDemoCampaignDetail } from "@/lib/demo-campaigns";
 import { canonicalDetailId } from "@/lib/detail-api";
-import { buildNavigationHref } from "@/lib/navigation";
 import {
+  buildContextHref,
+  buildNavigationHref,
+} from "@/lib/navigation";
+import {
+  formatCompactNumber,
   formatMoney,
   formatNumber,
+  formatPercent,
 } from "@/lib/presentation/formatters";
 import { campaignInventoryBackHref } from "@/lib/presentation/campaign-navigation";
-import { resolveReportContext } from "@/lib/reporting";
+import type { ResultKpiCard } from "@/lib/reporting";
 
 export const dynamic = "force-dynamic";
 
@@ -36,13 +46,29 @@ function queryHref(
   query: Record<string, string | string[] | undefined>,
   tab: string,
 ) {
-  const params = new URLSearchParams();
-  for (const [key, raw] of Object.entries(query)) {
-    const value = first(raw);
-    if (value && key !== "selected") params.set(key, value);
+  return buildContextHref(`/campaigns/${campaignId}`, query, {
+    selected: null,
+    tab,
+  });
+}
+
+function formatDynamicValue(
+  card: ResultKpiCard,
+  currency: string | null,
+) {
+  if (card.value === null) return "—";
+  if (card.valueType === "currency") {
+    return currency ? formatMoney(card.value, currency) : "—";
   }
-  params.set("tab", tab);
-  return `/campaigns/${campaignId}?${params.toString()}`;
+  if (card.valueType === "percent") {
+    return formatPercent(card.value);
+  }
+  if (card.valueType === "ratio") {
+    return `${card.value.toLocaleString("vi-VN", {
+      maximumFractionDigits: 2,
+    })}×`;
+  }
+  return formatCompactNumber(card.value);
 }
 
 export default async function CampaignDetailPage({
@@ -62,49 +88,75 @@ export default async function CampaignDetailPage({
   const campaignId = canonicalDetailId("campaign", route.campaignId);
   if (!campaignId) notFound();
 
-  const context = resolveReportContext({
-    query: {
-      from: first(query.from),
-      to: first(query.to),
-      account: first(query.account),
-      currency: first(query.currency),
-      compare: first(query.compare),
-    },
-    timeZone: snapshot.settings.timezone,
-    lookbackDays: snapshot.settings.lookbackDays,
-    reportingCurrency: snapshot.settings.currency,
-    compareDefault: snapshot.settings.compareDefault,
-  });
+  const context = resolveApplicationReportContext(snapshot, query);
   const connection = snapshot.connection;
-  const detail = snapshot.demoMode
-    ? getDemoCampaignDetail(campaignId)
-    : connection?.status === "connected"
-      ? await (async () => {
+  const detailPromise = snapshot.demoMode
+    ? Promise.resolve(getDemoCampaignDetail(campaignId))
+    : connection?.status === "connected" &&
+        context.adAccountIds.length
+      ? (async () => {
           const repository = await createTrackerRepository();
-          const [inventory, hierarchy] = await Promise.all([
-            repository.listCampaignInventory({
-              connectionId: connection.connectionId,
-              dateFrom: context.dateFrom,
-              dateTo: context.dateTo,
-              currency: context.currency || undefined,
-              search: campaignId,
-              includeInactiveAccounts: true,
-              limit: 20,
-              offset: 0,
-            }),
+          const [inventories, hierarchy] = await Promise.all([
+            Promise.all(
+              context.adAccountIds.map((accountMetaId) =>
+                repository.listCampaignInventory({
+                  connectionId: connection.connectionId,
+                  dateFrom: context.dateFrom,
+                  dateTo: context.dateTo,
+                  currency: context.currency || undefined,
+                  attributionWindow: context.attributionSettingKey,
+                  actionReportTime: context.actionReportTime,
+                  syncVersion: context.syncVersion,
+                  accountMetaId,
+                  search: campaignId,
+                  includeInactiveAccounts: true,
+                  limit: 20,
+                  offset: 0,
+                }),
+              ),
+            ),
             repository.getCampaignHierarchy(
               connection.connectionId,
               campaignId,
             ),
           ]);
-          const campaign = inventory.items.find(
-            (item) => item.metaCampaignId === campaignId,
-          );
+          const campaign = inventories
+            .flatMap((inventory) => inventory.items)
+            .find((item) => item.metaCampaignId === campaignId);
 
-          return campaign && hierarchy ? { campaign, hierarchy } : null;
+          return campaign && hierarchy
+            ? { campaign, hierarchy }
+            : null;
         })()
-      : null;
-  if (!detail) notFound();
+      : Promise.resolve(null);
+  const [detail, delivery, canonicalResults] = await Promise.all([
+    detailPromise,
+    getDeliveryForReport({
+      snapshot,
+      dateFrom: context.dateFrom,
+      dateTo: context.dateTo,
+      accountMetaIds: context.adAccountIds,
+      campaignMetaId: campaignId,
+      currency: context.currency || null,
+      attributionWindow: context.attributionSettingKey,
+      actionReportTime: context.actionReportTime,
+      syncVersion: context.syncVersion,
+      reportContext: context,
+    }),
+    getCanonicalResultsForReport({
+      snapshot,
+      context,
+      campaignMetaIds: [campaignId],
+    }),
+  ]);
+  if (
+    !detail ||
+    !context.adAccountIds.includes(
+      detail.campaign.metaAdAccountId,
+    )
+  ) {
+    notFound();
+  }
   const { campaign, hierarchy } = detail;
 
   const tab = ["summary", "structure", "creatives"].includes(
@@ -112,7 +164,19 @@ export default async function CampaignDetailPage({
   )
     ? first(query.tab)!
     : "summary";
-  const performance = primaryCampaignPerformance(campaign);
+  const resultMetrics = buildApplicationResultMetrics({
+    context,
+    delivery,
+    definitions: canonicalResults.definitions,
+    periodReach: canonicalResults.periodReach,
+    ...(canonicalResults.state === "demo_legacy_bridge"
+      ? {}
+      : { canonicalResults: canonicalResults.values }),
+  });
+  const currency =
+    resultMetrics.metadata.currencyMode === "single"
+      ? context.currency || campaign.performance[0]?.currency || null
+      : null;
   const presentation = campaignStatusPresentation(campaign);
   const creativeIds = [
     ...new Set(
@@ -151,46 +215,19 @@ export default async function CampaignDetailPage({
         </div>
       </header>
       <section className="v2-kpi-grid">
-        <article className="v2-kpi">
-          <span className="v2-kpi__label">Spend</span>
-          <strong>
-            {performance
-              ? formatMoney(performance.spend, performance.currency)
-              : "—"}
-          </strong>
-          <small>{context.dateFrom} – {context.dateTo}</small>
-        </article>
-        <article className="v2-kpi">
-          <span className="v2-kpi__label">Install</span>
-          <strong>{formatNumber(performance?.installs ?? 0)}</strong>
-          <small>Meta-attributed</small>
-        </article>
-        <article className="v2-kpi">
-          <span className="v2-kpi__label">Registration</span>
-          <strong>{formatNumber(performance?.registrations ?? 0)}</strong>
-          <small>Meta-attributed</small>
-        </article>
-        <article className="v2-kpi">
-          <span className="v2-kpi__label">CPI</span>
-          <strong>
-            {performance
-              ? formatMoney(performance.cpi, performance.currency)
-              : "—"}
-          </strong>
-          <small>Spend / Install</small>
-        </article>
-        <article className="v2-kpi">
-          <span className="v2-kpi__label">CPA Registration</span>
-          <strong>
-            {performance
-              ? formatMoney(
-                  performance.costPerRegistration,
-                  performance.currency,
-                )
-              : "—"}
-          </strong>
-          <small>Spend / Registration</small>
-        </article>
+        {resultMetrics.kpiCards.map((card) => (
+          <article className="v2-kpi" title={card.formula} key={card.key}>
+            <span className="v2-kpi__label">{card.label}</span>
+            <strong>{formatDynamicValue(card, currency)}</strong>
+            <small>
+              {card.unavailableReason === "split_currency"
+                ? "Chọn một tiền tệ để so sánh"
+                : card.attribution === "meta_attributed"
+                  ? "Meta-attributed · Chỉ đọc"
+                  : card.formula}
+            </small>
+          </article>
+        ))}
         <article className="v2-kpi">
           <span className="v2-kpi__label">Creative Family</span>
           <strong>{formatNumber(creativeIds.length)}</strong>
