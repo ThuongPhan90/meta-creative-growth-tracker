@@ -62,11 +62,13 @@ describe("Data Health coverage", () => {
       covered: 1,
       total: 2,
       ratio: 0.5,
+      missingFamilyIds: ["cf_2"],
     });
     expect(coverage.find((item) => item.key === "ad")).toMatchObject({
       covered: 1,
       total: 2,
       ratio: 0.5,
+      missingFamilyIds: ["cf_2"],
     });
     expect(coverage.find((item) => item.key === "creative")).toMatchObject({
       covered: 2,

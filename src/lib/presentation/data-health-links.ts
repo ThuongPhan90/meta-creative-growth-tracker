@@ -55,16 +55,21 @@ export function dataHealthEntityHref(
     destination = "/sources?tab=connection";
   }
   else if (
-    entity.entityType === "campaign" &&
-    /^\d{1,32}$/.test(entity.entityId)
+    entity.entityType === "campaign"
   ) {
-    destination = `/campaigns/${id}`;
+    destination = /^\d{1,32}$/.test(entity.entityId)
+      ? `/campaigns/${id}`
+      : `/campaigns?q=${id}`;
+  }
+  else if (entity.entityType === "ad_set") {
+    destination = "/campaigns";
   }
   else if (
-    entity.entityType === "creative_family" &&
-    /^cf_[a-f0-9]{24}$/.test(entity.entityId)
+    entity.entityType === "creative_family"
   ) {
-    destination = `/creatives/${id}`;
+    destination = /^cf_[a-f0-9]{24}$/.test(entity.entityId)
+      ? `/creatives/${id}`
+      : `/creatives?q=${id}`;
   }
   else if (
     entity.entityType === "meta_creative" ||
@@ -85,13 +90,20 @@ export function dataHealthEntityHref(
       destination = `/creatives/${encodeURIComponent(
         creativeFamilyId,
       )}?tab=${tab}`;
+    } else {
+      destination = `/creatives?q=${id}`;
     }
   }
   else if (entity.entityType === "event_mapping") {
-    destination = "/settings?tab=events";
+    destination = "/settings?tab=results";
+  }
+  else if (entity.entityType === "post") {
+    destination = "/creatives";
   }
 
-  if (!destination) return null;
+  // Canonical entity types should already be exhausted above. Keep a safe,
+  // related collection fallback so a future type can never create a dead end.
+  if (!destination) destination = `/data-health?q=${id}`;
   return context.query
     ? buildNavigationHref(destination, context.query)
     : destination;

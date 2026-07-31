@@ -9,7 +9,7 @@ import {
   detailSuccess,
   requireOwnerDetailSnapshot,
 } from "@/lib/detail-api";
-import { resolveReportContext } from "@/lib/reporting";
+import { resolveReportingRequest } from "@/lib/reporting";
 
 export const dynamic = "force-dynamic";
 
@@ -56,34 +56,72 @@ export async function GET(
       );
     }
 
-    const context = resolveReportContext({
-      query: {
-        from: from ?? undefined,
-        to: to ?? undefined,
-        account:
-          request.nextUrl.searchParams.get("account") ?? undefined,
-      },
+    const latestSyncVersion =
+      snapshot.freshness.syncVersion ??
+      snapshot.syncRuns.find((run) =>
+        ["success", "partial"].includes(run.status),
+      )?.id ??
+      "never";
+    const scope = snapshot.reportingScope;
+    const scopedCurrencies = new Set(
+      (scope?.available.adAccounts ?? [])
+        .filter((account) =>
+          scope?.selected.adAccountIds.includes(account.id),
+        )
+        .map((account) => account.currency.trim().toUpperCase())
+        .filter((currency) => /^[A-Z]{3}$/.test(currency)),
+    );
+    const defaultScopeCurrency =
+      scopedCurrencies.size === 1
+        ? [...scopedCurrencies][0]
+        : undefined;
+    const reporting = resolveReportingRequest({
+      searchParams: request.nextUrl.searchParams,
       timeZone: snapshot.settings.timezone,
       lookbackDays: snapshot.settings.lookbackDays,
+      reportingCurrency:
+        scopedCurrencies.size > 1
+          ? null
+          : defaultScopeCurrency ?? snapshot.settings.currency,
+      compareDefault: snapshot.settings.compareDefault,
+      defaults: {
+        businessIds: scope?.selected.businessIds ?? [],
+        adAccountIds: scope?.selected.adAccountIds ?? [],
+        currencyMode:
+          request.nextUrl.searchParams.has("currency") ||
+          scopedCurrencies.size === 1
+            ? "single"
+            : "split",
+        ...(defaultScopeCurrency
+          ? { currency: defaultScopeCurrency }
+          : {}),
+        syncVersion: latestSyncVersion,
+      },
     });
+    const context = reporting.context;
     const rows = await getCreativeFamilyRowsForReport({
       snapshot,
       repository,
       creativeFamilyId: id,
       dateFrom: context.dateFrom,
       dateTo: context.dateTo,
-      currency:
-        request.nextUrl.searchParams.get("currency")?.trim() ||
-        undefined,
-      accountMetaId: context.account || undefined,
+      currency: context.currency || undefined,
+      ...(context.adAccountIds.length
+        ? { accountMetaIds: context.adAccountIds }
+        : {}),
       campaignMetaId:
         request.nextUrl.searchParams.get("campaign")?.trim() ||
         undefined,
+      attributionWindow: context.attributionSettingKey,
+      actionReportTime: context.actionReportTime,
+      syncVersion: context.syncVersion,
+      reportContext: context,
     });
     const detail = creativeFamilyContract(
       id,
       rows ?? [],
       snapshot.freshness,
+      context,
     );
     if (!detail) {
       throw new DetailApiError(

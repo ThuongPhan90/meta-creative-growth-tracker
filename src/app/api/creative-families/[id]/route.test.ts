@@ -14,7 +14,25 @@ const snapshot = {
     syncStatus: "healthy",
     freshnessSeconds: 300,
     syncMode: "scheduled",
+    syncVersion: "run-9",
   },
+  syncRuns: [],
+};
+
+const reportingContext = {
+  businessIds: ["bm_1"],
+  adAccountIds: ["act_1"],
+  dateFrom: "2026-07-01",
+  dateTo: "2026-07-30",
+  compareMode: "none",
+  objectiveKey: "leads",
+  primaryResultKey: "lead",
+  currency: "VND",
+  currencyMode: "single",
+  reportingTimezoneMode: "account_local",
+  attributionSettingKey: "7d_click_1d_view",
+  actionReportTime: "mixed",
+  syncVersion: "run-9",
 };
 
 const mocks = vi.hoisted(() => ({
@@ -32,11 +50,7 @@ const mocks = vi.hoisted(() => ({
   detailErrorResponse: vi.fn(
     () => Response.json({ ok: false }, { status: 500 }),
   ),
-  resolveReportContext: vi.fn(() => ({
-    dateFrom: "2026-07-01",
-    dateTo: "2026-07-30",
-    account: "act_1",
-  })),
+  resolveReportingRequest: vi.fn(),
 }));
 
 vi.mock("@/lib/app-data", () => ({
@@ -52,10 +66,11 @@ vi.mock("@/lib/detail-api", () => ({
   requireOwnerDetailSnapshot: mocks.requireOwnerDetailSnapshot,
 }));
 vi.mock("@/lib/reporting", () => ({
-  resolveReportContext: mocks.resolveReportContext,
+  resolveReportingRequest: mocks.resolveReportingRequest,
 }));
 
 import { GET } from "./route";
+import { GET as REPORTING_GET } from "../../reporting/creatives/[id]/route";
 
 describe("Creative Family detail API", () => {
   beforeEach(() => {
@@ -67,13 +82,21 @@ describe("Creative Family detail API", () => {
     mocks.getCreativeFamilyRowsForReport.mockResolvedValue([
       { creativeFamilyId: familyId },
     ]);
+    mocks.resolveReportingRequest.mockReturnValue({
+      context: reportingContext,
+      resolved: reportingContext,
+      warnings: [],
+    });
   });
 
   it("uses owner-bound exact lookup with the full reporting context", async () => {
     const request = new NextRequest(
       `https://tracker.example/api/creative-families/${familyId}` +
         "?from=2026-07-01&to=2026-07-30" +
-        "&account=act_1&campaign=campaign_1&currency=VND",
+        "&account=act_1&campaign=campaign_1&currency=VND" +
+        "&objective=leads&result=lead" +
+        "&attribution=7d_click_1d_view" +
+        "&action_report_time=mixed&sync_version=run-9",
     );
 
     const response = await GET(request, {
@@ -84,6 +107,16 @@ describe("Creative Family detail API", () => {
     expect(mocks.requireOwnerDetailSnapshot).toHaveBeenCalledWith(
       request,
     );
+    expect(mocks.resolveReportingRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        searchParams: request.nextUrl.searchParams,
+        timeZone: "Asia/Ho_Chi_Minh",
+        lookbackDays: 30,
+        defaults: expect.objectContaining({
+          syncVersion: "run-9",
+        }),
+      }),
+    );
     expect(mocks.getCreativeFamilyRowsForReport).toHaveBeenCalledWith({
       snapshot,
       repository,
@@ -91,12 +124,26 @@ describe("Creative Family detail API", () => {
       dateFrom: "2026-07-01",
       dateTo: "2026-07-30",
       currency: "VND",
-      accountMetaId: "act_1",
+      accountMetaIds: ["act_1"],
       campaignMetaId: "campaign_1",
+      attributionWindow: "7d_click_1d_view",
+      actionReportTime: "mixed",
+      syncVersion: "run-9",
+      reportContext: reportingContext,
     });
+    expect(mocks.creativeFamilyContract).toHaveBeenCalledWith(
+      familyId,
+      [{ creativeFamilyId: familyId }],
+      snapshot.freshness,
+      reportingContext,
+    );
     expect(mocks.detailSuccess).toHaveBeenCalledWith({
       creative_family_id: familyId,
       result_truncated: false,
     });
+  });
+
+  it("keeps the legacy handler separate from the standardized reporting envelope", () => {
+    expect(REPORTING_GET).not.toBe(GET);
   });
 });

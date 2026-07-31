@@ -1,4 +1,11 @@
-import { buildDataHealthIssueDetailsFromRuns } from "@/lib/data-contract";
+import {
+  buildDataHealthIssueDetailsFromRuns,
+  createCreativeFamilyIdentity,
+} from "@/lib/data-contract";
+import type {
+  EvaluationExplanation,
+  ReportingContext,
+} from "@/lib/reporting";
 import type {
   CreativeRow,
   DataConfidence,
@@ -76,10 +83,51 @@ function ratingContract(explanation: RatingExplanation | null | undefined) {
   };
 }
 
+function evaluationContract(
+  explanation: EvaluationExplanation | null | undefined,
+) {
+  if (!explanation) return null;
+  return {
+    result_key: explanation.resultKey,
+    metric_key: explanation.metricKey,
+    actual_value: explanation.actualValue,
+    benchmark_value: explanation.benchmarkValue,
+    delta_percent: explanation.deltaPercent,
+    peer_group_label: explanation.peerGroupLabel,
+    sample_size: explanation.sampleSize,
+    eligibility: explanation.eligibility,
+    data_confidence: explanation.dataConfidence,
+    performance_status: explanation.performanceStatus,
+    fatigue_status: explanation.fatigueStatus,
+    recommendation_key: explanation.recommendationKey,
+    reasons: explanation.reasons,
+  };
+}
+
+function reportingContextContract(context: ReportingContext | undefined) {
+  if (!context) return null;
+  return {
+    business_ids: context.businessIds,
+    ad_account_ids: context.adAccountIds,
+    date_from: context.dateFrom,
+    date_to: context.dateTo,
+    compare_mode: context.compareMode,
+    objective_key: context.objectiveKey,
+    primary_result_key: context.primaryResultKey ?? null,
+    currency: context.currency ?? null,
+    currency_mode: context.currencyMode,
+    reporting_timezone_mode: context.reportingTimezoneMode,
+    attribution_setting_key: context.attributionSettingKey,
+    action_report_time: context.actionReportTime,
+    sync_version: context.syncVersion,
+  };
+}
+
 export function creativeFamilyContract(
   creativeFamilyId: string,
   rows: readonly CreativeRow[],
   freshness: Freshness,
+  reportingContext?: ReportingContext,
 ) {
   const variants = rows.filter(
     (row) => row.creativeFamilyId === creativeFamilyId,
@@ -88,11 +136,42 @@ export function creativeFamilyContract(
   if (!primary) return null;
 
   const entityLinks = primary.entityLinks;
+  let identity: ReturnType<typeof createCreativeFamilyIdentity>;
+  try {
+    identity = createCreativeFamilyIdentity({
+      assetKey: primary.assetKey,
+      internalStableIdentifier:
+        entityLinks?.assetId ?? creativeFamilyId,
+    });
+  } catch {
+    identity = createCreativeFamilyIdentity({
+      internalStableIdentifier:
+        entityLinks?.assetId ?? creativeFamilyId,
+    });
+  }
+  const hasCanonicalResultValues = variants.some(
+    (variant) =>
+      variant.performance?.resultValues !== undefined,
+  );
+  const canonicalResultValues = variants.flatMap((variant) => {
+    const performance = variant.performance;
+    if (!performance?.resultValues) return [];
+    return Object.entries(performance.resultValues)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([canonicalResultKey, value]) => ({
+        variant_id: variant.id,
+        currency: performance.currency,
+        canonical_result_key: canonicalResultKey,
+        value,
+      }));
+  });
   return {
     creative_family_id: creativeFamilyId,
     display_name: primary.name,
     asset_id: entityLinks?.assetId ?? null,
     asset_key: primary.assetKey,
+    canonical_identity: identity.canonicalIdentity,
+    identity_source: identity.source,
     aliases: primary.aliases,
     format: primary.format,
     preview: {
@@ -117,6 +196,7 @@ export function creativeFamilyContract(
           page_ids: entityLinks.pageIds,
         }
       : null,
+    result_values: canonicalResultValues,
     variants: variants.map((variant) => ({
       variant_id: variant.id,
       platform: variant.platform,
@@ -137,6 +217,13 @@ export function creativeFamilyContract(
             cpi: variant.performance.cpi,
             cost_per_registration:
               variant.performance.costPerRegistration,
+            result_values: hasCanonicalResultValues
+              ? { ...(variant.performance.resultValues ?? {}) }
+              : {
+                  install: variant.performance.installs,
+                  complete_registration:
+                    variant.performance.registrations,
+                },
             hook_rate: variant.performance.hookRate,
             hold_rate: variant.performance.holdRate,
             os_baseline_cpi: variant.performance.osBaselineCpi,
@@ -146,9 +233,13 @@ export function creativeFamilyContract(
             rating_explanation: ratingContract(
               variant.performance.ratingExplanation,
             ),
+            evaluation: evaluationContract(
+              variant.performance.evaluation,
+            ),
           }
         : null,
     })),
+    reporting_context: reportingContextContract(reportingContext),
     freshness: freshnessContract(freshness),
   };
 }

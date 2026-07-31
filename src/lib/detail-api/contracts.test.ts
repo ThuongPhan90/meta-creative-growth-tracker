@@ -5,6 +5,7 @@ import type {
   Freshness,
   SyncRunView,
 } from "@/types/view-models";
+import type { ReportingContext } from "@/lib/reporting";
 import {
   canonicalDetailId,
   creativeFamilyContract,
@@ -88,6 +89,157 @@ describe("detail API contracts", () => {
       },
     });
     expect(detail?.variants).toHaveLength(2);
+  });
+
+  it("keeps canonical Result values authoritative across OS and currency variants", () => {
+    const familyId = "cf_0123456789abcdef01234567";
+    const context: ReportingContext = {
+      businessIds: ["bm_1"],
+      adAccountIds: ["act_1"],
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-30",
+      compareMode: "none",
+      objectiveKey: "leads",
+      primaryResultKey: "lead",
+      currency: "USD",
+      currencyMode: "single",
+      reportingTimezoneMode: "account_local",
+      attributionSettingKey: "7d_click_1d_view",
+      actionReportTime: "mixed",
+      syncVersion: "run-9",
+    };
+    const base: Omit<CreativeRow, "id" | "platform" | "performance"> = {
+      creativeFamilyId: familyId,
+      name: "Lead asset",
+      assetKey: "image:lead",
+      aliases: ["Lead asset"],
+      format: "Banner",
+      linkLabel: "Đang chạy",
+      linkCount: 2,
+      currentAdCount: 2,
+      activeAdCount: 2,
+      readiness: "Sẵn sàng",
+      performanceLabel: "Đã có dữ liệu",
+      imageUrl: "/creative-placeholder.svg",
+      duration: null,
+      ratio: "1:1",
+      pageName: "Growth Page",
+      eventMapping: { install: true, registration: true },
+    };
+    const performanceBase = {
+      spend: 100,
+      impressions: 5_000,
+      dailyReachSum: 4_000,
+      linkCtr: 2,
+      installs: 99,
+      registrations: 50,
+      cpi: 1,
+      costPerRegistration: 2,
+      hookRate: null,
+      holdRate: null,
+      osBaselineCpi: null,
+      rating: null,
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-30",
+    } as const;
+    const rows: CreativeRow[] = [
+      {
+        ...base,
+        id: "variant-usd-android",
+        platform: "Android",
+        performance: {
+          ...performanceBase,
+          currency: "USD",
+          resultValues: { lead: 10 },
+          evaluation: {
+            resultKey: "lead",
+            metricKey: "cost_per_result",
+            actualValue: 10,
+            benchmarkValue: 12,
+            deltaPercent: -16.67,
+            peerGroupLabel: "Account · Leads · USD",
+            sampleSize: 4,
+            eligibility: "eligible",
+            dataConfidence: "high",
+            performanceStatus: "above_benchmark",
+            fatigueStatus: "insufficient",
+            recommendationKey: "scale_controlled",
+            reasons: ["Cost/Lead thấp hơn benchmark."],
+          },
+        },
+      },
+      {
+        ...base,
+        id: "variant-usd-ios",
+        platform: "iOS",
+        performance: {
+          ...performanceBase,
+          currency: "USD",
+          // Canonical values are intentionally absent on the second OS row.
+          // Once any Family row has them, legacy installs must not leak in.
+        },
+      },
+      {
+        ...base,
+        id: "variant-vnd-android",
+        platform: "Android",
+        performance: {
+          ...performanceBase,
+          currency: "VND",
+          resultValues: { lead: 20 },
+          evaluation: null,
+        },
+      },
+    ];
+
+    const detail = creativeFamilyContract(
+      familyId,
+      rows,
+      freshness,
+      context,
+    );
+
+    expect(detail?.result_values).toEqual([
+      {
+        variant_id: "variant-usd-android",
+        currency: "USD",
+        canonical_result_key: "lead",
+        value: 10,
+      },
+      {
+        variant_id: "variant-vnd-android",
+        currency: "VND",
+        canonical_result_key: "lead",
+        value: 20,
+      },
+    ]);
+    expect(detail?.variants[1]?.performance?.result_values).toEqual({});
+    expect(detail?.variants[1]?.performance?.result_values).not.toEqual({
+      install: 99,
+    });
+    expect(detail?.variants[0]?.performance?.evaluation).toMatchObject({
+      result_key: "lead",
+      metric_key: "cost_per_result",
+      peer_group_label: "Account · Leads · USD",
+      sample_size: 4,
+      performance_status: "above_benchmark",
+      recommendation_key: "scale_controlled",
+    });
+    expect(detail?.reporting_context).toEqual({
+      business_ids: ["bm_1"],
+      ad_account_ids: ["act_1"],
+      date_from: "2026-07-01",
+      date_to: "2026-07-30",
+      compare_mode: "none",
+      objective_key: "leads",
+      primary_result_key: "lead",
+      currency: "USD",
+      currency_mode: "single",
+      reporting_timezone_mode: "account_local",
+      attribution_setting_key: "7d_click_1d_view",
+      action_report_time: "mixed",
+      sync_version: "run-9",
+    });
   });
 
   it("aggregates repeated sync warnings into a stable issue detail", () => {
