@@ -10,6 +10,7 @@ export type CoverageDimension = {
   total: number;
   ratio: number;
   detail: string;
+  missingFamilyIds: string[];
 };
 
 function ratio(covered: number, total: number) {
@@ -50,6 +51,7 @@ export function buildDataHealthCoverage(
   }
 
   const familyValues = [...families.values()];
+  const familyEntries = [...families.entries()];
   const familyTotal = familyValues.length;
   const campaignCovered = familyValues.filter(
     (family) => family.campaignLinked,
@@ -75,6 +77,9 @@ export function buildDataHealthCoverage(
       total: familyTotal,
       ratio: ratio(campaignCovered, familyTotal),
       detail: `${campaignCovered}/${familyTotal} Creative Family có liên kết Campaign`,
+      missingFamilyIds: familyEntries
+        .filter(([, family]) => !family.campaignLinked)
+        .map(([familyId]) => familyId),
     },
     {
       key: "ad",
@@ -83,6 +88,9 @@ export function buildDataHealthCoverage(
       total: familyTotal,
       ratio: ratio(adCovered, familyTotal),
       detail: `${adCovered}/${familyTotal} Creative Family có liên kết Ad`,
+      missingFamilyIds: familyEntries
+        .filter(([, family]) => !family.adLinked)
+        .map(([familyId]) => familyId),
     },
     {
       key: "creative",
@@ -91,14 +99,18 @@ export function buildDataHealthCoverage(
       total: familyTotal,
       ratio: ratio(creativeCovered, familyTotal),
       detail: `${creativeCovered}/${familyTotal} Creative Family có ID canonical`,
+      missingFamilyIds: familyEntries
+        .filter(([, family]) => !family.canonical)
+        .map(([familyId]) => familyId),
     },
     {
       key: "event",
-      label: "Event coverage",
+      label: "Result mapping coverage",
       covered: eventCovered,
       total: eventTotal,
       ratio: ratio(eventCovered, eventTotal),
-      detail: `${eventCovered}/${eventTotal} mapping Install/Registration theo OS sẵn sàng`,
+      detail: `${eventCovered}/${eventTotal} mapping Result theo Objective sẵn sàng`,
+      missingFamilyIds: [],
     },
   ];
 }

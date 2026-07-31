@@ -6,7 +6,9 @@ import {
   createTrackerRepository,
   type CreativeLibraryItem,
   type CreativePerformanceItem,
+  type CanonicalCreativeFamilyResultTotals,
   type DeliveryPerformanceItem,
+  type DeliveryTrendItem,
   type MetaConnectionRecord,
   type SyncRunRecord,
   type TrackerRepository,
@@ -21,12 +23,35 @@ import {
 } from "@/lib/demo-data";
 import {
   baselineKey,
+  enrichCreativeFamiliesWithCanonicalResults,
+  buildDynamicResultMetrics,
   computeOsCpiBaselines,
   computeScopedCpiBaselines,
+  DEFAULT_OBJECTIVE_REGISTRY,
+  DEFAULT_RESULT_DEFINITIONS,
+  buildCanonicalReportingScope,
   explainCreativeRating,
+  objectiveDatabaseKeys,
   rateCreativeCpi,
+  resolveReportContext,
+  resolvePrimaryResult,
   scopedBaselineKey,
+  summarizeDelivery,
+  withDeliveryBackedResultValues,
+  type CanonicalReportingScope,
+  type CanonicalResultValue,
+  type AccountCreativePerformance,
+  type DynamicResultMetricsModel,
+  type ReportingContext,
+  type ResultDefinition,
+  type ResolvedReportContext,
+  type ReportingScopeInventory,
 } from "@/lib/reporting";
+import { computeResultMappingVersion } from "@/lib/db/result-mapping-version";
+import {
+  bridgeLegacyTrendPoints,
+  withCanonicalCreativeResultValues,
+} from "@/lib/reporting/legacy-result-bridge";
 import {
   createCreativeFamilyIdentity,
   createFreshness,
@@ -66,6 +91,46 @@ const DEFAULT_REGISTRATION_ACTION_TYPES = [
   "mobile_app_complete_registration",
 ];
 
+type LegacyTrendPoint = {
+  date: string;
+  currency: string;
+  spend: number;
+  impressions: number;
+  linkClicks: number;
+  installs: number;
+  registrations: number;
+};
+
+function bridgeLegacyTrendPointsForApp({
+  points,
+  context,
+  definitions,
+}: {
+  points: readonly LegacyTrendPoint[];
+  context: ReportingContext | undefined;
+  definitions: readonly ResultDefinition[];
+}) {
+  const canonical = bridgeLegacyTrendPoints({
+    points,
+    context,
+    definitions,
+  });
+
+  return canonical.map((point, index) => {
+    const legacy = points[index];
+    const installs = legacy?.installs ?? 0;
+    const registrations = legacy?.registrations ?? 0;
+    return {
+      ...point,
+      installs,
+      registrations,
+      cpi: installs > 0 ? point.spend / installs : null,
+      costPerRegistration:
+        registrations > 0 ? point.spend / registrations : null,
+    };
+  });
+}
+
 export type ApplicationSnapshot = {
   demoMode: boolean;
   authenticated: boolean;
@@ -78,6 +143,7 @@ export type ApplicationSnapshot = {
   syncRuns: SyncRunView[];
   setupChecks: SetupCheck[];
   freshness: Freshness;
+  reportingScope: CanonicalReportingScope | null;
   settings: {
     timezone: string;
     lookbackDays: number;
@@ -96,6 +162,156 @@ const EMPTY_FRESHNESS: Freshness = {
   freshnessSeconds: null,
   syncMode: "manual",
 };
+
+function scopeInventoryFromAssets(
+  assets: readonly MetaAssetRow[],
+): ReportingScopeInventory {
+  const businesses = assets.filter((asset) => asset.kind === "Business");
+  const businessIdByName = new Map(
+    businesses.map((business) => [business.name, business.id]),
+  );
+  const adAccounts = assets.filter(
+    (asset) => asset.kind === "Ad Account",
+  );
+
+  return {
+    businesses: businesses.map((business) => ({
+      id: business.id,
+      name: business.name,
+      isActive: business.isCurrent !== false,
+      adAccountIds: adAccounts
+        .filter((account) => account.parentName === business.name)
+        .map((account) => account.id),
+    })),
+    adAccounts: adAccounts.map((account) => ({
+      id: account.id,
+      name: account.name,
+      isActive: account.isCurrent !== false,
+      accountStatus: null,
+      currency: account.currency ?? "UNKNOWN",
+      timezone: account.timezone ?? "UTC",
+      businessIds: account.parentName
+        ? [businessIdByName.get(account.parentName)].filter(
+            (value): value is string => Boolean(value),
+          )
+        : [],
+    })),
+  };
+}
+
+function defaultAllReportingScope(
+  inventory: ReportingScopeInventory,
+): CanonicalReportingScope {
+  return buildCanonicalReportingScope({
+    inventory,
+    override: {
+      businessIds: inventory.businesses.map((business) => business.id),
+      adAccountIds: inventory.adAccounts.map((account) => account.id),
+    },
+  });
+}
+
+type ApplicationSearchParams = Record<
+  string,
+  string | string[] | undefined
+>;
+
+function firstQueryValue(
+  value: string | string[] | undefined,
+): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function queryIdList(
+  value: string | string[] | undefined,
+): string[] | undefined {
+  if (value === undefined) return undefined;
+  return (Array.isArray(value) ? value : [value])
+    .flatMap((item) => item.split(","))
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Resolves every reporting page from the same URL + persisted-scope +
+ * snapshot defaults. A multi-currency scope defaults to split mode so money
+ * is never silently added or ranked across currencies.
+ */
+export function resolveApplicationReportContext(
+  snapshot: ApplicationSnapshot,
+  query: ApplicationSearchParams,
+): ResolvedReportContext {
+  const persistedBusinessIds =
+    snapshot.reportingScope?.selected.businessIds ?? [];
+  const persistedAccountIds =
+    snapshot.reportingScope?.selected.adAccountIds ?? [];
+  const urlAccountIds =
+    queryIdList(query.account_ids) ??
+    (firstQueryValue(query.account)
+      ? [firstQueryValue(query.account)!]
+      : undefined);
+  const effectiveAccountIds = urlAccountIds ?? persistedAccountIds;
+  const selectedCurrencies = new Set(
+    (snapshot.reportingScope?.available.adAccounts ?? [])
+      .filter((account) => effectiveAccountIds.includes(account.id))
+      .map((account) => account.currency.trim().toUpperCase())
+      .filter((currency) => /^[A-Z]{3}$/.test(currency)),
+  );
+  const explicitCurrency = firstQueryValue(query.currency)
+    ?.trim()
+    .toUpperCase();
+  const defaultCurrency =
+    selectedCurrencies.size === 1
+      ? [...selectedCurrencies][0]
+      : null;
+  const currencyMode =
+    explicitCurrency || selectedCurrencies.size === 1
+      ? "single"
+      : "split";
+
+  const context = resolveReportContext({
+    query: {
+      from: query.from,
+      to: query.to,
+      businessIds: query.business_ids,
+      adAccountIds: query.account_ids,
+      account: query.account,
+      objectiveKey: query.objective,
+      primaryResultKey: query.result,
+      currency: query.currency,
+      compareMode: query.compare,
+      attributionSettingKey: query.attribution,
+      actionReportTime: query.action_report_time,
+      syncVersion: query.sync_version,
+    },
+    timeZone: snapshot.settings.timezone,
+    lookbackDays: snapshot.settings.lookbackDays,
+    reportingCurrency: explicitCurrency ?? defaultCurrency,
+    compareDefault: snapshot.settings.compareDefault,
+    defaults: {
+      businessIds: persistedBusinessIds,
+      adAccountIds: persistedAccountIds,
+      objectiveKey: "all",
+      currencyMode,
+      ...(explicitCurrency ?? defaultCurrency
+        ? { currency: explicitCurrency ?? defaultCurrency! }
+        : {}),
+      attributionSettingKey: "account_default",
+      actionReportTime: "mixed",
+      syncVersion: snapshot.freshness.syncVersion ?? "latest",
+    },
+  });
+  if (context.objectiveKey !== "all" && !context.primaryResultKey) {
+    const primary = resolvePrimaryResult({
+      campaignId: "workspace_default",
+      objectiveKey: context.objectiveKey,
+    });
+    if (primary.definition) {
+      context.primaryResultKey = primary.definition.canonicalKey;
+    }
+  }
+  return context;
+}
 
 function localDate(timeZone: string) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -216,6 +432,10 @@ async function loadPerformance(
   currency: string | null,
   accountMetaId?: string,
   campaignMetaId?: string,
+  attributionWindow?: string,
+  actionReportTime?: "impression" | "conversion" | "mixed",
+  syncVersion?: string,
+  objectiveRawKeys?: readonly string[],
 ) {
   const items: CreativePerformanceItem[] = [];
   for (let offset = 0; offset <= MAX_VIEW_ROWS; offset += PAGE_SIZE) {
@@ -227,6 +447,11 @@ async function loadPerformance(
       currency: currency ?? undefined,
       accountMetaId: accountMetaId || undefined,
       campaignMetaId: campaignMetaId || undefined,
+      attributionWindow: attributionWindow || undefined,
+      actionReportTime,
+      syncVersion: syncVersion || undefined,
+      objectiveRawKeys:
+        objectiveRawKeys?.length ? objectiveRawKeys : undefined,
       limit,
       offset,
     });
@@ -239,29 +464,418 @@ async function loadPerformance(
   };
 }
 
+async function mapAccountBatches<T>(
+  accountIds: readonly string[],
+  mapper: (accountId: string) => Promise<T>,
+): Promise<T[]> {
+  const values: T[] = [];
+  for (let offset = 0; offset < accountIds.length; offset += 8) {
+    values.push(
+      ...(await Promise.all(
+        accountIds.slice(offset, offset + 8).map(mapper),
+      )),
+    );
+  }
+  return values;
+}
+
+function mergeDeliveryPerformance(
+  groups: readonly (readonly DeliveryPerformanceItem[])[],
+): DeliveryPerformanceItem[] {
+  const merged = new Map<string, DeliveryPerformanceItem>();
+  for (const item of groups.flat()) {
+    const key = `${item.operatingSystem}\u001f${item.currency}`;
+    const current = merged.get(key) ?? {
+      ...item,
+      spend: 0,
+      impressions: 0,
+      linkClicks: 0,
+      installs: 0,
+      registrations: 0,
+      video3sViews: 0,
+      video100Views: 0,
+      metricDays: 0,
+    };
+    current.spend += item.spend;
+    current.impressions += item.impressions;
+    current.linkClicks += item.linkClicks;
+    current.installs += item.installs;
+    current.registrations += item.registrations;
+    current.video3sViews += item.video3sViews;
+    current.video100Views += item.video100Views;
+    current.metricDays = Math.max(current.metricDays, item.metricDays);
+    merged.set(key, current);
+  }
+  return [...merged.values()];
+}
+
+function mergeCreativePerformance(
+  groups: readonly (readonly CreativePerformanceItem[])[],
+): CreativePerformanceItem[] {
+  const merged = new Map<string, CreativePerformanceItem>();
+  for (const item of groups.flat()) {
+    const key = [
+      item.creativeAssetId,
+      item.operatingSystem,
+      item.currency,
+    ].join("\u001f");
+    const current = merged.get(key) ?? {
+      ...item,
+      spend: 0,
+      impressions: 0,
+      dailyReachSum: 0,
+      linkClicks: 0,
+      installs: 0,
+      registrations: 0,
+      video3sViews: 0,
+      video100Views: 0,
+      linkCtr: null,
+      cpi: null,
+      costPerRegistration: null,
+      hookRate: null,
+      holdRate: null,
+      metricDays: 0,
+    };
+    current.spend += item.spend;
+    current.impressions += item.impressions;
+    current.dailyReachSum += item.dailyReachSum;
+    current.linkClicks += item.linkClicks;
+    current.installs += item.installs;
+    current.registrations += item.registrations;
+    current.video3sViews += item.video3sViews;
+    current.video100Views += item.video100Views;
+    current.metricDays = Math.max(current.metricDays, item.metricDays);
+    merged.set(key, current);
+  }
+
+  return [...merged.values()].map((item) => ({
+    ...item,
+    linkCtr:
+      item.impressions > 0
+        ? (item.linkClicks / item.impressions) * 100
+        : null,
+    cpi: item.installs > 0 ? item.spend / item.installs : null,
+    costPerRegistration:
+      item.registrations > 0
+        ? item.spend / item.registrations
+        : null,
+    hookRate:
+      item.assetType === "video" && item.impressions > 0
+        ? (item.video3sViews / item.impressions) * 100
+        : null,
+    holdRate:
+      item.assetType === "video" && item.video3sViews > 0
+        ? (item.video100Views / item.video3sViews) * 100
+        : null,
+  }));
+}
+
+function benchmarkDateFrom(dateTo: string, windowDays: number) {
+  const end = new Date(`${dateTo}T00:00:00.000Z`);
+  end.setUTCDate(
+    end.getUTCDate() - Math.max(1, Math.floor(windowDays)) + 1,
+  );
+  return end.toISOString().slice(0, 10);
+}
+
+function markLiveCanonicalCreativeResultsUnavailable(
+  rows: readonly CreativeRow[],
+): CreativeRow[] {
+  return rows.map((row) => ({
+    ...row,
+    performance: row.performance
+      ? {
+          ...row.performance,
+          resultValues: {},
+          evaluation: null,
+        }
+      : null,
+  }));
+}
+
+async function enrichLiveCreativeRowsForReport({
+  snapshot,
+  repository,
+  settings,
+  rows,
+  libraryItems,
+  requestedAccountIds,
+  context,
+  dateFrom,
+  dateTo,
+  effectiveCurrency,
+  campaignMetaId,
+}: {
+  snapshot: ApplicationSnapshot;
+  repository: TrackerRepository;
+  settings: TrackerSettings;
+  rows: readonly CreativeRow[];
+  libraryItems: readonly CreativeLibraryItem[];
+  requestedAccountIds: readonly string[] | undefined;
+  context: ReportingContext;
+  dateFrom: string;
+  dateTo: string;
+  effectiveCurrency: string | null;
+  campaignMetaId?: string;
+}): Promise<CreativeRow[]> {
+  if (
+    !snapshot.connection ||
+    !requestedAccountIds?.length ||
+    context.objectiveKey === "all" ||
+    !context.syncVersion ||
+    context.syncVersion === "latest"
+  ) {
+    return withCanonicalCreativeResultValues({
+      rows: markLiveCanonicalCreativeResultsUnavailable(rows),
+      context,
+      definitions: DEFAULT_RESULT_DEFINITIONS,
+      legacyBridge: false,
+    });
+  }
+
+  try {
+    const [definitions, mappings] = await Promise.all([
+      repository.listResultDefinitions(),
+      repository.listResultMappings(),
+    ]);
+    const enabledDefinitions = definitions.filter(
+      (definition) => definition.enabled,
+    );
+    const resultMappingVersion =
+      computeResultMappingVersion(mappings);
+    const baseFilters = {
+      connectionId: snapshot.connection.connectionId,
+      adAccountIds: requestedAccountIds,
+      objectiveKeys: [context.objectiveKey],
+      objectiveMappings: DEFAULT_OBJECTIVE_REGISTRY.map(
+        (objective) => ({
+          objectiveKey: objective.key,
+          rawObjectiveKeys: objective.rawObjectiveKeys,
+        }),
+      ),
+      ...(context.currency
+        ? { currency: context.currency }
+        : {}),
+      attributionWindow: context.attributionSettingKey,
+      actionReportTime: context.actionReportTime,
+      syncVersion: context.syncVersion,
+      resultMappingVersion,
+    } as const;
+    const actualResults =
+      await repository.getCanonicalCreativeFamilyResultTotals({
+        ...baseFilters,
+        dateFrom,
+        dateTo,
+        ...(campaignMetaId
+          ? { campaignMetaIds: [campaignMetaId] }
+          : {}),
+      });
+    const selectedDefinition =
+      context.primaryResultKey
+        ? enabledDefinitions.find(
+            (definition) =>
+              definition.canonicalKey ===
+                context.primaryResultKey &&
+              definition.objectiveKeys.includes(
+                context.objectiveKey,
+              ),
+          )
+        : null;
+    const needsBenchmark =
+      !!selectedDefinition &&
+      selectedDefinition.efficiencyMetric !== "none" &&
+      context.currencyMode === "single";
+    let benchmarkResults: CanonicalCreativeFamilyResultTotals =
+      actualResults;
+    let benchmarkPerformance: AccountCreativePerformance[] = [];
+    if (needsBenchmark) {
+      const benchmarkFrom = benchmarkDateFrom(
+        dateTo,
+        settings.benchmarkWindowDays,
+      );
+      const [resultBatch, performanceBatches] =
+        await Promise.all([
+          repository.getCanonicalCreativeFamilyResultTotals({
+            ...baseFilters,
+            dateFrom: benchmarkFrom,
+            dateTo,
+          }),
+          mapAccountBatches(
+            requestedAccountIds,
+            async (selectedAccountId) => ({
+              adAccountMetaId: selectedAccountId,
+              items: (
+                await loadPerformance(
+                  repository,
+                  snapshot.connection!.connectionId,
+                  benchmarkFrom,
+                  dateTo,
+                  effectiveCurrency,
+                  selectedAccountId,
+                  undefined,
+                  context.attributionSettingKey,
+                  context.actionReportTime,
+                  context.syncVersion,
+                  objectiveDatabaseKeys(context.objectiveKey),
+                )
+              ).items,
+            }),
+          ),
+        ]);
+      benchmarkResults = resultBatch;
+      benchmarkPerformance = performanceBatches;
+    }
+    const accountBusinessIds = Object.fromEntries(
+      (
+        snapshot.reportingScope?.available.adAccounts ?? []
+      ).map((account) => [
+        account.id,
+        account.businessIds,
+      ]),
+    );
+    const accountNames = Object.fromEntries(
+      snapshot.assets
+        .filter((asset) => asset.kind === "Ad Account")
+        .map((asset) => [asset.id, asset.name]),
+    );
+    const businessNames = Object.fromEntries(
+      snapshot.assets
+        .filter((asset) => asset.kind === "Business")
+        .map((asset) => [asset.id, asset.name]),
+    );
+    const enriched = enrichCreativeFamiliesWithCanonicalResults({
+      rows,
+      actualResults,
+      benchmarkResults,
+      benchmarkPerformance,
+      assetFamilyIds: Object.fromEntries(
+        libraryItems.map((item) => [
+          item.creativeAssetId,
+          item.creativeFamilyId ??
+            createCreativeFamilyIdentity({
+              assetKey: item.assetKey,
+              internalStableIdentifier:
+                item.creativeAssetId,
+            }).creativeFamilyId,
+        ]),
+      ),
+      accountBusinessIds,
+      context,
+      definitions: enabledDefinitions,
+      benchmarkWindowDays: settings.benchmarkWindowDays,
+      labels: {
+        accountNames,
+        businessNames,
+        selectedScope: `${requestedAccountIds.length} Ad Account đã chọn`,
+      },
+    });
+    return withCanonicalCreativeResultValues({
+      rows: enriched,
+      context,
+      definitions: enabledDefinitions,
+      legacyBridge: false,
+    });
+  } catch {
+    return withCanonicalCreativeResultValues({
+      rows: markLiveCanonicalCreativeResultsUnavailable(rows),
+      context,
+      definitions: DEFAULT_RESULT_DEFINITIONS,
+      legacyBridge: false,
+    });
+  }
+}
+
+function mergeDeliveryTrend(
+  groups: readonly (readonly DeliveryTrendItem[])[],
+): DeliveryTrendItem[] {
+  const merged = new Map<string, DeliveryTrendItem>();
+  for (const item of groups.flat()) {
+    const key = `${item.metricDate}\u001f${item.currency}`;
+    const current = merged.get(key) ?? {
+      ...item,
+      spend: 0,
+      impressions: 0,
+      linkClicks: 0,
+      installs: 0,
+      registrations: 0,
+      video3sViews: 0,
+      video100Views: 0,
+      linkCtr: null,
+      cpi: null,
+      costPerRegistration: null,
+    };
+    current.spend += item.spend;
+    current.impressions += item.impressions;
+    current.linkClicks += item.linkClicks;
+    current.installs += item.installs;
+    current.registrations += item.registrations;
+    current.video3sViews += item.video3sViews;
+    current.video100Views += item.video100Views;
+    merged.set(key, current);
+  }
+
+  return [...merged.values()]
+    .map((item) => ({
+      ...item,
+      linkCtr:
+        item.impressions > 0
+          ? (item.linkClicks / item.impressions) * 100
+          : null,
+      cpi: item.installs > 0 ? item.spend / item.installs : null,
+      costPerRegistration:
+        item.registrations > 0
+          ? item.spend / item.registrations
+          : null,
+    }))
+    .sort(
+      (left, right) =>
+        left.metricDate.localeCompare(right.metricDate) ||
+        left.currency.localeCompare(right.currency),
+    );
+}
+
 export async function getCreativeRowsForReport({
   snapshot,
   dateFrom,
   dateTo,
   accountMetaId,
+  accountMetaIds,
   campaignMetaId,
   currency,
+  attributionWindow,
+  actionReportTime,
+  syncVersion,
+  reportContext,
 }: {
   snapshot: ApplicationSnapshot;
   dateFrom: string;
   dateTo: string;
   accountMetaId?: string;
+  accountMetaIds?: readonly string[];
   campaignMetaId?: string;
   currency?: string | null;
+  attributionWindow?: string;
+  actionReportTime?: "impression" | "conversion" | "mixed";
+  syncVersion?: string;
+  reportContext?: ReportingContext;
 }): Promise<{
   creatives: CreativeRow[];
   truncated: boolean;
+  delivery: DeliveryPerformanceItem[];
 }> {
+  const requestedAccountIds =
+    accountMetaIds ??
+    (accountMetaId?.trim() ? [accountMetaId.trim()] : undefined);
+  const objectiveRawKeys = reportContext
+    ? objectiveDatabaseKeys(reportContext.objectiveKey)
+    : [];
   if (snapshot.demoMode) {
     const filtered = snapshot.creatives.filter((creative) => {
       if (
-        accountMetaId &&
-        !creative.entityLinks?.adAccountIds.includes(accountMetaId)
+        requestedAccountIds &&
+        !requestedAccountIds.some((id) =>
+          creative.entityLinks?.adAccountIds.includes(id),
+        )
       ) {
         return false;
       }
@@ -281,8 +895,7 @@ export async function getCreativeRowsForReport({
         creative.performance?.dateFrom &&
         dateTo < creative.performance.dateFrom,
     );
-    return {
-      creatives: isPreviousDemoPeriod
+    const periodCreatives = isPreviousDemoPeriod
         ? filtered.map((creative) => {
             if (!creative.performance) return creative;
             const spend = creative.performance.spend * 0.92;
@@ -307,8 +920,19 @@ export async function getCreativeRowsForReport({
               },
             };
           })
-        : filtered,
+        : filtered;
+    const creatives = reportContext
+      ? withCanonicalCreativeResultValues({
+          rows: periodCreatives,
+          context: reportContext,
+          definitions: DEFAULT_RESULT_DEFINITIONS,
+          legacyBridge: true,
+        })
+      : periodCreatives;
+    return {
+      creatives,
       truncated: false,
+      delivery: demoDeliveryPerformance(creatives),
     };
   }
 
@@ -320,52 +944,565 @@ export async function getCreativeRowsForReport({
     return {
       creatives: snapshot.creatives,
       truncated: snapshot.creativesTruncated,
+      delivery: [],
     };
   }
   const repository = await createTrackerRepository();
   const settings = await repository.getSettings();
   const effectiveCurrency =
     currency === undefined ? settings.reportingCurrency : currency;
-  const [libraryResult, performanceResult, delivery] = await Promise.all([
+  const [libraryResult, performanceGroups, deliveryGroups] = await Promise.all([
     loadCreativeLibrary(repository, snapshot.connection.connectionId),
-    loadPerformance(
-      repository,
-      snapshot.connection.connectionId,
-      dateFrom,
-      dateTo,
-      effectiveCurrency,
-      accountMetaId,
-      campaignMetaId,
-    ),
-    repository.getDeliveryPerformance({
-      connectionId: snapshot.connection.connectionId,
-      dateFrom,
-      dateTo,
-      currency: effectiveCurrency ?? undefined,
-      accountMetaId: accountMetaId || undefined,
-      campaignMetaId: campaignMetaId || undefined,
-    }),
+    requestedAccountIds
+      ? mapAccountBatches(requestedAccountIds, async (selectedAccountId) => {
+          const result = await loadPerformance(
+              repository,
+              snapshot.connection!.connectionId,
+              dateFrom,
+              dateTo,
+              effectiveCurrency,
+              selectedAccountId,
+              campaignMetaId,
+              attributionWindow,
+              actionReportTime,
+              syncVersion,
+              objectiveRawKeys,
+            );
+          return {
+            adAccountMetaId: selectedAccountId,
+            ...result,
+          };
+        },
+        )
+      : loadPerformance(
+          repository,
+          snapshot.connection.connectionId,
+          dateFrom,
+          dateTo,
+          effectiveCurrency,
+          undefined,
+          campaignMetaId,
+          attributionWindow,
+          actionReportTime,
+          syncVersion,
+          objectiveRawKeys,
+        ).then((result) => [
+          { adAccountMetaId: null, ...result },
+        ]),
+    requestedAccountIds
+      ? mapAccountBatches(requestedAccountIds, (selectedAccountId) =>
+          repository.getDeliveryPerformance({
+            connectionId: snapshot.connection!.connectionId,
+            dateFrom,
+            dateTo,
+            currency: effectiveCurrency ?? undefined,
+            accountMetaId: selectedAccountId,
+            campaignMetaId: campaignMetaId || undefined,
+            attributionWindow: attributionWindow || undefined,
+            actionReportTime,
+            syncVersion: syncVersion || undefined,
+            objectiveRawKeys:
+              objectiveRawKeys.length ? objectiveRawKeys : undefined,
+          }),
+        )
+      : repository
+          .getDeliveryPerformance({
+            connectionId: snapshot.connection.connectionId,
+            dateFrom,
+            dateTo,
+            currency: effectiveCurrency ?? undefined,
+            campaignMetaId: campaignMetaId || undefined,
+            attributionWindow: attributionWindow || undefined,
+            actionReportTime,
+            syncVersion: syncVersion || undefined,
+            objectiveRawKeys:
+              objectiveRawKeys.length ? objectiveRawKeys : undefined,
+          })
+          .then((result) => [result]),
   ]);
+  const mergedPerformance = mergeCreativePerformance(
+    performanceGroups.map((group) => group.items),
+  );
+  const performanceResult = {
+    items: mergedPerformance.slice(0, MAX_VIEW_ROWS),
+    truncated:
+      mergedPerformance.length > MAX_VIEW_ROWS ||
+      performanceGroups.some((group) => group.truncated),
+  };
+  const delivery = mergeDeliveryPerformance(deliveryGroups);
+  const libraryItems = requestedAccountIds
+    ? libraryResult.items.filter((item) =>
+        requestedAccountIds.some((accountId) =>
+          item.adAccountIds?.includes(accountId),
+        ),
+      )
+    : libraryResult.items;
   const coverageRatio =
     snapshot.freshness.syncStatus === "healthy"
       ? 1
       : snapshot.freshness.syncStatus === "partial"
         ? 0.8
         : 0;
+  const mappedCreatives = mapCreatives(
+    libraryItems,
+    performanceResult.items,
+    delivery,
+    settings,
+    dateFrom,
+    dateTo,
+    snapshot.freshness,
+    coverageRatio,
+    snapshot.freshness.syncStatus === "partial",
+  );
+  const creatives = reportContext
+    ? await enrichLiveCreativeRowsForReport({
+        snapshot,
+        repository,
+        settings,
+        rows: mappedCreatives,
+        libraryItems,
+        requestedAccountIds,
+        context: reportContext,
+        dateFrom,
+        dateTo,
+        effectiveCurrency,
+        campaignMetaId,
+      })
+    : mappedCreatives;
   return {
-    creatives: mapCreatives(
-      libraryResult.items,
-      performanceResult.items,
-      delivery,
-      settings,
+    creatives,
+    truncated: libraryResult.truncated || performanceResult.truncated,
+    delivery,
+  };
+}
+
+function demoDeliveryPerformance(
+  creatives: readonly CreativeRow[],
+): DeliveryPerformanceItem[] {
+  const rows = new Map<string, DeliveryPerformanceItem>();
+  for (const creative of creatives) {
+    const performance = creative.performance;
+    if (!performance) continue;
+    const operatingSystem =
+      creative.platform === "Android"
+        ? "ANDROID"
+        : creative.platform === "iOS"
+          ? "IOS"
+          : "UNKNOWN";
+    const key = `${operatingSystem}|${performance.currency}`;
+    const current = rows.get(key) ?? {
+      operatingSystem,
+      currency: performance.currency,
+      spend: 0,
+      impressions: 0,
+      linkClicks: 0,
+      installs: 0,
+      registrations: 0,
+      video3sViews: 0,
+      video100Views: 0,
+      metricDays: 0,
+    };
+    current.spend += performance.spend;
+    current.impressions += performance.impressions;
+    current.linkClicks +=
+      performance.linkCtr === null
+        ? 0
+        : (performance.linkCtr / 100) * performance.impressions;
+    current.installs += performance.installs;
+    current.registrations += performance.registrations;
+    current.video3sViews +=
+      performance.hookRate === null
+        ? 0
+        : (performance.hookRate / 100) * performance.impressions;
+    current.video100Views +=
+      performance.holdRate === null
+        ? 0
+        : (performance.holdRate / 100) *
+          Math.max(
+            0,
+            (performance.hookRate ?? 0) / 100 *
+              performance.impressions,
+          );
+    current.metricDays = Math.max(
+      current.metricDays,
+      Math.round(
+        (new Date(`${performance.dateTo}T00:00:00.000Z`).getTime() -
+          new Date(`${performance.dateFrom}T00:00:00.000Z`).getTime()) /
+          86_400_000,
+      ) + 1,
+    );
+    rows.set(key, current);
+  }
+  return [...rows.values()];
+}
+
+export async function getDeliveryForReport({
+  snapshot,
+  dateFrom,
+  dateTo,
+  accountMetaId,
+  accountMetaIds,
+  campaignMetaId,
+  currency,
+  attributionWindow,
+  actionReportTime,
+  syncVersion,
+  reportContext,
+}: {
+  snapshot: ApplicationSnapshot;
+  dateFrom: string;
+  dateTo: string;
+  accountMetaId?: string;
+  accountMetaIds?: readonly string[];
+  campaignMetaId?: string;
+  currency?: string | null;
+  attributionWindow?: string;
+  actionReportTime?: "impression" | "conversion" | "mixed";
+  syncVersion?: string;
+  reportContext?: ReportingContext;
+}): Promise<DeliveryPerformanceItem[]> {
+  const requestedAccountIds =
+    accountMetaIds ??
+    (accountMetaId?.trim() ? [accountMetaId.trim()] : undefined);
+  const objectiveRawKeys = reportContext
+    ? objectiveDatabaseKeys(reportContext.objectiveKey)
+    : [];
+  if (snapshot.demoMode) {
+    const report = await getCreativeRowsForReport({
+      snapshot,
       dateFrom,
       dateTo,
-      snapshot.freshness,
-      coverageRatio,
-      snapshot.freshness.syncStatus === "partial",
-    ),
-    truncated: libraryResult.truncated || performanceResult.truncated,
-  };
+      accountMetaId,
+      accountMetaIds,
+      campaignMetaId,
+      currency,
+      attributionWindow,
+      actionReportTime,
+      syncVersion,
+      reportContext,
+    });
+    return report.delivery;
+  }
+  if (
+    !snapshot.authenticated ||
+    !snapshot.connection ||
+    snapshot.connection.status !== "connected"
+  ) {
+    return [];
+  }
+
+  const repository = await createTrackerRepository();
+  const settings = await repository.getSettings();
+  const effectiveCurrency =
+    currency === undefined ? settings.reportingCurrency : currency;
+  const groups = requestedAccountIds
+    ? await mapAccountBatches(
+        requestedAccountIds,
+        (selectedAccountId) =>
+          repository.getDeliveryPerformance({
+            connectionId: snapshot.connection!.connectionId,
+            dateFrom,
+            dateTo,
+            currency: effectiveCurrency ?? undefined,
+            accountMetaId: selectedAccountId,
+            campaignMetaId: campaignMetaId || undefined,
+            attributionWindow: attributionWindow || undefined,
+            actionReportTime,
+            syncVersion: syncVersion || undefined,
+            objectiveRawKeys:
+              objectiveRawKeys.length ? objectiveRawKeys : undefined,
+          }),
+      )
+    : [
+        await repository.getDeliveryPerformance({
+          connectionId: snapshot.connection.connectionId,
+          dateFrom,
+          dateTo,
+          currency: effectiveCurrency ?? undefined,
+          campaignMetaId: campaignMetaId || undefined,
+          attributionWindow: attributionWindow || undefined,
+          actionReportTime,
+          syncVersion: syncVersion || undefined,
+          objectiveRawKeys:
+            objectiveRawKeys.length ? objectiveRawKeys : undefined,
+        }),
+      ];
+  return mergeDeliveryPerformance(groups);
+}
+
+export function buildApplicationResultMetrics({
+  context,
+  delivery,
+  canonicalResults,
+  definitions = DEFAULT_RESULT_DEFINITIONS,
+  periodReach = null,
+}: {
+  context: ReportingContext;
+  delivery: readonly DeliveryPerformanceItem[];
+  canonicalResults?: readonly CanonicalResultValue[];
+  definitions?: readonly ResultDefinition[];
+  periodReach?: number | null;
+}): DynamicResultMetricsModel {
+  const deliverySummary = summarizeDelivery(delivery);
+  const impressions = delivery.reduce(
+    (sum, item) => sum + item.impressions,
+    0,
+  );
+  const linkClicks = delivery.reduce(
+    (sum, item) => sum + item.linkClicks,
+    0,
+  );
+  const legacyValues = new Map<string, number | null>([
+    ["impressions", impressions],
+    ["link_click", linkClicks],
+    ["install", deliverySummary.installs],
+    ["complete_registration", deliverySummary.registrations],
+  ]);
+  const rawValues =
+    canonicalResults ??
+    definitions.flatMap((definition) =>
+      definition.objectiveKeys.map((objectiveKey) => {
+        const value = legacyValues.get(definition.canonicalKey) ?? null;
+        return {
+          canonicalKey: definition.canonicalKey,
+          objectiveKey,
+          value,
+          configured: true,
+          hasData: value !== null && value > 0,
+          ...(context.objectiveKey === objectiveKey &&
+          deliverySummary.singleCurrency
+            ? { spend: deliverySummary.singleCurrency.spend }
+            : {}),
+        } satisfies CanonicalResultValue;
+      }),
+    );
+  const values = withDeliveryBackedResultValues({
+    values: rawValues,
+    impressions,
+    reach: periodReach,
+    linkClicks,
+  });
+  const purchaseValue =
+    values.find(
+      (value) =>
+        value.canonicalKey === "purchase_value" &&
+        (context.objectiveKey === "all" ||
+          value.objectiveKey === context.objectiveKey),
+    )?.value ?? null;
+
+  return buildDynamicResultMetrics({
+    context,
+    definitions,
+    canonicalResults: values,
+    spend: deliverySummary.singleCurrency?.spend ?? 0,
+    impressions,
+    reach: periodReach,
+    clicks: linkClicks,
+    value: purchaseValue,
+  });
+}
+
+export type ApplicationCanonicalResultData = {
+  definitions: ResultDefinition[];
+  values: CanonicalResultValue[];
+  periodReach: number | null;
+  periodReachUnavailableReason: string | null;
+  state: "demo_legacy_bridge" | "live" | "unavailable";
+  warning: string | null;
+};
+
+/**
+ * Reads normalized, snapshot-pinned Meta result facts for the exact reporting
+ * context. Live callers must pass the returned values (including an empty
+ * array) to `buildApplicationResultMetrics`; an empty live result set must not
+ * fall back to the legacy Install columns.
+ */
+export async function getCanonicalResultsForReport({
+  snapshot,
+  context,
+  campaignMetaIds,
+  repository: suppliedRepository,
+}: {
+  snapshot: ApplicationSnapshot;
+  context: ReportingContext;
+  campaignMetaIds?: readonly string[];
+  repository?: TrackerRepository;
+}): Promise<ApplicationCanonicalResultData> {
+  if (snapshot.demoMode) {
+    return {
+      definitions: [...DEFAULT_RESULT_DEFINITIONS],
+      values: [],
+      periodReach: null,
+      periodReachUnavailableReason: "demo_period_reach_not_published",
+      state: "demo_legacy_bridge",
+      warning: null,
+    };
+  }
+  if (
+    !snapshot.authenticated ||
+    !snapshot.connection ||
+    snapshot.connection.status !== "connected" ||
+    context.adAccountIds.length === 0 ||
+    !context.syncVersion ||
+    context.syncVersion === "latest"
+  ) {
+    return {
+      definitions: [...DEFAULT_RESULT_DEFINITIONS],
+      values: [],
+      periodReach: null,
+      periodReachUnavailableReason: "exact_snapshot_unavailable",
+      state: "unavailable",
+      warning:
+        "Kết quả chuẩn hóa chưa khả dụng cho snapshot báo cáo hiện tại.",
+    };
+  }
+
+  try {
+    const repository =
+      suppliedRepository ?? (await createTrackerRepository());
+    const [definitions, mappings] = await Promise.all([
+      repository.listResultDefinitions(),
+      repository.listResultMappings(),
+    ]);
+    const enabledDefinitions = definitions.filter(
+      (definition) => definition.enabled,
+    );
+    const canonicalFilters = {
+      connectionId: snapshot.connection.connectionId,
+      dateFrom: context.dateFrom,
+      dateTo: context.dateTo,
+      adAccountIds: context.adAccountIds,
+      ...(campaignMetaIds === undefined ? {} : { campaignMetaIds }),
+      ...(context.objectiveKey === "all"
+        ? {}
+        : { objectiveKeys: [context.objectiveKey] }),
+      objectiveMappings: DEFAULT_OBJECTIVE_REGISTRY.map(
+        (objective) => ({
+          objectiveKey: objective.key,
+          rawObjectiveKeys: objective.rawObjectiveKeys,
+        }),
+      ),
+      ...(context.currency ? { currency: context.currency } : {}),
+      attributionWindow: context.attributionSettingKey,
+      actionReportTime: context.actionReportTime,
+      syncVersion: context.syncVersion,
+      resultMappingVersion: computeResultMappingVersion(mappings),
+    } as const;
+    const [totals, periodReach] = await Promise.all([
+      repository.getCanonicalResultTotals(canonicalFilters),
+      repository.getPeriodReach({
+        connectionId: canonicalFilters.connectionId,
+        dateFrom: canonicalFilters.dateFrom,
+        dateTo: canonicalFilters.dateTo,
+        adAccountIds: context.adAccountIds,
+        ...(campaignMetaIds === undefined
+          ? {}
+          : { campaignIds: campaignMetaIds }),
+        attributionWindow: canonicalFilters.attributionWindow,
+        actionReportTime: canonicalFilters.actionReportTime,
+        syncVersion: canonicalFilters.syncVersion,
+        resultMappingVersion:
+          canonicalFilters.resultMappingVersion,
+      }),
+    ]);
+
+    const definitionByKey = new Map(
+      enabledDefinitions.map((definition) => [
+        definition.canonicalKey,
+        definition,
+      ]),
+    );
+    const spendByObjective = new Map<string, number>();
+    for (const item of totals.spendByObjective) {
+      const current = spendByObjective.get(item.objectiveKey) ?? 0;
+      spendByObjective.set(item.objectiveKey, current + item.spend);
+    }
+    const grouped = new Map<
+      string,
+      {
+        canonicalKey: string;
+        objectiveKey: string;
+        currencies: Set<string>;
+        value: number;
+      }
+    >();
+    for (const item of totals.results) {
+      const key = `${item.objectiveKey}\u0000${item.canonicalResultKey}`;
+      const current = grouped.get(key) ?? {
+        canonicalKey: item.canonicalResultKey,
+        objectiveKey: item.objectiveKey,
+        currencies: new Set<string>(),
+        value: 0,
+      };
+      current.currencies.add(item.currency);
+      current.value += item.value;
+      grouped.set(key, current);
+    }
+
+    const values: CanonicalResultValue[] = [];
+    for (const definition of enabledDefinitions) {
+      for (const objectiveKey of definition.objectiveKeys) {
+        if (
+          context.objectiveKey !== "all" &&
+          objectiveKey !== context.objectiveKey
+        ) {
+          continue;
+        }
+        const item = grouped.get(
+          `${objectiveKey}\u0000${definition.canonicalKey}`,
+        );
+        const mixedCurrencyValue =
+          definition.unit === "currency" &&
+          (item?.currencies.size ?? 0) > 1;
+        const value =
+          item && !mixedCurrencyValue ? item.value : null;
+        values.push({
+          canonicalKey: definition.canonicalKey,
+          objectiveKey,
+          value,
+          configured: true,
+          hasData: value !== null,
+          ...(context.currencyMode === "single"
+            ? {
+                spend:
+                  spendByObjective.get(objectiveKey) ?? null,
+              }
+            : {}),
+        });
+      }
+    }
+
+    // Preserve an auditable unavailable state for facts whose definition was
+    // disabled or removed after the snapshot. They must never be silently
+    // relabeled under another Result.
+    const unknownResultKeys = [...grouped.values()].filter(
+      (item) => !definitionByKey.has(item.canonicalKey),
+    );
+    const warning =
+      unknownResultKeys.length > 0
+        ? "Một số Result trong snapshot không còn định nghĩa đang bật."
+        : null;
+    return {
+      definitions: enabledDefinitions,
+      values,
+      periodReach: periodReach.available ? periodReach.reach : null,
+      periodReachUnavailableReason: periodReach.available
+        ? null
+        : periodReach.reason,
+      state: "live",
+      warning,
+    };
+  } catch {
+    return {
+      definitions: [...DEFAULT_RESULT_DEFINITIONS],
+      values: [],
+      periodReach: null,
+      periodReachUnavailableReason: "exact_snapshot_unavailable",
+      state: "unavailable",
+      warning:
+        "Kết quả chuẩn hóa chưa khả dụng; cần đồng bộ lại dữ liệu Meta.",
+    };
+  }
 }
 
 /**
@@ -380,7 +1517,12 @@ export async function getCreativeFamilyRowsForReport({
   dateTo,
   currency,
   accountMetaId,
+  accountMetaIds,
   campaignMetaId,
+  attributionWindow,
+  actionReportTime,
+  syncVersion,
+  reportContext,
   repository: suppliedRepository,
 }: {
   snapshot: ApplicationSnapshot;
@@ -389,14 +1531,39 @@ export async function getCreativeFamilyRowsForReport({
   dateTo: string;
   currency?: string;
   accountMetaId?: string;
+  accountMetaIds?: readonly string[];
   campaignMetaId?: string;
+  attributionWindow?: string;
+  actionReportTime?: "impression" | "conversion" | "mixed";
+  syncVersion?: string;
+  reportContext?: ReportingContext;
   repository?: TrackerRepository;
 }): Promise<CreativeRow[] | null> {
+  const requestedAccountIds =
+    accountMetaIds ??
+    (accountMetaId?.trim() ? [accountMetaId.trim()] : undefined);
+  const objectiveRawKeys = reportContext
+    ? objectiveDatabaseKeys(reportContext.objectiveKey)
+    : [];
+  if (requestedAccountIds?.length === 0) return null;
   if (snapshot.demoMode) {
     const rows = snapshot.creatives.filter(
-      (row) => row.creativeFamilyId === creativeFamilyId,
+      (row) =>
+        row.creativeFamilyId === creativeFamilyId &&
+        (!requestedAccountIds ||
+          requestedAccountIds.some((accountId) =>
+            row.entityLinks?.adAccountIds.includes(accountId),
+          )),
     );
-    return rows.length ? rows : null;
+    if (!rows.length) return null;
+    return reportContext
+      ? withCanonicalCreativeResultValues({
+          rows,
+          context: reportContext,
+          definitions: DEFAULT_RESULT_DEFINITIONS,
+          legacyBridge: true,
+        })
+      : rows;
   }
 
   if (
@@ -414,31 +1581,88 @@ export async function getCreativeFamilyRowsForReport({
     creativeFamilyId,
   );
   if (!libraryItem) return null;
+  if (
+    requestedAccountIds &&
+    !requestedAccountIds.some((accountId) =>
+      libraryItem.adAccountIds?.includes(accountId),
+    )
+  ) {
+    return null;
+  }
 
   const settings = await repository.getSettings();
   const reportingCurrency =
     currency?.trim() || settings.reportingCurrency || undefined;
-  const [performance, delivery] = await Promise.all([
-    repository.listCreativePerformance({
-      connectionId: snapshot.connection.connectionId,
-      creativeFamilyId,
-      dateFrom,
-      dateTo,
-      currency: reportingCurrency,
-      accountMetaId: accountMetaId?.trim() || undefined,
-      campaignMetaId: campaignMetaId?.trim() || undefined,
-      limit: 200,
-      offset: 0,
-    }),
-    repository.getDeliveryPerformance({
-      connectionId: snapshot.connection.connectionId,
-      dateFrom,
-      dateTo,
-      currency: reportingCurrency,
-      accountMetaId: accountMetaId?.trim() || undefined,
-      campaignMetaId: campaignMetaId?.trim() || undefined,
-    }),
+  const [performanceGroups, deliveryGroups] = await Promise.all([
+    requestedAccountIds
+      ? mapAccountBatches(requestedAccountIds, (selectedAccountId) =>
+          repository.listCreativePerformance({
+            connectionId: snapshot.connection!.connectionId,
+            creativeFamilyId,
+            dateFrom,
+            dateTo,
+            currency: reportingCurrency,
+            accountMetaId: selectedAccountId,
+            campaignMetaId: campaignMetaId?.trim() || undefined,
+            attributionWindow: attributionWindow?.trim() || undefined,
+            actionReportTime,
+            syncVersion: syncVersion?.trim() || undefined,
+            objectiveRawKeys:
+              objectiveRawKeys.length ? objectiveRawKeys : undefined,
+            limit: 200,
+            offset: 0,
+          }),
+        )
+      : repository
+          .listCreativePerformance({
+            connectionId: snapshot.connection.connectionId,
+            creativeFamilyId,
+            dateFrom,
+            dateTo,
+            currency: reportingCurrency,
+            campaignMetaId: campaignMetaId?.trim() || undefined,
+            attributionWindow: attributionWindow?.trim() || undefined,
+            actionReportTime,
+            syncVersion: syncVersion?.trim() || undefined,
+            objectiveRawKeys:
+              objectiveRawKeys.length ? objectiveRawKeys : undefined,
+            limit: 200,
+            offset: 0,
+          })
+          .then((items) => [items]),
+    requestedAccountIds
+      ? mapAccountBatches(requestedAccountIds, (selectedAccountId) =>
+          repository.getDeliveryPerformance({
+            connectionId: snapshot.connection!.connectionId,
+            dateFrom,
+            dateTo,
+            currency: reportingCurrency,
+            accountMetaId: selectedAccountId,
+            campaignMetaId: campaignMetaId?.trim() || undefined,
+            attributionWindow: attributionWindow?.trim() || undefined,
+            actionReportTime,
+            syncVersion: syncVersion?.trim() || undefined,
+            objectiveRawKeys:
+              objectiveRawKeys.length ? objectiveRawKeys : undefined,
+          }),
+        )
+      : repository
+          .getDeliveryPerformance({
+            connectionId: snapshot.connection.connectionId,
+            dateFrom,
+            dateTo,
+            currency: reportingCurrency,
+            campaignMetaId: campaignMetaId?.trim() || undefined,
+            attributionWindow: attributionWindow?.trim() || undefined,
+            actionReportTime,
+            syncVersion: syncVersion?.trim() || undefined,
+            objectiveRawKeys:
+              objectiveRawKeys.length ? objectiveRawKeys : undefined,
+          })
+          .then((items) => [items]),
   ]);
+  const performance = mergeCreativePerformance(performanceGroups);
+  const delivery = mergeDeliveryPerformance(deliveryGroups);
   const coverageRatio =
     snapshot.freshness.syncStatus === "healthy"
       ? 1
@@ -446,7 +1670,7 @@ export async function getCreativeFamilyRowsForReport({
         ? 0.8
         : 0;
 
-  return mapCreatives(
+  const rows = mapCreatives(
     [libraryItem],
     performance,
     delivery,
@@ -457,6 +1681,21 @@ export async function getCreativeFamilyRowsForReport({
     coverageRatio,
     snapshot.freshness.syncStatus === "partial",
   );
+  return reportContext
+    ? enrichLiveCreativeRowsForReport({
+        snapshot,
+        repository,
+        settings,
+        rows,
+        libraryItems: [libraryItem],
+        requestedAccountIds,
+        context: reportContext,
+        dateFrom,
+        dateTo,
+        effectiveCurrency: reportingCurrency ?? null,
+        campaignMetaId,
+      })
+    : rows;
 }
 
 export async function getOverviewTrendForReport({
@@ -464,17 +1703,34 @@ export async function getOverviewTrendForReport({
   dateFrom,
   dateTo,
   accountMetaId,
+  accountMetaIds,
   campaignMetaId,
   currency,
+  attributionWindow,
+  actionReportTime,
+  syncVersion,
+  reportContext,
 }: {
   snapshot: ApplicationSnapshot;
   dateFrom: string;
   dateTo: string;
   accountMetaId?: string;
+  accountMetaIds?: readonly string[];
   campaignMetaId?: string;
   currency?: string | null;
+  attributionWindow?: string;
+  actionReportTime?: "impression" | "conversion" | "mixed";
+  syncVersion?: string;
+  reportContext?: ReportingContext;
 }) {
+  const requestedAccountIds =
+    accountMetaIds ??
+    (accountMetaId?.trim() ? [accountMetaId.trim()] : undefined);
+  const objectiveRawKeys = reportContext
+    ? objectiveDatabaseKeys(reportContext.objectiveKey)
+    : [];
   if (snapshot.demoMode) {
+    if (requestedAccountIds?.length === 0) return [];
     const start = new Date(`${dateFrom}T00:00:00.000Z`).getTime();
     const end = new Date(`${dateTo}T00:00:00.000Z`).getTime();
     const spanDays = Math.max(
@@ -484,16 +1740,10 @@ export async function getOverviewTrendForReport({
     const offsets = [...new Set([0, 0.2, 0.4, 0.6, 0.8, 1].map(
       (ratio) => Math.round(spanDays * ratio),
     ))];
-    return offsets.map((offset, index) => {
+    const points = offsets.map((offset, index) => {
       const date = new Date(start + offset * 86_400_000)
         .toISOString()
         .slice(0, 10);
-      const cpi = [24_500, 22_800, 21_400, 20_900, 19_600, 18_700][
-        index
-      ];
-      const costPerRegistration = [
-        48_000, 45_500, 43_800, 42_100, 40_600, 39_400,
-      ][index];
       return {
         date,
         currency:
@@ -501,11 +1751,16 @@ export async function getOverviewTrendForReport({
             ? snapshot.settings.currency ?? "VND"
             : currency ?? snapshot.settings.currency ?? "VND",
         spend: 6_000_000 + index * 350_000,
+        impressions: 120_000 + index * 8_000,
+        linkClicks: 2_400 + index * 160,
         installs: 245 + index * 24,
         registrations: 122 + index * 13,
-        cpi,
-        costPerRegistration,
       };
+    });
+    return bridgeLegacyTrendPointsForApp({
+      points,
+      context: reportContext,
+      definitions: DEFAULT_RESULT_DEFINITIONS,
     });
   }
 
@@ -521,24 +1776,51 @@ export async function getOverviewTrendForReport({
   const settings = await repository.getSettings();
   const effectiveCurrency =
     currency === undefined ? settings.reportingCurrency : currency;
-  const points = await repository.getDeliveryTrend({
-    connectionId: snapshot.connection.connectionId,
-    dateFrom,
-    dateTo,
-    currency: effectiveCurrency ?? undefined,
-    accountMetaId: accountMetaId || undefined,
-    campaignMetaId: campaignMetaId || undefined,
-  });
+  const pointGroups = requestedAccountIds
+    ? await mapAccountBatches(requestedAccountIds, (selectedAccountId) =>
+        repository.getDeliveryTrend({
+          connectionId: snapshot.connection!.connectionId,
+          dateFrom,
+          dateTo,
+          currency: effectiveCurrency ?? undefined,
+          accountMetaId: selectedAccountId,
+          campaignMetaId: campaignMetaId || undefined,
+          attributionWindow: attributionWindow || undefined,
+          actionReportTime,
+          syncVersion: syncVersion || undefined,
+          objectiveRawKeys:
+            objectiveRawKeys.length ? objectiveRawKeys : undefined,
+        }),
+      )
+    : [
+        await repository.getDeliveryTrend({
+          connectionId: snapshot.connection.connectionId,
+          dateFrom,
+          dateTo,
+          currency: effectiveCurrency ?? undefined,
+          campaignMetaId: campaignMetaId || undefined,
+          attributionWindow: attributionWindow || undefined,
+          actionReportTime,
+          syncVersion: syncVersion || undefined,
+          objectiveRawKeys:
+            objectiveRawKeys.length ? objectiveRawKeys : undefined,
+        }),
+      ];
+  const points = mergeDeliveryTrend(pointGroups);
 
-  return points.map((point) => ({
-    date: point.metricDate,
-    currency: point.currency,
-    spend: point.spend,
-    installs: point.installs,
-    registrations: point.registrations,
-    cpi: point.cpi,
-    costPerRegistration: point.costPerRegistration,
-  }));
+  return bridgeLegacyTrendPointsForApp({
+    points: points.map((point) => ({
+      date: point.metricDate,
+      currency: point.currency,
+      spend: point.spend,
+      impressions: point.impressions,
+      linkClicks: point.linkClicks,
+      installs: point.installs,
+      registrations: point.registrations,
+    })),
+    context: reportContext,
+    definitions: DEFAULT_RESULT_DEFINITIONS,
+  });
 }
 
 function performanceSummary(
@@ -1041,6 +2323,9 @@ export const getApplicationSnapshot = cache(
           lastInitialSyncAt: null,
         }),
         freshness: demoFreshness,
+        reportingScope: defaultAllReportingScope(
+          scopeInventoryFromAssets(demoAssets),
+        ),
         settings: {
           timezone:
             process.env.REPORTING_TIMEZONE ?? "Asia/Ho_Chi_Minh",
@@ -1075,6 +2360,7 @@ export const getApplicationSnapshot = cache(
           lastInitialSyncAt: null,
         }),
         freshness: EMPTY_FRESHNESS,
+        reportingScope: null,
         settings: {
           timezone:
             process.env.REPORTING_TIMEZONE ?? "Asia/Ho_Chi_Minh",
@@ -1110,6 +2396,7 @@ export const getApplicationSnapshot = cache(
           lastInitialSyncAt: null,
         }),
         freshness: EMPTY_FRESHNESS,
+        reportingScope: null,
         settings: {
           timezone:
             process.env.REPORTING_TIMEZONE ?? "Asia/Ho_Chi_Minh",
@@ -1146,6 +2433,7 @@ export const getApplicationSnapshot = cache(
           lastInitialSyncAt: null,
         }),
         freshness: EMPTY_FRESHNESS,
+        reportingScope: null,
         settings: {
           timezone:
             process.env.REPORTING_TIMEZONE ?? "Asia/Ho_Chi_Minh",
@@ -1170,6 +2458,8 @@ export const getApplicationSnapshot = cache(
       delivery,
       runs,
       insightsFreshness,
+      scopeInventory,
+      persistedScope,
     ] = await Promise.all([
         repository.getCoverage(connection.connectionId),
         repository.listMetaAssets(connection.connectionId),
@@ -1189,6 +2479,8 @@ export const getApplicationSnapshot = cache(
         }),
         repository.listRecentSyncRuns(connection.connectionId, 20),
         repository.getInsightsFreshness(connection.connectionId),
+        repository.listReportingScopeInventory(connection.connectionId),
+        repository.getReportingScope(connection.connectionId),
       ]);
     const library = libraryResult.items;
     const performance = performanceResult.items;
@@ -1220,7 +2512,7 @@ export const getApplicationSnapshot = cache(
         name: item.name,
         kind: "Page" as const,
         parentName: null,
-        status: item.isActive ? "ACTIVE" : "INACTIVE",
+        status: "DISCOVERED",
         category: item.category,
         isCurrent: item.isActive,
         lastSeenAt: item.lastSeenAt,
@@ -1239,9 +2531,16 @@ export const getApplicationSnapshot = cache(
     const freshness = createFreshness({
       lastSyncedAt: insightsFreshness.lastSyncedAt,
       dataThroughAt: insightsFreshness.dataThroughAt,
+      syncVersion: insightsFreshness.syncVersion,
       syncStatus: insightsFreshness.syncStatus,
       syncMode: insightsFreshness.syncMode,
     });
+    const reportingScope = persistedScope.confirmedAt
+      ? buildCanonicalReportingScope({
+          inventory: scopeInventory,
+          persisted: persistedScope,
+        })
+      : defaultAllReportingScope(scopeInventory);
     const latestInsightsRun = runs.find((run) =>
       ["insights", "incremental", "full"].includes(run.syncKind),
     );
@@ -1438,6 +2737,7 @@ export const getApplicationSnapshot = cache(
         reportingTimezone: settings.reportingTimezone,
       }),
       freshness,
+      reportingScope,
       settings: {
         timezone: settings.reportingTimezone,
         lookbackDays: settings.syncLookbackDays,

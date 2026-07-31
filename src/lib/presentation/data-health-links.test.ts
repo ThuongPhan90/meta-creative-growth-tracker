@@ -60,7 +60,7 @@ describe("Data Health affected entity links", () => {
     [
       "adset:adset-1",
       "ad_set",
-      null,
+      "/campaigns",
     ],
     [
       "ad:ad-1",
@@ -83,7 +83,7 @@ describe("Data Health affected entity links", () => {
       "/sources?tab=pages&selected=page-1",
     ],
   ] as const)(
-    "maps resource %s through canonical type %s without inventing a route",
+    "maps resource %s through canonical type %s to a detail or related list",
     (resource, entityType, expectedHref) => {
       const entity = normalizeDataHealthResource(resource)[0];
       expect(entity.entityType).toBe(entityType);
@@ -93,7 +93,7 @@ describe("Data Health affected entity links", () => {
     },
   );
 
-  it("does not guess a Creative route when the relation is ambiguous", () => {
+  it("falls back to an entity-ID search when the relation is ambiguous", () => {
     const secondFamily: CreativeRow = {
       ...creative,
       id: "variant-2",
@@ -113,14 +113,14 @@ describe("Data Health affected entity links", () => {
         },
         { creatives: [creative, secondFamily] },
       ),
-    ).toBeNull();
+    ).toBe("/creatives?q=ad-1");
     expect(
       dataHealthEntityHref({
         entityType: "ad_set",
         entityId: "adset-1",
         label: null,
       }),
-    ).toBeNull();
+    ).toBe("/campaigns");
   });
 
   it("covers canonical types that have a direct settings or detail route", () => {
@@ -137,14 +137,28 @@ describe("Data Health affected entity links", () => {
         entityId: "install",
         label: null,
       }),
-    ).toBe("/settings?tab=events");
+    ).toBe("/settings?tab=results");
     expect(
       dataHealthEntityHref({
         entityType: "post",
         entityId: "post-1",
         label: null,
       }),
-    ).toBeNull();
+    ).toBe("/creatives");
+    expect(
+      dataHealthEntityHref({
+        entityType: "campaign",
+        entityId: "campaign-alias",
+        label: null,
+      }),
+    ).toBe("/campaigns?q=campaign-alias");
+    expect(
+      dataHealthEntityHref({
+        entityType: "creative_family",
+        entityId: "legacy-family",
+        label: null,
+      }),
+    ).toBe("/creatives?q=legacy-family");
   });
 
   it("preserves shared reporting context without leaking issue state", () => {
