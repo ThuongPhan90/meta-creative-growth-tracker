@@ -1,3 +1,5 @@
+import type { EvaluationExplanation } from "@/lib/reporting/creative-evaluation";
+
 export type AppMode = "demo" | "setup" | "connected";
 
 export type ReadinessStatus =
@@ -83,6 +85,8 @@ export type CreativePerformanceSummary = {
   registrations: number;
   cpi: number | null;
   costPerRegistration: number | null;
+  /** Safely attributed normalized Meta results keyed by canonical Result. */
+  resultValues?: Record<string, number | null>;
   hookRate: number | null;
   holdRate: number | null;
   osBaselineCpi: number | null;
@@ -92,6 +96,7 @@ export type CreativePerformanceSummary = {
   freshness?: Freshness;
   confidence?: DataConfidence;
   ratingExplanation?: RatingExplanation | null;
+  evaluation?: EvaluationExplanation | null;
 };
 
 export type CreativeRow = {
@@ -166,6 +171,7 @@ export type SyncMode = "scheduled" | "manual" | "webhook";
 export type Freshness = {
   lastSyncedAt: string | null;
   dataThroughAt: string | null;
+  syncVersion?: string | null;
   syncStatus: SyncHealthStatus;
   freshnessSeconds: number | null;
   syncMode: SyncMode;
@@ -195,7 +201,12 @@ export type CanonicalCreativeFormat =
   | "dynamic"
   | "unknown";
 
-export type PerformanceStatus = "good" | "within_range" | "watch" | "poor";
+export type PerformanceStatus =
+  | "good"
+  | "within_range"
+  | "watch"
+  | "poor"
+  | "not_eligible";
 export type RecommendedAction =
   | "scale"
   | "hold"

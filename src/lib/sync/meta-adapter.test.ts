@@ -1,13 +1,20 @@
 import type { TrackerRepository } from "@/lib/db/repository";
+import { computeResultMappingVersion } from "@/lib/db/result-mapping-version";
 import type {
   AdCreativeLinkInput,
   DailyMetricInput,
   DatabaseId,
   MetaConnectionSecretRecord,
+  PeriodReachSnapshotInput,
   TrackerSettings,
 } from "@/lib/db/types";
 import { MetaGraphApiError } from "@/lib/meta/client";
 import type { MetaGraphQuery, MetaInsightRow } from "@/lib/meta/types";
+import {
+  DEFAULT_RESULT_DEFINITIONS,
+  type PersistedResultMapping,
+  type ResultDefinition,
+} from "@/lib/reporting/result-definition";
 import {
   encryptMetaToken,
   TokenEncryptionError,
@@ -72,6 +79,36 @@ const actionMapping = {
     strategy: "first-match" as const,
   },
 };
+
+function defaultResultMappings(): PersistedResultMapping[] {
+  let id = 0;
+  return DEFAULT_RESULT_DEFINITIONS.flatMap((definition) => [
+    ...definition.rawActionTypes.map((rawActionType, priority) => ({
+      id: `mapping-${++id}`,
+      canonicalResultKey: definition.canonicalKey,
+      rawActionType,
+      metricSource: "action" as const,
+      priority,
+      mappingSource: "system" as const,
+      enabled: true,
+    })),
+    ...(definition.rawValueActionTypes ?? []).map(
+      (rawActionType, priority) => ({
+        id: `mapping-${++id}`,
+        canonicalResultKey: definition.canonicalKey,
+        rawActionType,
+        metricSource: "action_value" as const,
+        priority,
+        mappingSource: "system" as const,
+        enabled: true,
+      }),
+    ),
+  ]);
+}
+
+const DEFAULT_RESULT_MAPPING_VERSION = computeResultMappingVersion(
+  defaultResultMappings(),
+);
 
 describe("exactCoverageMatches", () => {
   const primary: MetaInsightRow[] = [
@@ -209,16 +246,50 @@ describe("actionMappingVersion", () => {
 function repositoryHarness(): {
   repository: TrackerRepository;
   metricBatches: DailyMetricInput[][];
+  publishCalls: {
+    connectionId: DatabaseId;
+    syncRunId: DatabaseId;
+    resultMappingVersion: string;
+    periodReachSnapshots: PeriodReachSnapshotInput[];
+    replacements: {
+      adAccountId: DatabaseId;
+      dateFrom: string;
+      dateTo: string;
+      metrics: DailyMetricInput[];
+    }[];
+  }[];
   reconciledAccounts: DatabaseId[];
   adCreativeReplacementScopes: DatabaseId[][];
   adCreativeReplacementLinks: AdCreativeLinkInput[][];
 } {
   const metricBatches: DailyMetricInput[][] = [];
+  const publishCalls: {
+    connectionId: DatabaseId;
+    syncRunId: DatabaseId;
+    resultMappingVersion: string;
+    periodReachSnapshots: PeriodReachSnapshotInput[];
+    replacements: {
+      adAccountId: DatabaseId;
+      dateFrom: string;
+      dateTo: string;
+      metrics: DailyMetricInput[];
+    }[];
+  }[] = [];
   const reconciledAccounts: DatabaseId[] = [];
   const adCreativeReplacementScopes: DatabaseId[][] = [];
   const adCreativeReplacementLinks: AdCreativeLinkInput[][] = [];
   const repository = {
     getSettings: async () => settings(),
+    listResultDefinitions: async (): Promise<ResultDefinition[]> =>
+      DEFAULT_RESULT_DEFINITIONS.map((definition) => ({
+        ...definition,
+        objectiveKeys: [...definition.objectiveKeys],
+        rawActionTypes: [...definition.rawActionTypes],
+        rawValueActionTypes: [
+          ...(definition.rawValueActionTypes ?? []),
+        ],
+      })),
+    listResultMappings: async () => defaultResultMappings(),
     updateConnectionHealth: async () => undefined,
     upsertBusinesses: async (
       _connectionId: DatabaseId,
@@ -274,16 +345,42 @@ function repositoryHarness(): {
       adCreativeReplacementScopes.push([...adIds]);
       adCreativeReplacementLinks.push([...links]);
     },
-    replaceDailyMetricsWindow: async (input: {
-      metrics: readonly DailyMetricInput[];
+    publishDailyMetricWindows: async (input: {
+      connectionId: DatabaseId;
+      syncRunId: DatabaseId;
+      resultMappingVersion: string;
+      periodReachSnapshots: readonly PeriodReachSnapshotInput[];
+      replacements: readonly {
+        adAccountId: DatabaseId;
+        dateFrom: string;
+        dateTo: string;
+        metrics: readonly DailyMetricInput[];
+      }[];
     }) => {
-      metricBatches.push([...input.metrics]);
-      return input.metrics.length;
+      const replacements = input.replacements.map((replacement) => ({
+        ...replacement,
+        metrics: [...replacement.metrics],
+      }));
+      publishCalls.push({
+        connectionId: input.connectionId,
+        syncRunId: input.syncRunId,
+        resultMappingVersion: input.resultMappingVersion,
+        periodReachSnapshots: [...input.periodReachSnapshots],
+        replacements,
+      });
+      const metrics = replacements.flatMap(
+        (replacement) => replacement.metrics,
+      );
+      if (metrics.length > 0) {
+        metricBatches.push(metrics);
+      }
+      return metrics.length;
     },
   };
   return {
     repository: repository as unknown as TrackerRepository,
     metricBatches,
+    publishCalls,
     reconciledAccounts,
     adCreativeReplacementScopes,
     adCreativeReplacementLinks,
@@ -484,7 +581,7 @@ describe("MetaMarketingApiSyncAdapter", () => {
       request: async <T>(path: string) => {
         throw new Error(`Unexpected request path: ${path}`) as never as T;
       },
-      getAll: async <T>(path: string) => {
+      getAll: async <T>(path: string, query: MetaGraphQuery = {}) => {
         const values: Record<string, unknown[]> = {
           "me/businesses": [],
           "me/adaccounts": [
@@ -513,11 +610,383 @@ describe("MetaMarketingApiSyncAdapter", () => {
           throw new Error("Ads edge is temporarily inaccessible.");
         }
         if (path === "act_100/insights") {
+          if (query.level === "account") {
+            return [
+              {
+                date_start: "2026-07-20",
+                date_stop: "2026-07-21",
+                account_id: "100",
+                reach: "80",
+              },
+            ] as T[];
+          }
+          if (query.level === "campaign") {
+            return [
+              {
+                date_start: "2026-07-20",
+                date_stop: "2026-07-21",
+                account_id: "100",
+                campaign_id: "campaign-1",
+                reach: "50",
+              },
+            ] as T[];
+          }
           return [
             {
               date_start: "2026-07-20",
               ad_id: "ad-unmapped",
               spend: "99",
+            },
+          ] as T[];
+        }
+        if (!(path in values)) {
+          throw new Error(`Unexpected collection path: ${path}`);
+        }
+        return values[path] as T[];
+      },
+    };
+    const harness = repositoryHarness();
+    Object.assign(harness.repository, {
+      listResultDefinitions: async () => {
+        throw new Error("result registry migration unavailable");
+      },
+    });
+    const adapter = new MetaMarketingApiSyncAdapter({ client });
+    const syncContext = context(harness.repository);
+
+    await adapter.syncAssets(syncContext);
+    const result = await adapter.syncInsights(syncContext);
+
+    expect(harness.metricBatches).toEqual([]);
+    expect(harness.publishCalls).toEqual([
+      {
+        connectionId: "connection:1",
+        syncRunId: "run:1",
+        resultMappingVersion: DEFAULT_RESULT_MAPPING_VERSION,
+        periodReachSnapshots: [],
+        replacements: [],
+      },
+    ]);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "META_ACCOUNT_METRICS_PRESERVED",
+          resource: "act_100",
+        }),
+        expect.objectContaining({
+          code: "RESULT_DEFINITION_REGISTRY_FALLBACK",
+          resource: "result-definitions",
+        }),
+        expect.objectContaining({
+          code: "META_INSIGHTS_SNAPSHOT_PRESERVED",
+          resource: "insights",
+        }),
+      ]),
+    );
+    expect(result.stats).toMatchObject({
+      result_definition_source: "built_in_fallback",
+      result_mapping_version: DEFAULT_RESULT_MAPPING_VERSION,
+      accounts_published: 0,
+      metrics_upserted: 0,
+    });
+    expect(result.checkpoint).toBeUndefined();
+  });
+
+  it("fetches every account before publishing one atomic replacement batch", async () => {
+    const events: string[] = [];
+    const periodQueries: MetaGraphQuery[] = [];
+    const client: MetaGraphReadClient = {
+      request: async <T>(path: string) => {
+        throw new Error(`Unexpected request path: ${path}`) as never as T;
+      },
+      getAll: async <T>(path: string, query: MetaGraphQuery = {}) => {
+        const values: Record<string, unknown[]> = {
+          "me/businesses": [],
+          "me/adaccounts": [
+            {
+              id: "act_100",
+              account_id: "100",
+              name: "Account 100",
+              currency: "USD",
+              timezone_name: "Asia/Ho_Chi_Minh",
+            },
+            {
+              id: "act_200",
+              account_id: "200",
+              name: "Account 200",
+              currency: "USD",
+              timezone_name: "Asia/Ho_Chi_Minh",
+            },
+          ],
+          "me/accounts": [],
+          "act_100/campaigns": [
+            { id: "campaign-100", name: "Campaign 100" },
+          ],
+          "act_100/adsets": [
+            {
+              id: "adset-100",
+              campaign_id: "campaign-100",
+              name: "Ad set 100",
+            },
+          ],
+          "act_100/ads": [
+            {
+              id: "ad-100",
+              campaign_id: "campaign-100",
+              adset_id: "adset-100",
+              name: "Ad 100",
+              creative: { id: "creative-100" },
+            },
+          ],
+          "act_100/adcreatives": [
+            {
+              id: "creative-100",
+              name: "Creative 100",
+              image_hash: "image-100",
+            },
+          ],
+          "act_200/campaigns": [
+            { id: "campaign-200", name: "Campaign 200" },
+          ],
+          "act_200/adsets": [
+            {
+              id: "adset-200",
+              campaign_id: "campaign-200",
+              name: "Ad set 200",
+            },
+          ],
+          "act_200/ads": [
+            {
+              id: "ad-200",
+              campaign_id: "campaign-200",
+              adset_id: "adset-200",
+              name: "Ad 200",
+              creative: { id: "creative-200" },
+            },
+          ],
+          "act_200/adcreatives": [
+            {
+              id: "creative-200",
+              name: "Creative 200",
+              image_hash: "image-200",
+            },
+          ],
+        };
+        if (path.endsWith("/insights")) {
+          events.push(`fetch:${path}`);
+          const suffix = path.startsWith("act_100") ? "100" : "200";
+          if (query.level === "account") {
+            periodQueries.push(query);
+            return [
+              {
+                date_start: "2026-07-20",
+                date_stop: "2026-07-21",
+                account_id: suffix,
+                reach: suffix === "100" ? "80" : "150",
+              },
+            ] as T[];
+          }
+          if (query.level === "campaign") {
+            periodQueries.push(query);
+            return [
+              {
+                date_start: "2026-07-20",
+                date_stop: "2026-07-21",
+                account_id: suffix,
+                campaign_id: `campaign-${suffix}`,
+                reach: suffix === "100" ? "70" : "140",
+              },
+            ] as T[];
+          }
+          const breakdowns = Array.isArray(query.breakdowns)
+            ? query.breakdowns
+            : [];
+          if (
+            breakdowns.includes("image_asset") ||
+            breakdowns.includes("video_asset")
+          ) {
+            return [] as T[];
+          }
+          return [
+            {
+              date_start: "2026-07-20",
+              account_id: suffix,
+              account_currency: "USD",
+              campaign_id: `campaign-${suffix}`,
+              adset_id: `adset-${suffix}`,
+              ad_id: `ad-${suffix}`,
+              spend: suffix === "100" ? "10" : "20",
+              impressions: suffix === "100" ? "100" : "200",
+            },
+          ] as T[];
+        }
+        if (!(path in values)) {
+          throw new Error(`Unexpected collection path: ${path}`);
+        }
+        return values[path] as T[];
+      },
+    };
+    const harness = repositoryHarness();
+    const publishDailyMetricWindows = vi.fn(
+      async (
+        input: Parameters<
+          TrackerRepository["publishDailyMetricWindows"]
+        >[0],
+      ) => {
+        events.push("publish");
+        const replacements = input.replacements.map((replacement) => ({
+          ...replacement,
+          metrics: [...replacement.metrics],
+        }));
+        harness.publishCalls.push({
+          connectionId: input.connectionId,
+          syncRunId: input.syncRunId,
+          resultMappingVersion: input.resultMappingVersion,
+          periodReachSnapshots: [...input.periodReachSnapshots],
+          replacements,
+        });
+        const metrics = replacements.flatMap(
+          (replacement) => replacement.metrics,
+        );
+        harness.metricBatches.push(metrics);
+        return metrics.length;
+      },
+    );
+    Object.assign(harness.repository, { publishDailyMetricWindows });
+    const adapter = new MetaMarketingApiSyncAdapter({ client });
+    const syncContext = context(harness.repository);
+
+    await adapter.syncAssets(syncContext);
+    const result = await adapter.syncInsights(syncContext);
+
+    expect(publishDailyMetricWindows).toHaveBeenCalledOnce();
+    expect(events.at(-1)).toBe("publish");
+    expect(events.filter((event) => event.startsWith("fetch:"))).toHaveLength(10);
+    expect(periodQueries).toHaveLength(4);
+    expect(
+      periodQueries.every(
+        (query) =>
+          !("time_increment" in query) && !("breakdowns" in query),
+      ),
+    ).toBe(true);
+    expect(harness.publishCalls[0]).toMatchObject({
+      connectionId: "connection:1",
+      syncRunId: "run:1",
+      resultMappingVersion: DEFAULT_RESULT_MAPPING_VERSION,
+      replacements: [
+        {
+          adAccountId: "account:act_100",
+          dateFrom: "2026-07-20",
+          dateTo: "2026-07-21",
+          metrics: [
+            {
+              actionReportTime: "mixed",
+              syncVersion: "run:1",
+              resultMappingVersion: DEFAULT_RESULT_MAPPING_VERSION,
+            },
+          ],
+        },
+        {
+          adAccountId: "account:act_200",
+          dateFrom: "2026-07-20",
+          dateTo: "2026-07-21",
+          metrics: [
+            {
+              actionReportTime: "mixed",
+              syncVersion: "run:1",
+              resultMappingVersion: DEFAULT_RESULT_MAPPING_VERSION,
+            },
+          ],
+        },
+      ],
+    });
+    expect(result.stats).toMatchObject({
+      accounts_succeeded: 2,
+      metrics_upserted: 2,
+      result_mapping_version: DEFAULT_RESULT_MAPPING_VERSION,
+    });
+  });
+
+  it("does not advance the snapshot when period Reach is partial", async () => {
+    const client: MetaGraphReadClient = {
+      request: async <T>(path: string) => {
+        throw new Error(`Unexpected request path: ${path}`) as never as T;
+      },
+      getAll: async <T>(path: string, query: MetaGraphQuery = {}) => {
+        const values: Record<string, unknown[]> = {
+          "me/businesses": [],
+          "me/adaccounts": [
+            {
+              id: "act_100",
+              account_id: "100",
+              name: "Account",
+              currency: "USD",
+              timezone_name: "Asia/Ho_Chi_Minh",
+            },
+          ],
+          "me/accounts": [],
+          "act_100/campaigns": [
+            { id: "campaign-1", name: "Campaign" },
+          ],
+          "act_100/adsets": [
+            {
+              id: "adset-1",
+              campaign_id: "campaign-1",
+              name: "Ad set",
+            },
+          ],
+          "act_100/ads": [
+            {
+              id: "ad-1",
+              campaign_id: "campaign-1",
+              adset_id: "adset-1",
+              name: "Ad",
+              creative: { id: "creative-1" },
+            },
+          ],
+          "act_100/adcreatives": [
+            {
+              id: "creative-1",
+              name: "Creative",
+              image_hash: "image-1",
+            },
+          ],
+        };
+        if (path === "act_100/insights") {
+          if (query.level === "account") {
+            return [
+              {
+                date_start: "2026-07-20",
+                date_stop: "2026-07-21",
+                account_id: "100",
+                reach: "100",
+              },
+            ] as T[];
+          }
+          if (query.level === "campaign") {
+            return [
+              {
+                date_start: "2026-07-20",
+                date_stop: "2026-07-21",
+                account_id: "100",
+                campaign_id: "campaign-1",
+              },
+            ] as T[];
+          }
+          if (Array.isArray(query.breakdowns)) {
+            return [] as T[];
+          }
+          return [
+            {
+              date_start: "2026-07-20",
+              date_stop: "2026-07-20",
+              account_id: "100",
+              campaign_id: "campaign-1",
+              adset_id: "adset-1",
+              ad_id: "ad-1",
+              spend: "10",
+              impressions: "100",
+              reach: "80",
             },
           ] as T[];
         }
@@ -535,14 +1004,31 @@ describe("MetaMarketingApiSyncAdapter", () => {
     const result = await adapter.syncInsights(syncContext);
 
     expect(harness.metricBatches).toEqual([]);
+    expect(harness.publishCalls).toEqual([
+      expect.objectContaining({
+        connectionId: "connection:1",
+        syncRunId: "run:1",
+        periodReachSnapshots: [],
+        replacements: [],
+      }),
+    ]);
     expect(result.warnings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          code: "META_ACCOUNT_METRICS_PRESERVED",
+          code: "META_PERIOD_REACH_UNAVAILABLE",
           resource: "act_100",
+        }),
+        expect.objectContaining({
+          code: "META_INSIGHTS_SNAPSHOT_PRESERVED",
         }),
       ]),
     );
+    expect(result.stats).toMatchObject({
+      accounts_succeeded: 0,
+      accounts_published: 0,
+      accounts_preserved_on_period_reach_failure: 1,
+      period_reach_snapshots_published: 0,
+    });
     expect(result.checkpoint).toBeUndefined();
   });
 
@@ -743,7 +1229,17 @@ describe("MetaMarketingApiSyncAdapter", () => {
         actions: [
           { action_type: "mobile_app_install", value: "5" },
           { action_type: "omni_app_install", value: "5" },
+          { action_type: "mobile_app_install_custom", value: "999" },
+          { action_type: "purchase", value: "2" },
+          { action_type: "omni_purchase", value: "2" },
+          { action_type: "purchase_similar", value: "999" },
+          { action_type: "owner_qualified_lead", value: "4" },
           { action_type: "video_view", value: "11" },
+        ],
+        action_values: [
+          { action_type: "purchase", value: "125" },
+          { action_type: "omni_purchase", value: "125" },
+          { action_type: "purchase_similar", value: "9999" },
         ],
         video_play_actions: [
           { action_type: "video_view", value: "15" },
@@ -856,6 +1352,29 @@ describe("MetaMarketingApiSyncAdapter", () => {
 
         if (path === "act_100/insights") {
           insightCalls.push(query);
+          if (query.level === "account") {
+            return [
+              {
+                date_start: "2026-07-20",
+                date_stop: "2026-07-21",
+                account_id: "100",
+                attribution_setting: "7d_click_1d_view",
+                reach: "200",
+              },
+            ] as T[];
+          }
+          if (query.level === "campaign") {
+            return [
+              {
+                date_start: "2026-07-20",
+                date_stop: "2026-07-21",
+                account_id: "100",
+                campaign_id: "campaign-1",
+                attribution_setting: "7d_click_1d_view",
+                reach: "190",
+              },
+            ] as T[];
+          }
           if (
             Array.isArray(query.breakdowns) &&
             query.breakdowns.length === 3 &&
@@ -884,6 +1403,52 @@ describe("MetaMarketingApiSyncAdapter", () => {
     };
 
     const harness = repositoryHarness();
+    const ownerDefinition: ResultDefinition = {
+      id: "result-owner-qualified-lead",
+      canonicalKey: "qualified_lead",
+      label: "Owner Qualified Lead",
+      shortLabel: "Qualified",
+      objectiveKeys: ["leads"],
+      rawActionTypes: [],
+      rawValueActionTypes: [],
+      unit: "count",
+      efficiencyMetric: "cost_per_result",
+      direction: "lower_is_better",
+      defaultForObjective: false,
+      minimumResults: 5,
+      minimumImpressions: 1_000,
+      enabled: true,
+    };
+    const listResultDefinitions = vi.fn(async () => [
+      ...DEFAULT_RESULT_DEFINITIONS.map((definition) => ({
+        ...definition,
+        objectiveKeys: [...definition.objectiveKeys],
+        rawActionTypes: [...definition.rawActionTypes],
+        rawValueActionTypes: [
+          ...(definition.rawValueActionTypes ?? []),
+        ],
+      })),
+      ownerDefinition,
+    ]);
+    const ownerMappings = [
+      ...defaultResultMappings(),
+      {
+        id: "owner-mapping-1",
+        canonicalResultKey: "qualified_lead",
+        rawActionType: "owner_qualified_lead",
+        metricSource: "action" as const,
+        priority: 0,
+        mappingSource: "owner" as const,
+        enabled: true,
+      },
+    ];
+    const ownerResultMappingVersion =
+      computeResultMappingVersion(ownerMappings);
+    const listResultMappings = vi.fn(async () => ownerMappings);
+    Object.assign(harness.repository, {
+      listResultDefinitions,
+      listResultMappings,
+    });
     const adapter = new MetaMarketingApiSyncAdapter({
       client,
       expectedMetaUserId: "user-1",
@@ -920,6 +1485,7 @@ describe("MetaMarketingApiSyncAdapter", () => {
       level: "ad",
       time_increment: 1,
       use_account_attribution_setting: true,
+      action_report_time: "mixed",
       breakdowns: [
         "publisher_platform",
         "platform_position",
@@ -946,6 +1512,20 @@ describe("MetaMarketingApiSyncAdapter", () => {
       ),
     ).toBe(true);
     expect(
+      insightCalls.every((query) => query.action_report_time === "mixed"),
+    ).toBe(true);
+    expect(
+      insightCalls
+        .filter(
+          (query) =>
+            query.level === "account" || query.level === "campaign",
+        )
+        .every(
+          (query) =>
+            !("time_increment" in query) && !("breakdowns" in query),
+        ),
+    ).toBe(true);
+    expect(
       insightCalls.some(
         (query) =>
           Array.isArray(query.breakdowns) &&
@@ -960,10 +1540,39 @@ describe("MetaMarketingApiSyncAdapter", () => {
         legacy_direct_field: 0,
         unavailable: 1,
       },
+      result_definition_source: "owner_registry",
+      result_mapping_version: ownerResultMappingVersion,
     });
+    expect(listResultDefinitions).toHaveBeenCalledOnce();
+    expect(listResultMappings).toHaveBeenCalledOnce();
 
     const metrics = harness.metricBatches.flat();
+    expect(harness.publishCalls).toHaveLength(1);
+    expect(harness.publishCalls[0]).toMatchObject({
+      connectionId: "connection:1",
+      syncRunId: "run:1",
+      resultMappingVersion: ownerResultMappingVersion,
+      replacements: [
+        {
+          adAccountId: "account:act_100",
+          dateFrom: "2026-07-20",
+          dateTo: "2026-07-21",
+        },
+      ],
+    });
+    const accountPeriodReach =
+      harness.publishCalls[0].periodReachSnapshots.find(
+        (snapshot) => snapshot.scopeLevel === "account",
+      );
+    expect(accountPeriodReach?.reach).toBe(200);
     expect(metrics).toHaveLength(2);
+    expect(
+      metrics.reduce(
+        (sum, metric) => sum + (metric.reportedReach ?? 0),
+        0,
+      ),
+    ).toBe(230);
+    expect(accountPeriodReach?.reach).not.toBe(230);
     expect(metrics.find((metric) => metric.adId === "ad:ad-static")).toMatchObject({
       metricScope: "asset",
       allocationMethod: "single_asset",
@@ -972,6 +1581,32 @@ describe("MetaMarketingApiSyncAdapter", () => {
       installs: 5,
       video3sViews: 11,
       attributionWindow: "7d_click_1d_view",
+      actionReportTime: "mixed",
+      syncVersion: "run:1",
+      canonicalResultMetrics: expect.arrayContaining([
+        {
+          canonicalResultKey: "install",
+          value: 5,
+          selectedActionType: "mobile_app_install",
+        },
+        {
+          canonicalResultKey: "purchase",
+          value: 2,
+          selectedActionType: "purchase",
+        },
+        {
+          canonicalResultKey: "qualified_lead",
+          value: 4,
+          selectedActionType: "owner_qualified_lead",
+        },
+      ]),
+      canonicalResultValues: [
+        {
+          canonicalResultKey: "purchase_value",
+          value: 125,
+          selectedActionType: "purchase",
+        },
+      ],
       actionMappingVersion:
         actionMappingVersion({
           installs: {
@@ -984,6 +1619,30 @@ describe("MetaMarketingApiSyncAdapter", () => {
           },
         }),
     });
+    const staticMetric = metrics.find(
+      (metric) => metric.adId === "ad:ad-static",
+    );
+    expect(
+      staticMetric?.canonicalResultMetrics?.filter(
+        (fact) => fact.canonicalResultKey === "install",
+      ),
+    ).toHaveLength(1);
+    expect(
+      staticMetric?.canonicalResultMetrics?.find(
+        (fact) => fact.canonicalResultKey === "install",
+      )?.value,
+    ).toBe(5);
+    expect(
+      [
+        ...(staticMetric?.canonicalResultMetrics ?? []),
+        ...(staticMetric?.canonicalResultValues ?? []),
+      ].map((fact) => fact.selectedActionType),
+    ).not.toEqual(
+      expect.arrayContaining([
+        "mobile_app_install_custom",
+        "purchase_similar",
+      ]),
+    );
     expect(metrics.find((metric) => metric.adId === "ad:ad-dynamic")).toMatchObject({
       metricScope: "ad",
       allocationMethod: "unallocated",

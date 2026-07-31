@@ -37,6 +37,23 @@ describe("computeOsCpiBaselines", () => {
 });
 
 describe("V2 rating explanation", () => {
+  it("does not turn insufficient sample size into a watch performance status", () => {
+    const explanation = explainCreativeRating({
+      installs: 2,
+      cpi: 100,
+      osBaselineCpi: 90,
+      minimumInstalls: 5,
+      os: "android",
+      format: "video",
+      currency: "USD",
+      windowDays: 30,
+      benchmarkSampleSize: 2,
+    });
+
+    expect(explanation.performanceStatus).toBe("not_eligible");
+    expect(explanation.confidence.dataStatus).not.toBe("complete");
+  });
+
   it("returns benchmark scope, thresholds, action, reasons and confidence", () => {
     const result = explainCreativeRating({
       installs: 30,

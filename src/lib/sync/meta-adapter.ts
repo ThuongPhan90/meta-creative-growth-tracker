@@ -17,7 +17,9 @@ import type {
   JsonValue,
   MetaAppInput,
   PageInput,
+  PeriodReachSnapshotInput,
 } from "@/lib/db/types";
+import { computeResultMappingVersion } from "@/lib/db/result-mapping-version";
 import {
   MetaGraphApiError,
   MetaGraphClient,
@@ -42,6 +44,13 @@ import {
   type TokenEncryptionOptions,
 } from "@/lib/security/encryption";
 import { normalizeCreativeCode } from "@/lib/reporting";
+import {
+  DEFAULT_RESULT_DEFINITIONS,
+  hydrateResultDefinitions,
+  resolveCanonicalResults,
+  type RawResultValue,
+  type ResultDefinition,
+} from "@/lib/reporting/result-definition";
 
 import type {
   MetaSyncAdapter,
@@ -164,6 +173,21 @@ const ASSET_INSIGHT_FIELDS = [
   "action_values",
   "video_play_actions",
   "video_p100_watched_actions",
+].join(",");
+const ACCOUNT_PERIOD_REACH_FIELDS = [
+  "date_start",
+  "date_stop",
+  "account_id",
+  "attribution_setting",
+  "reach",
+].join(",");
+const CAMPAIGN_PERIOD_REACH_FIELDS = [
+  "date_start",
+  "date_stop",
+  "account_id",
+  "campaign_id",
+  "attribution_setting",
+  "reach",
 ].join(",");
 
 const PURCHASE_ACTION_TYPES = [
@@ -441,6 +465,7 @@ interface StoredAd {
 interface StoredAccount {
   graph: GraphAdAccount;
   internalId: DatabaseId;
+  campaigns: Map<string, DatabaseId>;
   ads: Map<string, StoredAd>;
   inventoryComplete: boolean;
 }
@@ -1131,6 +1156,78 @@ function actionsAsJson(actions: readonly MetaAction[]): JsonValue[] {
   return actions.map((action) => toJsonObject(action));
 }
 
+function actionsAsCanonicalValues(
+  actions: readonly MetaAction[],
+): RawResultValue[] {
+  return actions.flatMap((action) => {
+    const actionType = optionalString(action.action_type);
+    const value = nonNegativeNumber(action.value);
+    return actionType && value !== null
+      ? [{ actionType, value }]
+      : [];
+  });
+}
+
+async function resultDefinitionsForSync(
+  context: MetaSyncStageContext,
+  warnings: SyncWarning[],
+): Promise<{
+  definitions: readonly ResultDefinition[];
+  resultMappingVersion: string;
+  source: "owner_registry" | "built_in_fallback";
+}> {
+  try {
+    const [definitions, mappings] = await Promise.all([
+      context.repository.listResultDefinitions(),
+      context.repository.listResultMappings(),
+    ]);
+    if (definitions.length === 0) {
+      throw new Error("The owner result registry is empty.");
+    }
+    return {
+      definitions: hydrateResultDefinitions({
+        definitions,
+        mappings,
+      }),
+      resultMappingVersion: computeResultMappingVersion(mappings),
+      source: "owner_registry",
+    };
+  } catch {
+    warnings.push({
+      code: "RESULT_DEFINITION_REGISTRY_FALLBACK",
+      resource: "result-definitions",
+      message:
+        "The saved owner result registry was unavailable; this sync used the built-in first-match definitions.",
+    });
+    return {
+      definitions: DEFAULT_RESULT_DEFINITIONS,
+      resultMappingVersion: computeResultMappingVersion(
+        DEFAULT_RESULT_DEFINITIONS.flatMap((definition) => [
+          ...definition.rawActionTypes.map(
+            (rawActionType, priority) => ({
+              canonicalResultKey: definition.canonicalKey,
+              rawActionType,
+              metricSource: "action" as const,
+              priority,
+              enabled: definition.enabled,
+            }),
+          ),
+          ...(definition.rawValueActionTypes ?? []).map(
+            (rawActionType, priority) => ({
+              canonicalResultKey: definition.canonicalKey,
+              rawActionType,
+              metricSource: "action_value" as const,
+              priority,
+              enabled: definition.enabled,
+            }),
+          ),
+        ]),
+      ),
+      source: "built_in_fallback",
+    };
+  }
+}
+
 function inferredCreativeFormat(
   creative: GraphCreative,
   assets: readonly PhysicalCreativeAsset[],
@@ -1193,6 +1290,7 @@ function dailyMetricNaturalKey(metric: DailyMetricInput): string {
     metric.platformPosition ?? "ALL",
     metric.impressionDevice ?? "ALL",
     metric.attributionWindow ?? "account_default",
+    metric.actionReportTime ?? "mixed",
   ].join("\u001f");
 }
 
@@ -1923,6 +2021,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       account.internalId,
       campaignInputs,
     );
+    account.campaigns = new Map(campaignInternalIds);
     stats.campaigns += campaignInternalIds.size;
 
     let missingCampaignLinks = 0;
@@ -2384,6 +2483,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         state.accounts.set(metaAccountId, {
           graph: accountGraph,
           internalId,
+          campaigns: new Map(),
           ads: new Map(),
           inventoryComplete: true,
         });
@@ -2542,6 +2642,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         time_increment: 1,
         time_range: JSON.stringify({ since: dateFrom, until: dateTo }),
         use_account_attribution_setting: true,
+        action_report_time: "mixed",
         limit: 500,
       };
       if (attempt.values.length > 0) {
@@ -2622,6 +2723,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
                 until: dateTo,
               }),
               use_account_attribution_setting: true,
+              action_report_time: "mixed",
               breakdowns,
               limit: 500,
             },
@@ -2661,6 +2763,137 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     return { rows, modes };
   }
 
+  private async readPeriodReachSnapshots(
+    context: MetaSyncStageContext,
+    account: StoredAccount,
+    dateFrom: string,
+    dateTo: string,
+  ): Promise<{
+    snapshots: PeriodReachSnapshotInput[];
+    rowsFetched: number;
+  }> {
+    const path = `${canonicalAdAccountId(account.graph)}/insights`;
+    const timeRange = JSON.stringify({
+      since: dateFrom,
+      until: dateTo,
+    });
+    const options = {
+      signal: context.signal,
+      maxPages: 2_000,
+      maxItems: 1_000_000,
+    };
+    const [accountRows, campaignRows] = await Promise.all([
+      this.client.getAll<MetaInsightRow>(
+        path,
+        {
+          fields: ACCOUNT_PERIOD_REACH_FIELDS,
+          level: "account",
+          time_range: timeRange,
+          use_account_attribution_setting: true,
+          action_report_time: "mixed",
+          limit: 500,
+        },
+        options,
+      ),
+      this.client.getAll<MetaInsightRow>(
+        path,
+        {
+          fields: CAMPAIGN_PERIOD_REACH_FIELDS,
+          level: "campaign",
+          time_range: timeRange,
+          use_account_attribution_setting: true,
+          action_report_time: "mixed",
+          limit: 500,
+        },
+        options,
+      ),
+    ]);
+    const exactPeriod = (row: MetaInsightRow) =>
+      optionalString(row.date_start) === dateFrom &&
+      optionalString(row.date_stop) === dateTo;
+    const parsedReach = (row: MetaInsightRow | undefined) => {
+      if (!row) {
+        return 0;
+      }
+      if (row.reach === undefined || row.reach === null) {
+        throw new TypeError(
+          "Meta omitted Reach from a returned period row.",
+        );
+      }
+      const value = nonNegativeNumber(row.reach);
+      if (value === null || !Number.isSafeInteger(value)) {
+        throw new TypeError("Meta returned an invalid period Reach value.");
+      }
+      return value;
+    };
+    if (
+      accountRows.length > 1 ||
+      accountRows.some((row) => !exactPeriod(row))
+    ) {
+      throw new TypeError(
+        "Meta account-level Reach did not match the requested period.",
+      );
+    }
+    if (accountRows.length === 0 && campaignRows.length > 0) {
+      throw new TypeError(
+        "Meta omitted account-level Reach for a non-empty campaign period.",
+      );
+    }
+    const accountRow = accountRows[0];
+    const accountAttributionWindow =
+      optionalString(accountRow?.attribution_setting) ??
+      "account_default";
+    const campaignRowsById = new Map<string, MetaInsightRow>();
+    for (const row of campaignRows) {
+      const metaCampaignId = optionalString(row.campaign_id);
+      if (
+        !metaCampaignId ||
+        !exactPeriod(row) ||
+        !account.campaigns.has(metaCampaignId) ||
+        campaignRowsById.has(metaCampaignId)
+      ) {
+        throw new TypeError(
+          "Meta campaign-level Reach did not match the current inventory and requested period.",
+        );
+      }
+      campaignRowsById.set(metaCampaignId, row);
+    }
+
+    const snapshots: PeriodReachSnapshotInput[] = [
+      {
+        adAccountId: account.internalId,
+        campaignId: null,
+        scopeLevel: "account",
+        dateFrom,
+        dateTo,
+        attributionWindow: accountAttributionWindow,
+        actionReportTime: "mixed",
+        syncVersion: context.syncRunId,
+        reach: parsedReach(accountRow),
+      },
+    ];
+    for (const [metaCampaignId, campaignId] of account.campaigns) {
+      const row = campaignRowsById.get(metaCampaignId);
+      snapshots.push({
+        adAccountId: account.internalId,
+        campaignId,
+        scopeLevel: "campaign",
+        dateFrom,
+        dateTo,
+        attributionWindow:
+          optionalString(row?.attribution_setting) ??
+          accountAttributionWindow,
+        actionReportTime: "mixed",
+        syncVersion: context.syncRunId,
+        reach: parsedReach(row),
+      });
+    }
+    return {
+      snapshots,
+      rowsFetched: accountRows.length + campaignRows.length,
+    };
+  }
+
   async syncInsights(context: MetaSyncStageContext): Promise<SyncStageResult> {
     const warnings: SyncWarning[] = [];
     let state = this.inventory;
@@ -2673,6 +2906,10 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     }
 
     const settings = await context.repository.getSettings();
+    const canonicalResultRegistry = await resultDefinitionsForSync(
+      context,
+      warnings,
+    );
     const explicitWindow = context.window
       ? validateSyncWindow(context.window)
       : null;
@@ -2702,6 +2939,8 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     let duplicateRows = 0;
     let conflictingDuplicateRows = 0;
     let accountsSkippedForMapping = 0;
+    let accountsSkippedForPeriodReach = 0;
+    let periodReachRowsFetched = 0;
     const video3sSourceRows: Record<ThreeSecondVideoMetricSource, number> = {
       "actions.video_view": 0,
       "legacy.video_3_sec_watched_actions": 0,
@@ -2710,6 +2949,13 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
     const breakdownModes: JsonObject = {};
     const accountWindows: JsonObject = {};
     const coveredDateTos: string[] = [];
+    const dailyMetricReplacements: {
+      adAccountId: DatabaseId;
+      dateFrom: string;
+      dateTo: string;
+      metrics: DailyMetricInput[];
+    }[] = [];
+    const periodReachSnapshots: PeriodReachSnapshotInput[] = [];
     const insightAccounts = [...state.accounts.values()];
     let current = 0;
     let insightProgressUpdates = Promise.resolve();
@@ -2724,7 +2970,7 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         context.reportProgress({
           current: completed,
           total: insightAccounts.length,
-          message: `Stored insights for ${canonicalAdAccountId(account.graph)}`,
+          message: `Prepared insights for ${canonicalAdAccountId(account.graph)}`,
           details: { date_from: dateFrom, date_to: dateTo },
         }),
       );
@@ -2787,12 +3033,40 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         dateTo,
         warnings,
       );
+      let periodReachResult: {
+        snapshots: PeriodReachSnapshotInput[];
+        rowsFetched: number;
+      };
+      try {
+        periodReachResult = await this.readPeriodReachSnapshots(
+          context,
+          account,
+          dateFrom,
+          dateTo,
+        );
+      } catch (error) {
+        throwIfAborted(context.signal);
+        accountsSkippedForPeriodReach += 1;
+        warnings.push(
+          warning(
+            "META_PERIOD_REACH_UNAVAILABLE",
+            canonicalAdAccountId(account.graph),
+            error,
+          ),
+        );
+        await markInsightAccountComplete(account, dateFrom, dateTo);
+        return;
+      }
       breakdownModes[canonicalAdAccountId(account.graph)] = {
         delivery: result.breakdownMode,
         asset: assetResult.modes,
       };
-      rowsFetched += result.rows.length + assetResult.rows.length;
+      rowsFetched +=
+        result.rows.length +
+        assetResult.rows.length +
+        periodReachResult.rowsFetched;
       assetBreakdownRowsFetched += assetResult.rows.length;
+      periodReachRowsFetched += periodReachResult.rowsFetched;
 
       const primaryByGroup = new Map<string, MetaInsightRow[]>();
       const primaryWithoutGroup: MetaInsightRow[] = [];
@@ -2956,6 +3230,11 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
                 strategy: "first-match",
               })
             : parsed.inlineLinkClicks;
+        const canonicalResults = resolveCanonicalResults({
+          actions: actionsAsCanonicalValues(actions),
+          actionValues: actionsAsCanonicalValues(actionValues),
+          definitions: canonicalResultRegistry.definitions,
+        });
 
         dailyMetrics.push({
           metricDate,
@@ -2979,6 +3258,10 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
             optionalString(row.attribution_setting) ??
             optionalString(row.attribution_window) ??
             "account_default",
+          actionReportTime: "mixed",
+          syncVersion: context.syncRunId,
+          resultMappingVersion:
+            canonicalResultRegistry.resultMappingVersion,
           accountTimezone:
             optionalString(account.graph.timezone_name) ??
             settings.reportingTimezone,
@@ -2999,6 +3282,20 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
           video100Views: parsed.completedVideoViews,
           rawActions: actionsAsJson(actions),
           rawActionValues: actionsAsJson(actionValues),
+          canonicalResultMetrics: canonicalResults
+            .filter((result) => result.source === "action")
+            .map((result) => ({
+              canonicalResultKey: result.canonicalKey,
+              value: result.value,
+              selectedActionType: result.selectedActionType,
+            })),
+          canonicalResultValues: canonicalResults
+            .filter((result) => result.source === "action_value")
+            .map((result) => ({
+              canonicalResultKey: result.canonicalKey,
+              value: result.value,
+              selectedActionType: result.selectedActionType,
+            })),
           rawPayload: toJsonObject(row),
           actionMappingVersion: currentActionMappingVersion,
         });
@@ -3046,14 +3343,13 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         return;
       }
       throwIfAborted(context.signal);
-      const storedMetrics =
-        await context.repository.replaceDailyMetricsWindow({
-          adAccountId: account.internalId,
-          dateFrom,
-          dateTo,
-          metrics: [...uniqueDailyMetrics.values()],
-        });
-      metricsUpserted += storedMetrics;
+      dailyMetricReplacements.push({
+        adAccountId: account.internalId,
+        dateFrom,
+        dateTo,
+        metrics: [...uniqueDailyMetrics.values()],
+      });
+      periodReachSnapshots.push(...periodReachResult.snapshots);
       accountsSucceeded += 1;
       coveredDateTos.push(dateTo);
       await markInsightAccountComplete(account, dateFrom, dateTo);
@@ -3064,6 +3360,43 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
       AD_ACCOUNT_INSIGHT_SYNC_CONCURRENCY,
       syncInsightAccount,
     );
+    throwIfAborted(context.signal);
+    const completeSnapshot =
+      insightAccounts.length > 0 &&
+      accountsSucceeded === insightAccounts.length;
+    if (insightAccounts.length > 0 && !completeSnapshot) {
+      warnings.push({
+        code: "META_INSIGHTS_SNAPSHOT_PRESERVED",
+        resource: "insights",
+        message:
+          "At least one account window was incomplete, so no account replacements were published and the previous reporting snapshot remains visible.",
+      });
+    }
+    metricsUpserted = await context.repository.publishDailyMetricWindows({
+      connectionId: context.connectionId,
+      syncRunId: context.syncRunId,
+      resultMappingVersion:
+        canonicalResultRegistry.resultMappingVersion,
+      periodReachSnapshots: completeSnapshot
+        ? periodReachSnapshots.sort(
+            (left, right) =>
+              String(left.adAccountId).localeCompare(
+                String(right.adAccountId),
+              ) ||
+              left.scopeLevel.localeCompare(right.scopeLevel) ||
+              String(left.campaignId ?? "").localeCompare(
+                String(right.campaignId ?? ""),
+              ),
+          )
+        : [],
+      replacements: completeSnapshot
+        ? dailyMetricReplacements.sort((left, right) =>
+            String(left.adAccountId).localeCompare(
+              String(right.adAccountId),
+            ),
+          )
+        : [],
+    });
 
     if (unmappedRows > 0) {
       warnings.push({
@@ -3100,9 +3433,16 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
         account_windows: accountWindows,
         accounts_attempted: state.accounts.size,
         accounts_succeeded: accountsSucceeded,
+        accounts_published: completeSnapshot ? accountsSucceeded : 0,
         accounts_preserved_on_partial_mapping: accountsSkippedForMapping,
+        accounts_preserved_on_period_reach_failure:
+          accountsSkippedForPeriodReach,
         rows_fetched: rowsFetched,
         asset_breakdown_rows_fetched: assetBreakdownRowsFetched,
+        period_reach_rows_fetched: periodReachRowsFetched,
+        period_reach_snapshots_published: completeSnapshot
+          ? periodReachSnapshots.length
+          : 0,
         exact_asset_coverage_groups: exactCoverageGroups,
         discarded_exact_asset_coverage_groups:
           discardedExactCoverageGroups,
@@ -3121,6 +3461,9 @@ export class MetaMarketingApiSyncAdapter implements MetaSyncAdapter {
           unavailable: video3sSourceRows.unavailable,
         },
         breakdown_modes: breakdownModes,
+        result_definition_source: canonicalResultRegistry.source,
+        result_mapping_version:
+          canonicalResultRegistry.resultMappingVersion,
         ...(implicitAssetStats
           ? { implicit_asset_sync: implicitAssetStats }
           : {}),
