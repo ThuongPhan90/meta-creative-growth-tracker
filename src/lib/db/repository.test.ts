@@ -378,6 +378,68 @@ describe("Atomic daily metric publishing", () => {
     expect(visibleSyncVersion).toBe("run-new");
   });
 
+  it("advances the snapshot for an exact zero-delivery account window", async () => {
+    const transactionUnsafe = vi.fn(
+      async (query: string, _parameters?: unknown[]) => {
+        void _parameters;
+        if (query.includes("from tracker.meta_connections")) {
+          return [{ connection_id: "connection-1" }];
+        }
+        if (query.includes("from tracker.result_mappings mapping")) {
+          return TEST_RESULT_MAPPING_ROWS;
+        }
+        if (query.includes("insert into tracker.period_reach_snapshots")) {
+          return [{ affected_count: 1 }];
+        }
+        return [];
+      },
+    );
+    const begin = vi.fn(
+      async (
+        callback: (transaction: { unsafe: typeof transactionUnsafe }) =>
+          Promise<unknown>,
+      ) => callback({ unsafe: transactionUnsafe }),
+    );
+    const repository = new TrackerRepository({
+      begin,
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.publishDailyMetricWindows({
+        connectionId: "connection-1",
+        syncRunId: "run-new",
+        resultMappingVersion: TEST_RESULT_MAPPING_VERSION,
+        periodReachSnapshots: [periodReach("account-1", 0)],
+        replacements: [
+          {
+            adAccountId: "account-1",
+            dateFrom: "2026-07-20",
+            dateTo: "2026-07-21",
+            metrics: [],
+          },
+        ],
+      }),
+    ).resolves.toBe(0);
+
+    expect(begin).toHaveBeenCalledOnce();
+    expect(
+      transactionUnsafe.mock.calls.some(([query]) =>
+        query.includes("insert into tracker.period_reach_snapshots"),
+      ),
+    ).toBe(true);
+    const [pointerQuery, pointerParameters] =
+      transactionUnsafe.mock.calls.at(-1) ?? [];
+    expect(pointerQuery).toContain("insert into tracker.reporting_snapshots");
+    expect(pointerParameters).toEqual([
+      "connection-1",
+      "run-new",
+      "run-new",
+      TEST_RESULT_MAPPING_VERSION,
+      "2026-07-20",
+      "2026-07-21",
+    ]);
+  });
+
   it("rejects multiple daily attribution windows across distinct grains in one account", async () => {
     const begin = vi.fn(async () => {
       throw new Error("The invalid publish must not open a transaction.");

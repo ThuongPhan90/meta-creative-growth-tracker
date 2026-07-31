@@ -406,6 +406,8 @@ function singleAccountSyncClient(input: {
   accountPeriodRows?: readonly MetaInsightRow[];
   campaignPeriodRows?: readonly MetaInsightRow[];
   insightQueries?: MetaGraphQuery[];
+  assetInsightsError?: Error;
+  assetRows?: readonly MetaInsightRow[];
 }): MetaGraphReadClient {
   const inventory: Record<string, unknown[]> = {
     "me/businesses": [],
@@ -484,7 +486,10 @@ function singleAccountSyncClient(input: {
           breakdowns.includes("image_asset") ||
           breakdowns.includes("video_asset")
         ) {
-          return [] as T[];
+          if (input.assetInsightsError) {
+            throw input.assetInsightsError;
+          }
+          return [...(input.assetRows ?? [])] as T[];
         }
         return [...input.dailyRows] as T[];
       }
@@ -1267,6 +1272,320 @@ describe("MetaMarketingApiSyncAdapter", () => {
       accounts_published: 0,
       accounts_preserved_on_period_reach_failure: 1,
       period_reach_snapshots_published: 0,
+    });
+    expect(result.checkpoint).toBeUndefined();
+  });
+
+  it("publishes zero Reach for a metadata-only account period with no delivery", async () => {
+    const client = singleAccountSyncClient({
+      dailyRows: [],
+      accountPeriodRows: [
+        {
+          date_start: "2026-07-20",
+          date_stop: "2026-07-21",
+          account_id: "100",
+          attribution_setting: "7d_click_1d_view",
+        },
+      ],
+      campaignPeriodRows: [],
+    });
+    const harness = repositoryHarness();
+    const adapter = new MetaMarketingApiSyncAdapter({ client });
+    const syncContext = context(harness.repository);
+
+    await adapter.syncAssets(syncContext);
+    const result = await adapter.syncInsights(syncContext);
+
+    expect(harness.publishCalls).toEqual([
+      expect.objectContaining({
+        periodReachSnapshots: expect.arrayContaining([
+          expect.objectContaining({
+            scopeLevel: "account",
+            campaignId: null,
+            reach: 0,
+          }),
+          expect.objectContaining({
+            scopeLevel: "campaign",
+            reach: 0,
+          }),
+        ]),
+        replacements: [
+          expect.objectContaining({
+            adAccountId: "account:act_100",
+            metrics: [],
+          }),
+        ],
+      }),
+    ]);
+    expect(result.warnings).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "META_PERIOD_REACH_UNAVAILABLE" }),
+      ]),
+    );
+    expect(result.stats).toMatchObject({
+      accounts_succeeded: 1,
+      accounts_published: 1,
+      accounts_preserved_on_period_reach_failure: 0,
+      period_reach_omitted_zero_rows_published: 1,
+      period_reach_snapshots_published: 2,
+    });
+    expect(result.checkpoint).toBeDefined();
+  });
+
+  it("keeps missing account Reach fail-closed when daily delivery exists", async () => {
+    const client = singleAccountSyncClient({
+      dailyRows: [
+        {
+          date_start: "2026-07-20",
+          date_stop: "2026-07-20",
+          account_id: "100",
+          account_currency: "USD",
+          campaign_id: "campaign-1",
+          adset_id: "adset-1",
+          ad_id: "ad-1",
+          spend: "10",
+          impressions: "100",
+        },
+      ],
+      accountPeriodRows: [],
+      campaignPeriodRows: [],
+    });
+    const harness = repositoryHarness();
+    const adapter = new MetaMarketingApiSyncAdapter({ client });
+    const syncContext = context(harness.repository);
+
+    await adapter.syncAssets(syncContext);
+    const result = await adapter.syncInsights(syncContext);
+
+    expect(harness.publishCalls).toEqual([
+      expect.objectContaining({
+        periodReachSnapshots: [],
+        replacements: [],
+      }),
+    ]);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "META_PERIOD_REACH_UNAVAILABLE",
+          resource: "act_100",
+        }),
+      ]),
+    );
+    expect(result.stats).toMatchObject({
+      accounts_succeeded: 0,
+      accounts_published: 0,
+      accounts_preserved_on_period_reach_failure: 1,
+      period_reach_omitted_zero_rows_published: 0,
+    });
+    expect(result.checkpoint).toBeUndefined();
+  });
+
+  it("keeps missing account Reach fail-closed when exact asset evidence is unavailable", async () => {
+    const client = singleAccountSyncClient({
+      dailyRows: [],
+      accountPeriodRows: [
+        {
+          date_start: "2026-07-20",
+          date_stop: "2026-07-21",
+          account_id: "100",
+        },
+      ],
+      campaignPeriodRows: [],
+      assetInsightsError: new Error("Asset breakdown unavailable"),
+    });
+    const harness = repositoryHarness();
+    const adapter = new MetaMarketingApiSyncAdapter({ client });
+    const syncContext = context(harness.repository);
+
+    await adapter.syncAssets(syncContext);
+    const result = await adapter.syncInsights(syncContext);
+
+    expect(harness.publishCalls).toEqual([
+      expect.objectContaining({
+        periodReachSnapshots: [],
+        replacements: [],
+      }),
+    ]);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "META_ASSET_BREAKDOWN_UNAVAILABLE",
+          resource: "act_100",
+        }),
+        expect.objectContaining({
+          code: "META_PERIOD_REACH_UNAVAILABLE",
+          resource: "act_100",
+        }),
+      ]),
+    );
+    expect(result.stats).toMatchObject({
+      accounts_succeeded: 0,
+      accounts_published: 0,
+      accounts_preserved_on_period_reach_failure: 1,
+      period_reach_omitted_zero_rows_published: 0,
+    });
+    expect(result.checkpoint).toBeUndefined();
+  });
+
+  it.each([
+    {
+      caseName: "exact asset delivery exists",
+      input: {
+        dailyRows: [],
+        accountPeriodRows: [
+          {
+            date_start: "2026-07-20",
+            date_stop: "2026-07-21",
+            account_id: "100",
+          },
+        ],
+        campaignPeriodRows: [],
+        assetRows: [
+          {
+            date_start: "2026-07-20",
+            date_stop: "2026-07-20",
+            account_id: "100",
+            campaign_id: "campaign-1",
+            adset_id: "adset-1",
+            ad_id: "ad-1",
+            impressions: "1",
+          },
+        ],
+      },
+    },
+    {
+      caseName: "campaign-period delivery exists",
+      input: {
+        dailyRows: [],
+        accountPeriodRows: [
+          {
+            date_start: "2026-07-20",
+            date_stop: "2026-07-21",
+            account_id: "100",
+          },
+        ],
+        campaignPeriodRows: [
+          {
+            date_start: "2026-07-20",
+            date_stop: "2026-07-21",
+            account_id: "100",
+            campaign_id: "campaign-1",
+            reach: "1",
+          },
+        ],
+      },
+    },
+    {
+      caseName: "Reach is blank instead of nullish",
+      input: {
+        dailyRows: [],
+        accountPeriodRows: [
+          {
+            date_start: "2026-07-20",
+            date_stop: "2026-07-21",
+            account_id: "100",
+            reach: "   ",
+          },
+        ],
+        campaignPeriodRows: [],
+      },
+    },
+  ])("keeps zero Reach normalization fail-closed when $caseName", async ({ input }) => {
+    const client = singleAccountSyncClient(input);
+    const harness = repositoryHarness();
+    const adapter = new MetaMarketingApiSyncAdapter({ client });
+    const syncContext = context(harness.repository);
+
+    await adapter.syncAssets(syncContext);
+    const result = await adapter.syncInsights(syncContext);
+
+    expect(harness.publishCalls).toEqual([
+      expect.objectContaining({
+        periodReachSnapshots: [],
+        replacements: [],
+      }),
+    ]);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "META_PERIOD_REACH_UNAVAILABLE",
+          resource: "act_100",
+        }),
+      ]),
+    );
+    expect(result.stats).toMatchObject({
+      accounts_succeeded: 0,
+      accounts_published: 0,
+      accounts_preserved_on_period_reach_failure: 1,
+      period_reach_omitted_zero_rows_published: 0,
+    });
+    expect(result.checkpoint).toBeUndefined();
+  });
+
+  it.each([
+    {
+      caseName: "campaign id is present",
+      campaignId: "campaign-1",
+    },
+    {
+      caseName: "campaign id is omitted",
+      campaignId: undefined,
+    },
+    {
+      caseName: "campaign id conflicts with the stored ad",
+      campaignId: "campaign-2",
+    },
+  ])("keeps an absent campaign Reach row fail-closed when delivery $caseName", async ({ campaignId }) => {
+    const client = singleAccountSyncClient({
+      dailyRows: [
+        {
+          date_start: "2026-07-20",
+          date_stop: "2026-07-20",
+          account_id: "100",
+          account_currency: "USD",
+          campaign_id: campaignId,
+          adset_id: "adset-1",
+          ad_id: "ad-1",
+          spend: "10",
+          impressions: "100",
+        },
+      ],
+      accountPeriodRows: [
+        {
+          date_start: "2026-07-20",
+          date_stop: "2026-07-21",
+          account_id: "100",
+          reach: "80",
+        },
+      ],
+      campaignPeriodRows: [],
+    });
+    const harness = repositoryHarness();
+    const adapter = new MetaMarketingApiSyncAdapter({ client });
+    const syncContext = context(harness.repository);
+
+    await adapter.syncAssets(syncContext);
+    const result = await adapter.syncInsights(syncContext);
+
+    expect(harness.publishCalls).toEqual([
+      expect.objectContaining({
+        periodReachSnapshots: [],
+        replacements: [],
+      }),
+    ]);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "META_PERIOD_REACH_UNAVAILABLE",
+          resource: "act_100",
+        }),
+      ]),
+    );
+    expect(result.stats).toMatchObject({
+      accounts_succeeded: 0,
+      accounts_published: 0,
+      accounts_preserved_on_period_reach_failure: 1,
+      period_reach_omitted_zero_rows_published: 0,
     });
     expect(result.checkpoint).toBeUndefined();
   });
