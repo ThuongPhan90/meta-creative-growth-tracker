@@ -8,6 +8,8 @@ import type {
   ActionValueDailyInput,
   AdAccountInput,
   AdCreativeLinkInput,
+  AdInventoryFilters,
+  AdInventoryPage,
   AdInput,
   AdSetInput,
   AssetRelationshipInput,
@@ -43,6 +45,11 @@ import type {
   DeliveryTrendItem,
   JsonObject,
   InsightsFreshnessRecord,
+  LiveDeliveryAccountFreshness,
+  LiveDeliveryMetricState,
+  LiveDeliverySnapshotMetric,
+  LiveDeliverySummary,
+  LiveDeliverySummaryFilters,
   MetaAppInput,
   MetaAssetInventory,
   MetaConnectionInput,
@@ -99,12 +106,94 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String) : [];
 }
 
+function normalizeSelectedAdAccountMetaIds(
+  values: readonly string[],
+): string[] {
+  const normalized = [
+    ...new Set(values.map((value) => value.trim()).filter(Boolean)),
+  ];
+  if (normalized.length > 250) {
+    throw new RangeError(
+      "A reporting scope cannot contain more than 250 Ad Accounts.",
+    );
+  }
+  return normalized;
+}
+
 function asJsonObject(value: unknown): JsonObject {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return value as JsonObject;
   }
 
   return {};
+}
+
+function asJsonArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string") return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function asLiveDeliveryAccountState(
+  value: unknown,
+): LiveDeliveryAccountFreshness["inventoryState"] {
+  return value === "ready" || value === "stale" || value === "unavailable"
+    ? value
+    : "unavailable";
+}
+
+function mapLiveDeliveryAccounts(
+  value: unknown,
+): LiveDeliveryAccountFreshness[] {
+  return asJsonArray(value).flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const row = item as DatabaseRow;
+    const metaAdAccountId = row.metaAdAccountId;
+    if (typeof metaAdAccountId !== "string" || !metaAdAccountId.trim()) {
+      return [];
+    }
+    return [
+      {
+        metaAdAccountId,
+        accountTimezone:
+          typeof row.accountTimezone === "string"
+            ? row.accountTimezone
+            : null,
+        isOperational: Boolean(row.isOperational),
+        inventoryObservedAt:
+          typeof row.inventoryObservedAt === "string"
+            ? row.inventoryObservedAt
+            : null,
+        latestMetricDate:
+          typeof row.latestMetricDate === "string"
+            ? row.latestMetricDate
+            : null,
+        inventoryState: asLiveDeliveryAccountState(row.inventoryState),
+        deliveryState: asLiveDeliveryAccountState(row.deliveryState),
+      },
+    ];
+  });
+}
+
+function liveDeliveryMetric(input: {
+  count: unknown;
+  state: LiveDeliveryMetricState;
+  includedAccounts: number;
+  selectedAccounts: number;
+}): LiveDeliverySnapshotMetric {
+  return {
+    value: input.state === "unavailable" ? null : asNumber(input.count),
+    state: input.state,
+    coverage: {
+      includedAccounts: input.includedAccounts,
+      selectedAccounts: input.selectedAccounts,
+    },
+  };
 }
 
 function jsonPayload(
@@ -3036,6 +3125,439 @@ export class TrackerRepository {
     };
   }
 
+  /**
+   * Current delivery is intentionally independent from the historical
+   * reporting date range. The query reads the published reporting snapshot,
+   * resolves one latest metric date per selected account, then rolls all
+   * reconciliation-selected ad/asset rows up to one `(account, ad, day)`
+   * record before counting distinct Ads.
+   */
+  async getLiveDeliverySummary(
+    filters: LiveDeliverySummaryFilters,
+  ): Promise<LiveDeliverySummary> {
+    const selectedAdAccountMetaIds = normalizeSelectedAdAccountMetaIds(
+      filters.selectedAdAccountMetaIds,
+    );
+    const freshnessThresholdDays = Math.min(
+      Math.max(Math.floor(filters.freshnessThresholdDays ?? 2), 0),
+      30,
+    );
+    const asOf = filters.asOf ? new Date(filters.asOf) : new Date();
+    if (!Number.isFinite(asOf.getTime())) {
+      throw new TypeError("Live delivery asOf must be a valid timestamp.");
+    }
+    if (selectedAdAccountMetaIds.length === 0) {
+      const unavailableMetric: LiveDeliverySnapshotMetric = {
+        value: null,
+        state: "unavailable",
+        coverage: { includedAccounts: 0, selectedAccounts: 0 },
+      };
+      return {
+        inventoryObservedAt: null,
+        reportingSnapshot: {
+          syncVersion: null,
+          publishedAt: null,
+          state: "unavailable",
+        },
+        latestRun: { status: null, finishedAt: null },
+        state: "unavailable",
+        metricDateMin: null,
+        metricDateMax: null,
+        selectedAccountCount: 0,
+        inventoryReadyAccountCount: 0,
+        deliveryEligibleAccountCount: 0,
+        deliveryReadyAccountCount: 0,
+        accounts: [],
+        activeCampaigns: unavailableMetric,
+        activeAdSets: unavailableMetric,
+        activeAds: unavailableMetric,
+        activeAdsComparableForDelivery: unavailableMetric,
+        activeDeliveringAds: unavailableMetric,
+        activeWithoutDelivery: unavailableMetric,
+        mappedActiveCreativeFamilies: unavailableMetric,
+        mappingCoverage: {
+          activeAdsTotal: 0,
+          activeAdsWithCreativeFamily: 0,
+          percent: null,
+        },
+      };
+    }
+
+    const rows = await this.query<DatabaseRow>(
+      `
+        with selected_accounts as (
+          select
+            account.ad_account_id,
+            account.meta_ad_account_id,
+            account.timezone_name,
+            account.is_active as account_is_active,
+            account.account_status,
+            account.last_seen_at as inventory_observed_at,
+            coalesce(
+              account.is_active and account.account_status = 1,
+              false
+            ) as is_operational
+          from tracker.meta_ad_accounts account
+          where account.connection_id = $1
+            and account.meta_ad_account_id = any($2::text[])
+        ),
+        reporting_snapshot as (
+          select snapshot.sync_version, snapshot.published_at
+          from tracker.reporting_snapshots snapshot
+          where snapshot.connection_id = $1
+          limit 1
+        ),
+        latest_run as (
+          select run.status, run.finished_at
+          from tracker.sync_runs run
+          where run.connection_id = $1
+            and run.sync_kind in ('insights', 'incremental', 'full')
+            and run.status in (
+              'queued', 'running', 'succeeded', 'partial', 'failed', 'cancelled'
+            )
+          order by coalesce(run.finished_at, run.created_at) desc
+          limit 1
+        ),
+        active_inventory as (
+          select
+            account.ad_account_id,
+            ad.campaign_id,
+            ad.ad_set_id,
+            ad.ad_id
+          from selected_accounts account
+          join tracker.meta_ads ad
+            on ad.ad_account_id = account.ad_account_id
+          where account.is_operational
+            and ad.is_active
+            and coalesce(ad.effective_status, ad.status) = 'ACTIVE'
+        ),
+        active_inventory_by_account as (
+          select
+            active.ad_account_id,
+            count(distinct active.ad_id) as active_ad_count
+          from active_inventory active
+          group by active.ad_account_id
+        ),
+        inventory_observation_by_account as (
+          select
+            account.ad_account_id,
+            max(ad.last_seen_at) as ads_observed_at
+          from selected_accounts account
+          left join tracker.meta_ads ad
+            on ad.ad_account_id = account.ad_account_id
+          group by account.ad_account_id
+        ),
+        metric_ad_day as (
+          select
+            metric.ad_account_id,
+            metric.ad_id,
+            metric.metric_date,
+            bool_or(metric.spend > 0 or metric.impressions > 0) as has_delivery
+          from tracker.daily_metrics metric
+          join selected_accounts account
+            on account.ad_account_id = metric.ad_account_id
+          join reporting_snapshot snapshot
+            on snapshot.sync_version = metric.sync_version
+          where metric.ad_id is not null
+            and metric.metric_scope in ('ad', 'asset')
+            and metric.action_report_time = 'mixed'
+          group by metric.ad_account_id, metric.ad_id, metric.metric_date
+        ),
+        latest_metric_by_account as (
+          select
+            account.ad_account_id,
+            max(metric.metric_date) as latest_metric_date
+          from selected_accounts account
+          left join metric_ad_day metric
+            on metric.ad_account_id = account.ad_account_id
+          group by account.ad_account_id
+        ),
+        account_inventory_state as (
+          select
+            account.ad_account_id,
+            account.meta_ad_account_id,
+            account.timezone_name,
+            account.is_operational,
+            coalesce(
+              observation.ads_observed_at,
+              account.inventory_observed_at
+            ) as inventory_observed_at,
+            coalesce(inventory.active_ad_count, 0) as active_ad_count,
+            latest.latest_metric_date,
+            case
+              when coalesce(
+                observation.ads_observed_at,
+                account.inventory_observed_at
+              ) is null then 'unavailable'
+              when (
+                (coalesce(
+                  observation.ads_observed_at,
+                  account.inventory_observed_at
+                ) at time zone
+                  coalesce(nullif(account.timezone_name, ''), 'UTC'))::date
+                <
+                (($4::timestamptz at time zone
+                  coalesce(nullif(account.timezone_name, ''), 'UTC'))::date
+                  - $3::integer)
+              ) then 'stale'
+              else 'ready'
+            end as inventory_state
+          from selected_accounts account
+          left join active_inventory_by_account inventory
+            on inventory.ad_account_id = account.ad_account_id
+          left join inventory_observation_by_account observation
+            on observation.ad_account_id = account.ad_account_id
+          left join latest_metric_by_account latest
+            on latest.ad_account_id = account.ad_account_id
+        ),
+        account_state as (
+          select
+            inventory.*,
+            case
+              when not inventory.is_operational
+                or inventory.active_ad_count = 0
+                then 'unavailable'
+              when inventory.inventory_state = 'unavailable'
+                or inventory.latest_metric_date is null
+                then 'unavailable'
+              when inventory.inventory_state = 'stale'
+                or inventory.latest_metric_date < (
+                  ($4::timestamptz at time zone
+                    coalesce(nullif(inventory.timezone_name, ''), 'UTC'))::date
+                    - $3::integer
+                )
+                then 'stale'
+              else 'ready'
+            end as delivery_state
+          from account_inventory_state inventory
+        ),
+        inventory_ready_active_ads as (
+          select active.*
+          from active_inventory active
+          join account_state account
+            on account.ad_account_id = active.ad_account_id
+          where account.inventory_state = 'ready'
+        ),
+        comparable_active_ads as (
+          select active.*
+          from inventory_ready_active_ads active
+          join account_state account
+            on account.ad_account_id = active.ad_account_id
+          where account.delivery_state = 'ready'
+        ),
+        active_delivering_ads as (
+          select distinct active.ad_id
+          from comparable_active_ads active
+          join account_state account
+            on account.ad_account_id = active.ad_account_id
+          join metric_ad_day metric
+            on metric.ad_account_id = active.ad_account_id
+            and metric.ad_id = active.ad_id
+            and metric.metric_date = account.latest_metric_date
+          where metric.has_delivery
+        ),
+        mapped_active_creatives as (
+          select
+            count(distinct active.ad_id) as active_ads_with_creative_family,
+            count(distinct asset.creative_family_id)
+              as mapped_active_creative_families
+          from inventory_ready_active_ads active
+          join tracker.ad_creative_links ad_link
+            on ad_link.ad_id = active.ad_id
+          join tracker.creative_asset_links asset_link
+            on asset_link.creative_id = ad_link.creative_id
+          join tracker.creative_assets asset
+            on asset.creative_asset_id = asset_link.creative_asset_id
+          where asset.is_active
+            and asset.asset_type in ('video', 'image')
+            and asset.creative_family_id is not null
+        )
+        select
+          (select max(account.inventory_observed_at) from account_state account)
+            as inventory_observed_at,
+          (select snapshot.sync_version from reporting_snapshot snapshot)
+            as snapshot_sync_version,
+          (select snapshot.published_at from reporting_snapshot snapshot)
+            as snapshot_published_at,
+          (select run.status from latest_run run) as latest_run_status,
+          (select run.finished_at from latest_run run) as latest_run_finished_at,
+          (select min(account.latest_metric_date) from account_state account
+            where account.is_operational
+              and account.active_ad_count > 0
+              and account.latest_metric_date is not null) as metric_date_min,
+          (select max(account.latest_metric_date) from account_state account
+            where account.is_operational
+              and account.active_ad_count > 0
+              and account.latest_metric_date is not null) as metric_date_max,
+          (select count(*) from account_state) as selected_account_count,
+          (select count(*) from account_state account
+            where account.inventory_state = 'ready') as inventory_ready_account_count,
+          (select count(*) from account_state account
+            where account.is_operational and account.active_ad_count > 0)
+            as delivery_eligible_account_count,
+          (select count(*) from account_state account
+            where account.delivery_state = 'ready') as delivery_ready_account_count,
+          (select count(distinct active.campaign_id)
+            from inventory_ready_active_ads active) as active_campaign_count,
+          (select count(distinct active.ad_set_id)
+            from inventory_ready_active_ads active) as active_ad_set_count,
+          (select count(distinct active.ad_id)
+            from inventory_ready_active_ads active) as active_ad_count,
+          (select count(distinct active.ad_id)
+            from comparable_active_ads active) as comparable_active_ad_count,
+          (select count(*) from active_delivering_ads) as active_delivering_ad_count,
+          coalesce(mapping.mapped_active_creative_families, 0)
+            as mapped_active_creative_family_count,
+          coalesce(mapping.active_ads_with_creative_family, 0)
+            as active_ads_with_creative_family,
+          coalesce(
+            (
+              select jsonb_agg(
+                jsonb_build_object(
+                  'metaAdAccountId', account.meta_ad_account_id,
+                  'accountTimezone', nullif(account.timezone_name, ''),
+                  'isOperational', account.is_operational,
+                  'inventoryObservedAt', account.inventory_observed_at,
+                  'latestMetricDate', account.latest_metric_date,
+                  'inventoryState', account.inventory_state,
+                  'deliveryState', account.delivery_state
+                )
+                order by account.meta_ad_account_id
+              )
+              from account_state account
+            ),
+            '[]'::jsonb
+          ) as accounts
+        from mapped_active_creatives mapping
+      `,
+      [
+        filters.connectionId,
+        selectedAdAccountMetaIds,
+        freshnessThresholdDays,
+        asOf.toISOString(),
+      ],
+    );
+
+    const row = rows[0] ?? {};
+    const selectedAccountCount = asNumber(row.selected_account_count);
+    const inventoryReadyAccountCount = asNumber(
+      row.inventory_ready_account_count,
+    );
+    const deliveryEligibleAccountCount = asNumber(
+      row.delivery_eligible_account_count,
+    );
+    const deliveryReadyAccountCount = asNumber(
+      row.delivery_ready_account_count,
+    );
+    const metricDateMin =
+      asNullableIso(row.metric_date_min)?.slice(0, 10) ?? null;
+    const metricDateMax =
+      asNullableIso(row.metric_date_max)?.slice(0, 10) ?? null;
+    const deliveryDatesAligned =
+      deliveryEligibleAccountCount === 0 ||
+      (metricDateMin !== null && metricDateMin === metricDateMax);
+    const inventoryState: LiveDeliveryMetricState =
+      selectedAccountCount === 0 || inventoryReadyAccountCount === 0
+        ? "unavailable"
+        : inventoryReadyAccountCount < selectedAccountCount
+          ? "partial"
+          : "ready";
+    const deliveryState: LiveDeliveryMetricState =
+      deliveryEligibleAccountCount === 0
+        ? inventoryState
+        : deliveryReadyAccountCount === 0
+          ? "unavailable"
+          : deliveryReadyAccountCount < deliveryEligibleAccountCount ||
+              inventoryState !== "ready" ||
+              !deliveryDatesAligned
+            ? "partial"
+            : "ready";
+    const inventoryMetric = (count: unknown) =>
+      liveDeliveryMetric({
+        count,
+        state: inventoryState,
+        includedAccounts: inventoryReadyAccountCount,
+        selectedAccounts: selectedAccountCount,
+      });
+    const deliveryMetric = (count: unknown) =>
+      liveDeliveryMetric({
+        count,
+        state: deliveryState,
+        includedAccounts: deliveryReadyAccountCount,
+        selectedAccounts: deliveryEligibleAccountCount,
+      });
+    const activeAds = inventoryMetric(row.active_ad_count);
+    const activeAdsWithCreativeFamily = asNumber(
+      row.active_ads_with_creative_family,
+    );
+    const activeAdsTotal = activeAds.value ?? 0;
+
+    return {
+      inventoryObservedAt: asNullableIso(row.inventory_observed_at),
+      reportingSnapshot: {
+        syncVersion:
+          row.snapshot_sync_version === null ||
+          row.snapshot_sync_version === undefined
+            ? null
+            : String(row.snapshot_sync_version),
+        publishedAt: asNullableIso(row.snapshot_published_at),
+        state:
+          row.snapshot_sync_version === null ||
+          row.snapshot_sync_version === undefined
+            ? "unavailable"
+            : "available",
+      },
+      latestRun: {
+        status: (() => {
+          const status = row.latest_run_status;
+          return status === "queued" ||
+            status === "running" ||
+            status === "succeeded" ||
+            status === "partial" ||
+            status === "failed" ||
+            status === "cancelled"
+            ? status
+            : null;
+        })(),
+        finishedAt: asNullableIso(row.latest_run_finished_at),
+      },
+      state: deliveryState,
+      metricDateMin,
+      metricDateMax,
+      selectedAccountCount,
+      inventoryReadyAccountCount,
+      deliveryEligibleAccountCount,
+      deliveryReadyAccountCount,
+      accounts: mapLiveDeliveryAccounts(row.accounts),
+      activeCampaigns: inventoryMetric(row.active_campaign_count),
+      activeAdSets: inventoryMetric(row.active_ad_set_count),
+      activeAds,
+      activeAdsComparableForDelivery: deliveryMetric(
+        row.comparable_active_ad_count,
+      ),
+      activeDeliveringAds: deliveryMetric(row.active_delivering_ad_count),
+      activeWithoutDelivery: deliveryMetric(
+        Math.max(
+          0,
+          asNumber(row.comparable_active_ad_count) -
+            asNumber(row.active_delivering_ad_count),
+        ),
+      ),
+      mappedActiveCreativeFamilies: inventoryMetric(
+        row.mapped_active_creative_family_count,
+      ),
+      mappingCoverage: {
+        activeAdsTotal,
+        activeAdsWithCreativeFamily:
+          inventoryState === "unavailable" ? 0 : activeAdsWithCreativeFamily,
+        percent:
+          inventoryState === "unavailable" || activeAdsTotal === 0
+            ? null
+            : (activeAdsWithCreativeFamily / activeAdsTotal) * 100,
+      },
+    };
+  }
+
   async getCanonicalResultTotals(
     input: CanonicalResultTotalsFilters,
   ): Promise<CanonicalResultTotals> {
@@ -4619,6 +5141,351 @@ export class TrackerRepository {
         isActive: Boolean(row.is_active),
         lastSeenAt: asIso(row.last_seen_at),
       })),
+    };
+  }
+
+  /**
+   * Returns a single server-side page of Ads for the exact reporting account
+   * scope. The `delivery` filters are operational: they read the current
+   * published reporting snapshot and never substitute historical-period data.
+   */
+  async listAdInventory(
+    filters: AdInventoryFilters,
+  ): Promise<AdInventoryPage> {
+    const selectedAdAccountMetaIds = normalizeSelectedAdAccountMetaIds(
+      filters.selectedAdAccountMetaIds,
+    );
+    const limit = Math.min(Math.max(filters.limit ?? 50, 1), 200);
+    const offset = Math.max(filters.offset ?? 0, 0);
+    const status = filters.status ?? "all";
+    const delivery = filters.delivery ?? "all";
+    const search = filters.search?.trim().slice(0, 200) || null;
+    const includeInactiveAccounts = filters.includeInactiveAccounts === true;
+    const freshnessThresholdDays = Math.min(
+      Math.max(Math.floor(filters.freshnessThresholdDays ?? 2), 0),
+      30,
+    );
+    const asOf = filters.asOf ? new Date(filters.asOf) : new Date();
+    if (!Number.isFinite(asOf.getTime())) {
+      throw new TypeError("Ad inventory asOf must be a valid timestamp.");
+    }
+    if (selectedAdAccountMetaIds.length === 0) {
+      return { items: [], total: 0, limit, offset };
+    }
+
+    const rows = await this.query<DatabaseRow>(
+      `
+        with selected_accounts as (
+          select
+            account.ad_account_id,
+            account.meta_ad_account_id,
+            account.name as ad_account_name,
+            account.timezone_name,
+            account.last_seen_at as inventory_observed_at,
+            coalesce(
+              account.is_active and account.account_status = 1,
+              false
+            ) as is_operational
+          from tracker.meta_ad_accounts account
+          where account.connection_id = $1
+            and account.meta_ad_account_id = any($2::text[])
+            and (
+              $10::boolean
+              or (account.is_active and account.account_status = 1)
+            )
+        ),
+        reporting_snapshot as (
+          select snapshot.sync_version
+          from tracker.reporting_snapshots snapshot
+          where snapshot.connection_id = $1
+          limit 1
+        ),
+        active_inventory_by_account as (
+          select
+            account.ad_account_id,
+            count(distinct ad.ad_id) as active_ad_count
+          from selected_accounts account
+          join tracker.meta_ads ad
+            on ad.ad_account_id = account.ad_account_id
+          where account.is_operational
+            and ad.is_active
+            and coalesce(ad.effective_status, ad.status) = 'ACTIVE'
+          group by account.ad_account_id
+        ),
+        inventory_observation_by_account as (
+          select
+            account.ad_account_id,
+            max(ad.last_seen_at) as ads_observed_at
+          from selected_accounts account
+          left join tracker.meta_ads ad
+            on ad.ad_account_id = account.ad_account_id
+          group by account.ad_account_id
+        ),
+        metric_ad_day as (
+          select
+            metric.ad_account_id,
+            metric.ad_id,
+            metric.metric_date,
+            bool_or(metric.spend > 0 or metric.impressions > 0) as has_delivery
+          from tracker.daily_metrics metric
+          join selected_accounts account
+            on account.ad_account_id = metric.ad_account_id
+          join reporting_snapshot snapshot
+            on snapshot.sync_version = metric.sync_version
+          where metric.ad_id is not null
+            and metric.metric_scope in ('ad', 'asset')
+            and metric.action_report_time = 'mixed'
+          group by metric.ad_account_id, metric.ad_id, metric.metric_date
+        ),
+        latest_metric_by_account as (
+          select
+            account.ad_account_id,
+            max(metric.metric_date) as latest_metric_date
+          from selected_accounts account
+          left join metric_ad_day metric
+            on metric.ad_account_id = account.ad_account_id
+          group by account.ad_account_id
+        ),
+        account_delivery_state as (
+          select
+            account.ad_account_id,
+            account.meta_ad_account_id,
+            account.ad_account_name,
+            account.timezone_name,
+            account.is_operational,
+            coalesce(
+              observation.ads_observed_at,
+              account.inventory_observed_at
+            ) as inventory_observed_at,
+            coalesce(inventory.active_ad_count, 0) as active_ad_count,
+            latest.latest_metric_date,
+            case
+              when not account.is_operational
+                or coalesce(inventory.active_ad_count, 0) = 0
+                then 'unavailable'
+              when coalesce(
+                observation.ads_observed_at,
+                account.inventory_observed_at
+              ) is null
+                or latest.latest_metric_date is null
+                then 'unavailable'
+              when (
+                (coalesce(
+                  observation.ads_observed_at,
+                  account.inventory_observed_at
+                ) at time zone
+                  coalesce(nullif(account.timezone_name, ''), 'UTC'))::date
+                <
+                (($9::timestamptz at time zone
+                  coalesce(nullif(account.timezone_name, ''), 'UTC'))::date
+                  - $8::integer)
+              )
+                or latest.latest_metric_date < (
+                  ($9::timestamptz at time zone
+                    coalesce(nullif(account.timezone_name, ''), 'UTC'))::date
+                    - $8::integer
+                )
+                then 'stale'
+              else 'ready'
+            end as account_delivery_state
+          from selected_accounts account
+          left join active_inventory_by_account inventory
+            on inventory.ad_account_id = account.ad_account_id
+          left join inventory_observation_by_account observation
+            on observation.ad_account_id = account.ad_account_id
+          left join latest_metric_by_account latest
+            on latest.ad_account_id = account.ad_account_id
+        ),
+        creative_links as (
+          select
+            ad_link.ad_id,
+            coalesce(
+              array_agg(distinct asset.creative_family_id)
+                filter (
+                  where asset.creative_family_id is not null
+                    and asset.is_active
+                    and asset.asset_type in ('video', 'image')
+                ),
+              '{}'::text[]
+            ) as creative_family_ids
+          from tracker.ad_creative_links ad_link
+          join tracker.meta_ads ad
+            on ad.ad_id = ad_link.ad_id
+          join selected_accounts account
+            on account.ad_account_id = ad.ad_account_id
+          left join tracker.creative_asset_links asset_link
+            on asset_link.creative_id = ad_link.creative_id
+          left join tracker.creative_assets asset
+            on asset.creative_asset_id = asset_link.creative_asset_id
+            and asset.connection_id = $1
+          group by ad_link.ad_id
+        ),
+        filtered as (
+          select
+            ad.ad_id,
+            ad.meta_ad_id,
+            ad.name,
+            ad.status,
+            ad.effective_status,
+            ad.is_active,
+            ad.last_seen_at,
+            campaign.meta_campaign_id,
+            campaign.name as campaign_name,
+            ad_set.meta_ad_set_id,
+            ad_set.name as ad_set_name,
+            account.meta_ad_account_id,
+            account.ad_account_name,
+            account.is_operational,
+            account.inventory_observed_at,
+            account.latest_metric_date,
+            coalesce(creative.creative_family_ids, '{}'::text[])
+              as creative_family_ids,
+            case
+              when not account.is_operational then 'unavailable'
+              when not (
+                ad.is_active
+                and coalesce(ad.effective_status, ad.status) = 'ACTIVE'
+              ) then 'not_active'
+              when account.account_delivery_state <> 'ready'
+                then 'unavailable'
+              when coalesce(metric.has_delivery, false)
+                then 'delivering'
+              else 'missing'
+            end as delivery_state
+          from selected_accounts account
+          join tracker.meta_ads ad
+            on ad.ad_account_id = account.ad_account_id
+          join tracker.meta_campaigns campaign
+            on campaign.campaign_id = ad.campaign_id
+          join tracker.meta_ad_sets ad_set
+            on ad_set.ad_set_id = ad.ad_set_id
+          left join metric_ad_day metric
+            on metric.ad_account_id = ad.ad_account_id
+            and metric.ad_id = ad.ad_id
+            and metric.metric_date = account.latest_metric_date
+          left join creative_links creative
+            on creative.ad_id = ad.ad_id
+          where (
+            $3::text = 'all'
+            or (
+              $3::text = 'active'
+              and account.is_operational
+              and ad.is_active
+              and coalesce(ad.effective_status, ad.status) = 'ACTIVE'
+            )
+            or (
+              $3::text = 'paused'
+              and ad.is_active
+              and coalesce(ad.effective_status, ad.status) like '%PAUSED'
+            )
+          )
+            and (
+              $4::text = 'all'
+              or (
+                $4::text = 'latest'
+                and ad.is_active
+                and coalesce(ad.effective_status, ad.status) = 'ACTIVE'
+                and account.account_delivery_state = 'ready'
+                and coalesce(metric.has_delivery, false)
+              )
+              or (
+                $4::text = 'missing'
+                and ad.is_active
+                and coalesce(ad.effective_status, ad.status) = 'ACTIVE'
+                and account.account_delivery_state = 'ready'
+                and not coalesce(metric.has_delivery, false)
+              )
+            )
+            and (
+              $5::text is null
+              or ad.name ilike '%' || $5 || '%'
+              or ad.meta_ad_id ilike '%' || $5 || '%'
+              or campaign.name ilike '%' || $5 || '%'
+              or campaign.meta_campaign_id ilike '%' || $5 || '%'
+              or ad_set.name ilike '%' || $5 || '%'
+              or account.ad_account_name ilike '%' || $5 || '%'
+            )
+        ),
+        page_rows as (
+          select filtered.*
+          from filtered
+          order by
+            (
+              filtered.is_operational
+              and filtered.is_active
+              and coalesce(filtered.effective_status, filtered.status) = 'ACTIVE'
+            ) desc,
+            (filtered.delivery_state = 'delivering') desc,
+            filtered.last_seen_at desc,
+            filtered.name,
+            filtered.meta_ad_id
+          limit $6
+          offset $7
+        )
+        select page_rows.*, total.total_count
+        from (select count(*) as total_count from filtered) total
+        left join page_rows on true
+        order by
+          (
+            page_rows.is_operational
+            and page_rows.is_active
+            and coalesce(page_rows.effective_status, page_rows.status) = 'ACTIVE'
+          ) desc nulls last,
+          (page_rows.delivery_state = 'delivering') desc nulls last,
+          page_rows.last_seen_at desc nulls last,
+          page_rows.name nulls last,
+          page_rows.meta_ad_id nulls last
+      `,
+      [
+        filters.connectionId,
+        selectedAdAccountMetaIds,
+        status,
+        delivery,
+        search,
+        limit,
+        offset,
+        freshnessThresholdDays,
+        asOf.toISOString(),
+        includeInactiveAccounts,
+      ],
+    );
+
+    const pageRows = rows.filter(
+      (row) => row.ad_id !== null && row.ad_id !== undefined,
+    );
+    return {
+      items: pageRows.map((row) => ({
+        adId: asId(row.ad_id),
+        metaAdId: String(row.meta_ad_id),
+        name: String(row.name),
+        status: row.status === null ? null : String(row.status),
+        effectiveStatus:
+          row.effective_status === null
+            ? null
+            : String(row.effective_status),
+        isActive: Boolean(row.is_active),
+        isOperational: Boolean(row.is_operational),
+        metaCampaignId: String(row.meta_campaign_id),
+        campaignName: String(row.campaign_name),
+        metaAdSetId: String(row.meta_ad_set_id),
+        adSetName: String(row.ad_set_name),
+        metaAdAccountId: String(row.meta_ad_account_id),
+        adAccountName: String(row.ad_account_name),
+        creativeFamilyIds: asStringArray(row.creative_family_ids),
+        latestMetricDate:
+          asNullableIso(row.latest_metric_date)?.slice(0, 10) ?? null,
+        deliveryState:
+          row.delivery_state === "delivering" ||
+          row.delivery_state === "missing" ||
+          row.delivery_state === "not_active"
+            ? row.delivery_state
+            : "unavailable",
+        inventoryObservedAt: asNullableIso(row.inventory_observed_at),
+        lastSeenAt: asIso(row.last_seen_at),
+      })),
+      total: rows[0] ? asNumber(rows[0].total_count) : 0,
+      limit,
+      offset,
     };
   }
 

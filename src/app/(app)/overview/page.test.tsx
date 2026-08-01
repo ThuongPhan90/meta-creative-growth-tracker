@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getCreativeRowsForReport: vi.fn(),
   getOverviewTrendForReport: vi.fn(),
   getDeliveryForReport: vi.fn(),
+  getLiveDeliveryForReport: vi.fn(),
   getCanonicalResultsForReport: vi.fn(),
   buildApplicationResultMetrics: vi.fn(),
   buildReportingBarModel: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock("@/lib/app-data", () => ({
   getCreativeRowsForReport: mocks.getCreativeRowsForReport,
   getOverviewTrendForReport: mocks.getOverviewTrendForReport,
   getDeliveryForReport: mocks.getDeliveryForReport,
+  getLiveDeliveryForReport: mocks.getLiveDeliveryForReport,
   getCanonicalResultsForReport:
     mocks.getCanonicalResultsForReport,
   buildApplicationResultMetrics:
@@ -135,6 +137,10 @@ beforeEach(() => {
   });
   mocks.getOverviewTrendForReport.mockResolvedValue([]);
   mocks.getDeliveryForReport.mockResolvedValue([]);
+  mocks.getLiveDeliveryForReport.mockResolvedValue({
+    state: "unavailable",
+    selectedAccountCount: 1,
+  });
   mocks.getCanonicalResultsForReport.mockResolvedValue({
     definitions: [],
     values: [],

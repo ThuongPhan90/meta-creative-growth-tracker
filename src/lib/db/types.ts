@@ -579,6 +579,82 @@ export interface InsightsFreshnessRecord {
   syncMode: "scheduled" | "manual" | "webhook";
 }
 
+/**
+ * A current operational snapshot, intentionally separate from historical
+ * reporting delivery and from sync-run status. A `partial` value is never a
+ * disguised zero: it means only a subset of the selected account scope is
+ * safe to use for the metric.
+ */
+export type LiveDeliveryMetricState =
+  | "ready"
+  | "partial"
+  | "unavailable";
+
+export type LiveDeliveryAccountState = "ready" | "stale" | "unavailable";
+
+export interface LiveDeliveryAccountFreshness {
+  metaAdAccountId: string;
+  accountTimezone: string | null;
+  isOperational: boolean;
+  /** Last time the account record was observed; not a persisted inventory-complete snapshot. */
+  inventoryObservedAt: string | null;
+  latestMetricDate: string | null;
+  inventoryState: LiveDeliveryAccountState;
+  deliveryState: LiveDeliveryAccountState;
+}
+
+export interface LiveDeliverySnapshotMetric {
+  value: number | null;
+  state: LiveDeliveryMetricState;
+  coverage: {
+    includedAccounts: number;
+    selectedAccounts: number;
+  };
+}
+
+export interface LiveDeliverySummaryFilters {
+  connectionId: DatabaseId;
+  /** Exact final account scope from ReportingContext. An empty array is empty scope. */
+  selectedAdAccountMetaIds: readonly string[];
+  /** Defaults to two account-local calendar days when omitted. */
+  freshnessThresholdDays?: number;
+  /** Injectable only for deterministic server tests. */
+  asOf?: string;
+}
+
+export interface LiveDeliverySummary {
+  inventoryObservedAt: string | null;
+  reportingSnapshot: {
+    syncVersion: string | null;
+    publishedAt: string | null;
+    state: "available" | "unavailable";
+  };
+  latestRun: {
+    status: SyncRunStatus | null;
+    finishedAt: string | null;
+  };
+  state: LiveDeliveryMetricState;
+  metricDateMin: string | null;
+  metricDateMax: string | null;
+  selectedAccountCount: number;
+  inventoryReadyAccountCount: number;
+  deliveryEligibleAccountCount: number;
+  deliveryReadyAccountCount: number;
+  accounts: LiveDeliveryAccountFreshness[];
+  activeCampaigns: LiveDeliverySnapshotMetric;
+  activeAdSets: LiveDeliverySnapshotMetric;
+  activeAds: LiveDeliverySnapshotMetric;
+  activeAdsComparableForDelivery: LiveDeliverySnapshotMetric;
+  activeDeliveringAds: LiveDeliverySnapshotMetric;
+  activeWithoutDelivery: LiveDeliverySnapshotMetric;
+  mappedActiveCreativeFamilies: LiveDeliverySnapshotMetric;
+  mappingCoverage: {
+    activeAdsTotal: number;
+    activeAdsWithCreativeFamily: number;
+    percent: number | null;
+  };
+}
+
 export interface CreativePerformanceFilters {
   connectionId: DatabaseId;
   creativeFamilyId?: DatabaseId;
@@ -719,6 +795,60 @@ export interface CampaignInventoryItem {
 
 export interface CampaignInventoryPage {
   items: CampaignInventoryItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** Route-local filters for the current, server-side Ads drill-down. */
+export interface AdInventoryFilters {
+  connectionId: DatabaseId;
+  /** Exact final scope from ReportingContext; an empty array is an empty scope. */
+  selectedAdAccountMetaIds: readonly string[];
+  status?: "all" | "active" | "paused";
+  /** Uses the published operational snapshot, never the historical report range. */
+  delivery?: "all" | "latest" | "missing";
+  search?: string;
+  limit?: number;
+  offset?: number;
+  /** Explicitly includes inactive accounts; the operational list hides them by default. */
+  includeInactiveAccounts?: boolean;
+  freshnessThresholdDays?: number;
+  /** Injectable only for deterministic repository tests. */
+  asOf?: string;
+}
+
+export type AdInventoryDeliveryState =
+  | "delivering"
+  | "missing"
+  | "unavailable"
+  | "not_active";
+
+export interface AdInventoryItem {
+  adId: DatabaseId;
+  metaAdId: string;
+  name: string;
+  status: string | null;
+  effectiveStatus: string | null;
+  isActive: boolean;
+  /** Account is active and has Meta account status 1 at the current inventory observation. */
+  isOperational: boolean;
+  metaCampaignId: string;
+  campaignName: string;
+  metaAdSetId: string;
+  adSetName: string;
+  metaAdAccountId: string;
+  adAccountName: string;
+  creativeFamilyIds: string[];
+  latestMetricDate: string | null;
+  deliveryState: AdInventoryDeliveryState;
+  /** Last time the account record was observed, not an inventory-complete run. */
+  inventoryObservedAt: string | null;
+  lastSeenAt: string;
+}
+
+export interface AdInventoryPage {
+  items: AdInventoryItem[];
   total: number;
   limit: number;
   offset: number;

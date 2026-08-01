@@ -10,6 +10,7 @@ import {
   getCanonicalResultsForReport,
   getCreativeRowsForReport,
   getDeliveryForReport,
+  getLiveDeliveryForReport,
   getOverviewTrendForReport,
   resolveApplicationReportContext,
 } from "@/lib/app-data";
@@ -190,7 +191,7 @@ export default async function OverviewPage({
     previousDateTo,
     -(periodDays - 1),
   );
-  const [report, trend, previousDelivery, canonicalResults] =
+  const [report, trend, previousDelivery, canonicalResults, liveDelivery] =
     await Promise.all([
     getCreativeRowsForReport(reportFilters),
     getOverviewTrendForReport(reportFilters),
@@ -208,6 +209,7 @@ export default async function OverviewPage({
         ? { campaignMetaIds: [campaignMetaId] }
         : {}),
     }),
+    getLiveDeliveryForReport({ snapshot, context }),
   ]);
   const previousCanonicalResults =
     context.compare === "previous_period"
@@ -269,6 +271,7 @@ export default async function OverviewPage({
       dashboard={snapshot.dashboard}
       creatives={report.creatives}
       delivery={report.delivery}
+      liveDelivery={liveDelivery}
       trend={trend}
       connected={connected}
       query={canonicalQuery}

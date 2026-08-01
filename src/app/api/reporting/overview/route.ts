@@ -4,6 +4,7 @@ import {
   buildApplicationResultMetrics,
   getCanonicalResultsForReport,
   getDeliveryForReport,
+  getLiveDeliveryForReport,
 } from "@/lib/app-data";
 import {
   detailErrorResponse,
@@ -94,7 +95,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const [delivery, canonicalResults] = await Promise.all([
+    const [delivery, canonicalResults, liveDelivery] = await Promise.all([
       getDeliveryForReport({
         snapshot,
         dateFrom: context.dateFrom,
@@ -107,6 +108,7 @@ export async function GET(request: NextRequest) {
         reportContext: context,
       }),
       getCanonicalResultsForReport({ snapshot, context }),
+      getLiveDeliveryForReport({ snapshot, context }),
     ]);
     if (canonicalResults.warning) {
       warnings.push(
@@ -138,6 +140,7 @@ export async function GET(request: NextRequest) {
       createReportingResponse(
         {
           delivery: summary,
+          liveDelivery,
           resultMetrics,
           metricSemantics: {
             spend: "canonical_ad_delivery",

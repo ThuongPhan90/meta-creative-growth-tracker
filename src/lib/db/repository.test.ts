@@ -2334,6 +2334,440 @@ describe("Ad account activity filters", () => {
   });
 });
 
+describe("Live Delivery summary", () => {
+  const readyAccount = {
+    metaAdAccountId: "act_1",
+    accountTimezone: "Asia/Ho_Chi_Minh",
+    isOperational: true,
+    inventoryObservedAt: "2026-08-01T08:00:00.000Z",
+    latestMetricDate: "2026-08-01",
+    inventoryState: "ready",
+    deliveryState: "ready",
+  };
+
+  it("keeps scope in the first CTE and rolls reconciled ad and asset rows up before counting Ads", async () => {
+    const unsafe = vi.fn(async (query: string, parameters?: unknown[]) => {
+      void query;
+      void parameters;
+      return [];
+    });
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await repository.getLiveDeliverySummary({
+      connectionId: "connection-1",
+      selectedAdAccountMetaIds: [" act_2 ", "act_1", "act_2", ""],
+      freshnessThresholdDays: 2,
+      asOf: "2026-08-01T12:00:00.000Z",
+    });
+
+    const [query, parameters] = unsafe.mock.calls[0];
+    const normalized = compactSql(query);
+    expect(normalized).toContain(
+      "account.meta_ad_account_id = any($2::text[])",
+    );
+    expect(normalized).toContain(
+      "metric.metric_scope in ('ad', 'asset')",
+    );
+    expect(normalized).not.toContain("metric.metric_scope = 'ad'");
+    expect(normalized).toContain(
+      "group by metric.ad_account_id, metric.ad_id, metric.metric_date",
+    );
+    expect(normalized).toContain("snapshot.sync_version = metric.sync_version");
+    expect(normalized).toContain("metric.action_report_time = 'mixed'");
+    expect(normalized).not.toContain("business_ad_accounts");
+    expect(parameters).toEqual([
+      "connection-1",
+      ["act_2", "act_1"],
+      2,
+      "2026-08-01T12:00:00.000Z",
+    ]);
+  });
+
+  it("marks incomplete account coverage partial without presenting a false zero", async () => {
+    const unsafe = vi.fn(
+      async (query: string, parameters?: unknown[]) => {
+        void query;
+        void parameters;
+        return [
+        {
+          inventory_observed_at: "2026-08-01T08:00:00.000Z",
+          snapshot_sync_version: "run-42",
+          snapshot_published_at: "2026-08-01T08:05:00.000Z",
+          latest_run_status: "partial",
+          latest_run_finished_at: "2026-08-01T08:05:00.000Z",
+          metric_date_min: "2026-07-31",
+          metric_date_max: "2026-08-01",
+          selected_account_count: 2,
+          inventory_ready_account_count: 1,
+          delivery_eligible_account_count: 2,
+          delivery_ready_account_count: 1,
+          active_campaign_count: 2,
+          active_ad_set_count: 3,
+          active_ad_count: 4,
+          comparable_active_ad_count: 2,
+          active_delivering_ad_count: 1,
+          mapped_active_creative_family_count: 2,
+          active_ads_with_creative_family: 2,
+          accounts: [
+            readyAccount,
+            {
+              ...readyAccount,
+              metaAdAccountId: "act_2",
+              latestMetricDate: null,
+              inventoryState: "stale",
+              deliveryState: "unavailable",
+            },
+          ],
+        },
+        ];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    const result = await repository.getLiveDeliverySummary({
+      connectionId: "connection-1",
+      selectedAdAccountMetaIds: ["act_1", "act_2"],
+      asOf: "2026-08-01T12:00:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      state: "partial",
+      selectedAccountCount: 2,
+      inventoryReadyAccountCount: 1,
+      deliveryEligibleAccountCount: 2,
+      deliveryReadyAccountCount: 1,
+      reportingSnapshot: { syncVersion: "run-42", state: "available" },
+      latestRun: { status: "partial" },
+      activeAds: { value: 4, state: "partial" },
+      activeAdsComparableForDelivery: { value: 2, state: "partial" },
+      activeDeliveringAds: { value: 1, state: "partial" },
+      activeWithoutDelivery: { value: 1, state: "partial" },
+      mappingCoverage: {
+        activeAdsTotal: 4,
+        activeAdsWithCreativeFamily: 2,
+        percent: 50,
+      },
+    });
+    expect(result.accounts).toHaveLength(2);
+    expect(result.accounts[1]).toMatchObject({
+      metaAdAccountId: "act_2",
+      deliveryState: "unavailable",
+    });
+  });
+
+  it("keeps a validated zero delivery distinct from unavailable", async () => {
+    const unsafe = vi.fn(
+      async () => [
+        {
+          selected_account_count: 1,
+          metric_date_min: "2026-08-01",
+          metric_date_max: "2026-08-01",
+          inventory_ready_account_count: 1,
+          delivery_eligible_account_count: 1,
+          delivery_ready_account_count: 1,
+          active_campaign_count: 1,
+          active_ad_set_count: 1,
+          active_ad_count: 2,
+          comparable_active_ad_count: 2,
+          active_delivering_ad_count: 0,
+          mapped_active_creative_family_count: 0,
+          active_ads_with_creative_family: 0,
+          accounts: [readyAccount],
+        },
+      ],
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    const result = await repository.getLiveDeliverySummary({
+      connectionId: "connection-1",
+      selectedAdAccountMetaIds: ["act_1"],
+    });
+
+    expect(result.state).toBe("ready");
+    expect(result.activeDeliveringAds).toMatchObject({
+      value: 0,
+      state: "ready",
+    });
+    expect(result.activeWithoutDelivery).toMatchObject({
+      value: 2,
+      state: "ready",
+    });
+  });
+
+  it("marks delivery partial when eligible accounts have different latest local metric dates", async () => {
+    const unsafe = vi.fn(
+      async () => [
+        {
+          selected_account_count: 2,
+          inventory_ready_account_count: 2,
+          delivery_eligible_account_count: 2,
+          delivery_ready_account_count: 2,
+          metric_date_min: "2026-07-31",
+          metric_date_max: "2026-08-01",
+          active_campaign_count: 2,
+          active_ad_set_count: 2,
+          active_ad_count: 4,
+          comparable_active_ad_count: 4,
+          active_delivering_ad_count: 3,
+          mapped_active_creative_family_count: 2,
+          active_ads_with_creative_family: 3,
+          accounts: [
+            readyAccount,
+            {
+              ...readyAccount,
+              metaAdAccountId: "act_2",
+              latestMetricDate: "2026-07-31",
+            },
+          ],
+        },
+      ],
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    const result = await repository.getLiveDeliverySummary({
+      connectionId: "connection-1",
+      selectedAdAccountMetaIds: ["act_1", "act_2"],
+    });
+
+    expect(result).toMatchObject({
+      state: "partial",
+      metricDateMin: "2026-07-31",
+      metricDateMax: "2026-08-01",
+      activeDeliveringAds: { value: 3, state: "partial" },
+      activeWithoutDelivery: { value: 1, state: "partial" },
+    });
+  });
+
+  it("returns unavailable delivery counts when no eligible account has a latest metric date", async () => {
+    const unsafe = vi.fn(
+      async () => [
+        {
+          selected_account_count: 1,
+          inventory_ready_account_count: 1,
+          delivery_eligible_account_count: 1,
+          delivery_ready_account_count: 0,
+          active_campaign_count: 1,
+          active_ad_set_count: 1,
+          active_ad_count: 2,
+          comparable_active_ad_count: 0,
+          active_delivering_ad_count: 0,
+          mapped_active_creative_family_count: 1,
+          active_ads_with_creative_family: 1,
+          accounts: [
+            {
+              ...readyAccount,
+              latestMetricDate: null,
+              deliveryState: "unavailable",
+            },
+          ],
+        },
+      ],
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    const result = await repository.getLiveDeliverySummary({
+      connectionId: "connection-1",
+      selectedAdAccountMetaIds: ["act_1"],
+    });
+
+    expect(result.state).toBe("unavailable");
+    expect(result.activeAds).toMatchObject({ value: 2, state: "ready" });
+    expect(result.activeDeliveringAds).toMatchObject({
+      value: null,
+      state: "unavailable",
+    });
+    expect(result.activeWithoutDelivery).toMatchObject({
+      value: null,
+      state: "unavailable",
+    });
+  });
+});
+
+describe("Ad inventory", () => {
+  it("uses one scoped query and never loses reconciled asset delivery", async () => {
+    const unsafe = vi.fn(
+      async (query: string, parameters?: unknown[]) => {
+        void query;
+        void parameters;
+        return [
+        {
+          ad_id: "db_ad_1",
+          meta_ad_id: "ad_1",
+          name: "Active creative ad",
+          status: "ACTIVE",
+          effective_status: "ACTIVE",
+          is_active: true,
+          is_operational: true,
+          last_seen_at: "2026-08-01T08:00:00.000Z",
+          meta_campaign_id: "campaign_1",
+          campaign_name: "Campaign",
+          meta_ad_set_id: "adset_1",
+          ad_set_name: "Ad set",
+          meta_ad_account_id: "act_1",
+          ad_account_name: "Account",
+          inventory_observed_at: "2026-08-01T08:00:00.000Z",
+          latest_metric_date: "2026-08-01",
+          creative_family_ids: ["cf_1"],
+          delivery_state: "delivering",
+          total_count: 1,
+        },
+        ];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    const result = await repository.listAdInventory({
+      connectionId: "connection-1",
+      selectedAdAccountMetaIds: ["act_1", "act_2"],
+      status: "active",
+      delivery: "latest",
+      freshnessThresholdDays: 2,
+      asOf: "2026-08-01T12:00:00.000Z",
+    });
+
+    expect(unsafe).toHaveBeenCalledOnce();
+    const [query, parameters] = unsafe.mock.calls[0];
+    const normalized = compactSql(query);
+    expect(normalized).toContain(
+      "account.meta_ad_account_id = any($2::text[])",
+    );
+    expect(normalized).toContain(
+      "metric.metric_scope in ('ad', 'asset')",
+    );
+    expect(normalized).not.toContain("metric.metric_scope = 'ad'");
+    expect(normalized).toContain(
+      "group by metric.ad_account_id, metric.ad_id, metric.metric_date",
+    );
+    expect(normalized).toContain("$4::text = 'latest'");
+    expect(normalized).toContain("), page_rows as (");
+    expect(normalized).toContain(
+      "coalesce(ad.effective_status, ad.status) like '%PAUSED'",
+    );
+    expect(normalized).toContain("account.account_delivery_state = 'ready'");
+    expect(normalized).toContain("$10::boolean or (account.is_active and account.account_status = 1)");
+    expect(normalized).toContain("and account.is_operational and ad.is_active");
+    expect(parameters).toEqual([
+      "connection-1",
+      ["act_1", "act_2"],
+      "active",
+      "latest",
+      null,
+      50,
+      0,
+      2,
+      "2026-08-01T12:00:00.000Z",
+      false,
+    ]);
+    expect(result).toMatchObject({
+      total: 1,
+      items: [
+        {
+          metaAdId: "ad_1",
+          deliveryState: "delivering",
+          isOperational: true,
+          latestMetricDate: "2026-08-01",
+          creativeFamilyIds: ["cf_1"],
+        },
+      ],
+    });
+  });
+
+  it("keeps stale or unavailable accounts out of the missing-delivery filter", async () => {
+    const unsafe = vi.fn(async (query: string, parameters?: unknown[]) => {
+      void query;
+      void parameters;
+      return [];
+    });
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await repository.listAdInventory({
+      connectionId: "connection-1",
+      selectedAdAccountMetaIds: ["act_1"],
+      delivery: "missing",
+    });
+
+    const [query] = unsafe.mock.calls[0];
+    const normalized = compactSql(query);
+    expect(normalized).toContain("$4::text = 'missing'");
+    expect(normalized).toContain("not coalesce(metric.has_delivery, false)");
+    expect(normalized).toContain("account.account_delivery_state = 'ready'");
+    expect(normalized).toContain(
+      "coalesce(ad.effective_status, ad.status) = 'ACTIVE'",
+    );
+  });
+
+  it("returns an empty page without querying for an empty account scope", async () => {
+    const unsafe = vi.fn(async () => []);
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.listAdInventory({
+        connectionId: "connection-1",
+        selectedAdAccountMetaIds: [],
+        limit: 20,
+        offset: 40,
+      }),
+    ).resolves.toEqual({ items: [], total: 0, limit: 20, offset: 40 });
+    expect(unsafe).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized account scope instead of silently truncating it", async () => {
+    const unsafe = vi.fn(async () => []);
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.listAdInventory({
+        connectionId: "connection-1",
+        selectedAdAccountMetaIds: Array.from(
+          { length: 251 },
+          (_, index) => `act_${index}`,
+        ),
+      }),
+    ).rejects.toThrow("cannot contain more than 250");
+    expect(unsafe).not.toHaveBeenCalled();
+  });
+
+  it("keeps the total count when a requested page is past the final row", async () => {
+    const unsafe = vi.fn(async (query: string, parameters?: unknown[]) => {
+      void query;
+      void parameters;
+      return [{ ad_id: null, total_count: 73 }];
+    });
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    const result = await repository.listAdInventory({
+      connectionId: "connection-1",
+      selectedAdAccountMetaIds: ["act_1"],
+      offset: 100,
+    });
+
+    expect(result).toEqual({ items: [], total: 73, limit: 50, offset: 100 });
+    expect(compactSql(unsafe.mock.calls[0]?.[0] ?? "")).toContain(
+      "from (select count(*) as total_count from filtered) total",
+    );
+  });
+});
+
 describe("Interrupted sync recovery", () => {
   it("resets stale progress when restarting a persisted running row", async () => {
     const unsafe = vi.fn(

@@ -1,4 +1,6 @@
 import type {
+  AdInventoryItem,
+  AdInventoryPage,
   CampaignAdItem,
   CampaignHierarchy,
   CampaignInventoryPage,
@@ -212,6 +214,60 @@ const demoCampaignHierarchies: Record<string, CampaignHierarchy> = {
     ],
   }),
 };
+
+function buildDemoAdInventory(): AdInventoryPage {
+  let ordinal = 0;
+  const items: AdInventoryItem[] = demoCampaignInventoryPage.items.flatMap(
+    (campaign) => {
+      const hierarchy = demoCampaignHierarchies[campaign.metaCampaignId];
+      if (!hierarchy) return [];
+
+      return hierarchy.adSets.flatMap((adSet) =>
+        adSet.ads.map((ad) => {
+          ordinal += 1;
+          const effectiveStatus = ad.effectiveStatus ?? ad.status;
+          const active =
+            campaign.isActive && effectiveStatus?.toUpperCase() === "ACTIVE";
+          return {
+            adId: ad.adId,
+            metaAdId: ad.metaAdId,
+            name: ad.name,
+            status: ad.status,
+            effectiveStatus,
+            // `isActive` is the source inventory flag, not delivery status.
+            isActive: true,
+            isOperational: true,
+            metaCampaignId: campaign.metaCampaignId,
+            campaignName: campaign.name,
+            metaAdSetId: adSet.metaAdSetId,
+            adSetName: adSet.name,
+            metaAdAccountId: campaign.metaAdAccountId,
+            adAccountName: campaign.adAccountName,
+            creativeFamilyIds: ad.creativeFamilyIds,
+            latestMetricDate: active ? "2026-07-30" : null,
+            deliveryState: active
+              ? ordinal % 5 === 0
+                ? "missing"
+                : "delivering"
+              : "not_active",
+            inventoryObservedAt: campaign.lastSeenAt,
+            lastSeenAt: campaign.lastSeenAt,
+          } satisfies AdInventoryItem;
+        }),
+      );
+    },
+  );
+
+  return {
+    items,
+    total: items.length,
+    limit: 50,
+    offset: 0,
+  };
+}
+
+/** Deterministic local data so the Ads tab remains usable in demo mode. */
+export const demoAdInventoryPage = buildDemoAdInventory();
 
 export function getDemoCampaignDetail(metaCampaignId: string) {
   const campaign = demoCampaignInventoryPage.items.find(

@@ -31,6 +31,7 @@ import {
   NAVIGATION_QUERY_KEYS,
   reportingContextHiddenFields,
 } from "@/lib/navigation/query";
+import { buildCampaignsRouteHref } from "@/lib/presentation/campaign-navigation";
 
 type Query = Record<string, string | string[] | undefined>;
 
@@ -304,7 +305,7 @@ export function CampaignsV2({
     <div className="v2-page">
       <header className="v2-page-header">
         <div>
-          <h1>Chiến dịch</h1>
+          <h1>Phân phối</h1>
           <p>
             Hiệu quả Campaign cùng cấu trúc Ad Set → Ads → Creative Family,
             không có thao tác chỉnh sửa hoặc ngân sách.
@@ -329,6 +330,30 @@ export function CampaignsV2({
           ...(first(query.status) ? { status: first(query.status)! } : {}),
         }}
       />
+      <nav className="v2-tabs" aria-label="Cấp phân phối">
+        <Link
+          className="v2-tab"
+          aria-current="page"
+          href={buildCampaignsRouteHref(query, {
+            tab: "campaigns",
+            delivery: "all",
+            page: 1,
+          })}
+        >
+          Campaign
+        </Link>
+        <Link
+          className="v2-tab"
+          href={buildCampaignsRouteHref(query, {
+            tab: "ads",
+            status: "all",
+            delivery: "all",
+            page: 1,
+          })}
+        >
+          Ads
+        </Link>
+      </nav>
       <section className="v2-kpi-grid">
         <article className="v2-kpi">
           <span className="v2-kpi__label">Campaigns</span>
@@ -381,7 +406,7 @@ export function CampaignsV2({
         </select>
         <select
           name="status"
-          defaultValue={first(query.status) ?? ""}
+          defaultValue={first(query.status)?.toUpperCase() ?? ""}
           aria-label="Trạng thái Campaign"
         >
           <option value="">Tất cả trạng thái</option>

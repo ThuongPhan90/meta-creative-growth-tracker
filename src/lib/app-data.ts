@@ -9,6 +9,7 @@ import {
   type CanonicalCreativeFamilyResultTotals,
   type CanonicalResultTrendPoint as DatabaseCanonicalResultTrendPoint,
   type DeliveryPerformanceItem,
+  type LiveDeliverySummary,
   type MetaConnectionRecord,
   type SyncRunRecord,
   type TrackerRepository,
@@ -1409,6 +1410,94 @@ export async function getDeliveryForReport({
         }),
       ];
   return mergeDeliveryPerformance(groups);
+}
+
+function unavailableLiveDeliverySummary(
+  selectedAdAccountMetaIds: readonly string[],
+): LiveDeliverySummary {
+  const selectedAccountCount = new Set(
+    selectedAdAccountMetaIds.map((value) => value.trim()).filter(Boolean),
+  ).size;
+  const unavailableMetric = {
+    value: null,
+    state: "unavailable" as const,
+    coverage: {
+      includedAccounts: 0,
+      selectedAccounts: selectedAccountCount,
+    },
+  };
+
+  return {
+    inventoryObservedAt: null,
+    reportingSnapshot: {
+      syncVersion: null,
+      publishedAt: null,
+      state: "unavailable",
+    },
+    latestRun: {
+      status: null,
+      finishedAt: null,
+    },
+    state: "unavailable",
+    metricDateMin: null,
+    metricDateMax: null,
+    selectedAccountCount,
+    inventoryReadyAccountCount: 0,
+    deliveryEligibleAccountCount: 0,
+    deliveryReadyAccountCount: 0,
+    accounts: [],
+    activeCampaigns: unavailableMetric,
+    activeAdSets: unavailableMetric,
+    activeAds: unavailableMetric,
+    activeAdsComparableForDelivery: unavailableMetric,
+    activeDeliveringAds: unavailableMetric,
+    activeWithoutDelivery: unavailableMetric,
+    mappedActiveCreativeFamilies: unavailableMetric,
+    mappingCoverage: {
+      activeAdsTotal: 0,
+      activeAdsWithCreativeFamily: 0,
+      percent: null,
+    },
+  };
+}
+
+/**
+ * Reads the operational, current-delivery snapshot for the exact final account
+ * scope. It deliberately ignores historical report filters such as date,
+ * currency, objective and selected report sync version.
+ */
+export async function getLiveDeliveryForReport({
+  snapshot,
+  context,
+  repository: suppliedRepository,
+}: {
+  snapshot: ApplicationSnapshot;
+  context: ReportingContext;
+  repository?: Pick<TrackerRepository, "getLiveDeliverySummary">;
+}): Promise<LiveDeliverySummary> {
+  const selectedAdAccountMetaIds = context.adAccountIds;
+  if (
+    snapshot.demoMode ||
+    !snapshot.authenticated ||
+    !snapshot.connection ||
+    snapshot.connection.status !== "connected"
+  ) {
+    return unavailableLiveDeliverySummary(selectedAdAccountMetaIds);
+  }
+
+  try {
+    const repository =
+      suppliedRepository ?? (await createTrackerRepository());
+    return await repository.getLiveDeliverySummary({
+      connectionId: snapshot.connection.connectionId,
+      selectedAdAccountMetaIds,
+      freshnessThresholdDays: 2,
+    });
+  } catch {
+    // Preserve an explicit unavailable state. A failed operational read must
+    // never look like a verified zero in the Overview status rail.
+    return unavailableLiveDeliverySummary(selectedAdAccountMetaIds);
+  }
 }
 
 export function buildApplicationResultMetrics({

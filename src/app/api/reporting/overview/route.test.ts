@@ -28,6 +28,10 @@ const mocks = vi.hoisted(() => ({
     warning: null,
   })),
   getDeliveryForReport: vi.fn(),
+  getLiveDeliveryForReport: vi.fn(async () => ({
+    state: "unavailable",
+    selectedAccountCount: 0,
+  })),
   requireOwnerDetailSnapshot: vi.fn(),
   detailErrorResponse: vi.fn(
     () => Response.json({ ok: false }, { status: 500 }),
@@ -38,6 +42,7 @@ vi.mock("@/lib/app-data", () => ({
   buildApplicationResultMetrics: mocks.buildApplicationResultMetrics,
   getCanonicalResultsForReport: mocks.getCanonicalResultsForReport,
   getDeliveryForReport: mocks.getDeliveryForReport,
+  getLiveDeliveryForReport: mocks.getLiveDeliveryForReport,
 }));
 vi.mock("@/lib/detail-api", () => ({
   requireOwnerDetailSnapshot: mocks.requireOwnerDetailSnapshot,
@@ -97,6 +102,13 @@ describe("GET /api/reporting/overview", () => {
     const body = await response.json();
 
     expect(mocks.getDeliveryForReport).toHaveBeenCalledOnce();
+    expect(mocks.getLiveDeliveryForReport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({
+          adAccountIds: ["act_usd", "act_vnd"],
+        }),
+      }),
+    );
     expect(mocks.getDeliveryForReport).toHaveBeenCalledWith(
       expect.objectContaining({
         accountMetaIds: ["act_usd", "act_vnd"],
@@ -112,6 +124,9 @@ describe("GET /api/reporting/overview", () => {
       expect.objectContaining({ currency: "USD", spend: 100 }),
       expect.objectContaining({ currency: "VND", spend: 2_500_000 }),
     ]);
+    expect(body.data.liveDelivery).toMatchObject({
+      state: "unavailable",
+    });
     expect(body.meta.context).toMatchObject({
       adAccountIds: ["act_usd", "act_vnd"],
       syncVersion: "sync_42",

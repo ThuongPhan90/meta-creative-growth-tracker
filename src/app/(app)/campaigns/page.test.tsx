@@ -1,13 +1,17 @@
 import type { ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { AdsInventoryV2 } from "@/components/ads-inventory-v2";
 import {
   getApplicationSnapshot,
   getCanonicalResultsForReport,
+  getDeliveryForReport,
   resolveApplicationReportContext,
 } from "@/lib/app-data";
 import {
   createTrackerRepository,
+  type AdInventoryItem,
+  type AdInventoryPage,
   type CampaignInventoryItem,
   type CampaignInventoryPage,
   type TrackerRepository,
@@ -177,6 +181,27 @@ const campaignB: CampaignInventoryItem = {
   lastSeenAt: "2026-07-30T09:00:00.000Z",
 };
 
+const adA: AdInventoryItem = {
+  adId: "db_ad_a",
+  metaAdId: "ad_a",
+  name: "Active ad",
+  status: "ACTIVE",
+  effectiveStatus: "ACTIVE",
+  isActive: true,
+  isOperational: true,
+  metaCampaignId: campaignA.metaCampaignId,
+  campaignName: campaignA.name,
+  metaAdSetId: "adset_a",
+  adSetName: "Ad Set A",
+  metaAdAccountId: "act_a",
+  adAccountName: "Account A",
+  creativeFamilyIds: ["cf_a"],
+  latestMetricDate: "2026-07-30",
+  deliveryState: "missing",
+  inventoryObservedAt: "2026-07-30T10:00:00.000Z",
+  lastSeenAt: "2026-07-30T10:00:00.000Z",
+};
+
 function inventory(item: CampaignInventoryItem): CampaignInventoryPage {
   return {
     items: [item],
@@ -184,6 +209,10 @@ function inventory(item: CampaignInventoryItem): CampaignInventoryPage {
     limit: 200,
     offset: 0,
   };
+}
+
+function adInventory(item: AdInventoryItem): AdInventoryPage {
+  return { items: [item], total: 1, limit: 50, offset: 0 };
 }
 
 function snapshot() {
@@ -219,8 +248,13 @@ type CampaignsPageElement = ReactElement<{
   data: CampaignInventoryPage;
 }>;
 
+type AdsPageElement = ReactElement<{
+  data: AdInventoryPage;
+}>;
+
 function repositoryMock() {
   return {
+    listAdInventory: vi.fn().mockResolvedValue(adInventory(adA)),
     listCampaignInventory: vi.fn(
       async ({ accountMetaId }: { accountMetaId: string }) =>
         accountMetaId === "act_a"
@@ -267,6 +301,62 @@ beforeEach(() => {
 });
 
 describe("Campaign page canonical row results", () => {
+  it("uses one scoped operational Ads query without starting Campaign-only reads", async () => {
+    const repository = repositoryMock();
+    vi.mocked(createTrackerRepository).mockResolvedValue(
+      repository as unknown as TrackerRepository,
+    );
+
+    const element = (await CampaignsPage({
+      searchParams: Promise.resolve({
+        tab: "ads",
+        delivery: "missing",
+        q: "  Active ad  ",
+        page: "2",
+      }),
+    })) as AdsPageElement;
+
+    expect(element.type).toBe(AdsInventoryV2);
+    expect(element.props.data.items).toEqual([adA]);
+    expect(repository.listAdInventory).toHaveBeenCalledTimes(1);
+    expect(repository.listAdInventory).toHaveBeenCalledWith({
+      connectionId: "connection_1",
+      selectedAdAccountMetaIds: ["act_a", "act_b"],
+      status: "active",
+      delivery: "missing",
+      search: "Active ad",
+      limit: 50,
+      offset: 50,
+      includeInactiveAccounts: false,
+      freshnessThresholdDays: 2,
+    });
+    expect(repository.listCampaignInventory).not.toHaveBeenCalled();
+    expect(repository.listResultMappings).not.toHaveBeenCalled();
+    expect(repository.getCanonicalCampaignResultTotals).not.toHaveBeenCalled();
+    expect(getCanonicalResultsForReport).not.toHaveBeenCalled();
+    expect(getDeliveryForReport).not.toHaveBeenCalled();
+  });
+
+  it("normalizes a Campaign status link from the operational rail", async () => {
+    const repository = repositoryMock();
+    repository.getCanonicalCampaignResultTotals.mockResolvedValue({
+      available: false,
+      reason: "reporting_snapshot_unavailable",
+      results: [],
+    });
+    vi.mocked(createTrackerRepository).mockResolvedValue(
+      repository as unknown as TrackerRepository,
+    );
+
+    await CampaignsPage({
+      searchParams: Promise.resolve({ status: "active" }),
+    });
+
+    expect(repository.listCampaignInventory).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "ACTIVE" }),
+    );
+  });
+
   it("batches exact-context totals and keeps account, currency and source isolated", async () => {
     const repository = repositoryMock();
     repository.getCanonicalCampaignResultTotals.mockResolvedValue({

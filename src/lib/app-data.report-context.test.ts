@@ -21,6 +21,7 @@ import {
   getApplicationSnapshot,
   getCanonicalResultsForReport,
   getCreativeRowsForReport,
+  getLiveDeliveryForReport,
   getOverviewTrendForReport,
   resolveApplicationReportContext,
   type ApplicationSnapshot,
@@ -32,6 +33,7 @@ import type {
   CanonicalResultTotal,
   CreativeLibraryItem,
   CreativePerformanceItem,
+  LiveDeliverySummary,
   MetaConnectionRecord,
   PeriodReachResult,
   TrackerRepository,
@@ -2160,6 +2162,46 @@ describe("canonical delivery-native Result rows", () => {
     });
 
     expect(result.warning).not.toBeNull();
+  });
+});
+
+describe("operational Live Delivery boundary", () => {
+  it("uses only the connected owner and final account scope, not historical filters", async () => {
+    const snapshot = connectedApplicationSnapshot([
+      ...DEFAULT_RESULT_DEFINITIONS,
+    ]);
+    const context = {
+      ...resolveApplicationReportContext(snapshot, {
+        from: "2026-07-01",
+        to: "2026-07-30",
+        objective: "sales",
+        currency: "VND",
+        attribution: "7d_click_1d_view",
+        action_report_time: "conversion",
+        sync_version: "historical-run",
+      }),
+      adAccountIds: ["act_1", "act_2"],
+    };
+    const summary = {
+      state: "ready",
+      selectedAccountCount: 2,
+    } as LiveDeliverySummary;
+    const repository = {
+      getLiveDeliverySummary: vi.fn().mockResolvedValue(summary),
+    };
+
+    await expect(
+      getLiveDeliveryForReport({
+        snapshot,
+        context,
+        repository,
+      }),
+    ).resolves.toBe(summary);
+    expect(repository.getLiveDeliverySummary).toHaveBeenCalledWith({
+      connectionId: liveConnection.connectionId,
+      selectedAdAccountMetaIds: ["act_1", "act_2"],
+      freshnessThresholdDays: 2,
+    });
   });
 });
 

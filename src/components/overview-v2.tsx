@@ -18,6 +18,7 @@ import {
   groupCreativeFamiliesForView,
   type CreativeFamilyViewItem,
 } from "@/components/creative-performance-v2";
+import { LiveDeliveryStrip } from "@/components/overview/live-delivery-strip";
 import { ContextualEntityLink } from "@/components/ui/contextual-entity-link";
 import {
   CreativeScatterLegend,
@@ -58,6 +59,7 @@ import type {
   CreativeRow,
   DashboardViewModel,
 } from "@/types/view-models";
+import type { LiveDeliverySummary } from "@/lib/db";
 
 type Query = Record<string, string | string[] | undefined>;
 
@@ -648,6 +650,7 @@ export function OverviewV2({
   dashboard,
   creatives,
   delivery,
+  liveDelivery,
   trend,
   connected,
   query,
@@ -668,6 +671,7 @@ export function OverviewV2({
   dashboard: DashboardViewModel;
   creatives: CreativeRow[];
   delivery: readonly DeliveryMetricRow[];
+  liveDelivery?: LiveDeliverySummary;
   trend: OverviewTrendPoint[];
   connected: boolean;
   query: Query;
@@ -1070,6 +1074,9 @@ export function OverviewV2({
         </section>
       ) : (
         <>
+          {liveDelivery ? (
+            <LiveDeliveryStrip summary={liveDelivery} query={query} />
+          ) : null}
           <section className="v2-kpi-grid" aria-label="KPI hiệu quả">
             {resultMetrics.kpiCards.map((card) => {
               const previous =

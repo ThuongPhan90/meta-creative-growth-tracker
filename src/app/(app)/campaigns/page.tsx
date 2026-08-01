@@ -1,13 +1,19 @@
 import { CampaignsV2 } from "@/components/campaigns-v2";
+import { AdsInventoryV2 } from "@/components/ads-inventory-v2";
 import {
   createTrackerRepository,
+  type AdInventoryItem,
+  type AdInventoryPage,
   type CanonicalCampaignResultTotals,
   type CampaignInventoryItem,
   type CampaignInventoryPage,
   type TrackerRepository,
 } from "@/lib/db";
 import { computeResultMappingVersion } from "@/lib/db/result-mapping-version";
-import { demoCampaignInventoryPage } from "@/lib/demo-campaigns";
+import {
+  demoAdInventoryPage,
+  demoCampaignInventoryPage,
+} from "@/lib/demo-campaigns";
 import {
   buildApplicationResultMetrics,
   getApplicationSnapshot,
@@ -28,10 +34,18 @@ import {
   type ResultDefinition,
 } from "@/lib/reporting";
 import { legacyDeliveryResultValue } from "@/lib/reporting/legacy-result-bridge";
+import { parseCampaignsRouteFilters } from "@/lib/presentation/campaign-navigation";
 
 export const dynamic = "force-dynamic";
 
 const EMPTY_PAGE: CampaignInventoryPage = {
+  items: [],
+  total: 0,
+  limit: 50,
+  offset: 0,
+};
+
+const EMPTY_AD_PAGE: AdInventoryPage = {
   items: [],
   total: 0,
   limit: 50,
@@ -194,6 +208,65 @@ function validPage(value: string | undefined) {
     : 1;
 }
 
+function normalizedCampaignStatus(value: string | undefined) {
+  const normalized = value?.trim().slice(0, 64).toUpperCase();
+  return normalized || undefined;
+}
+
+function demoAdsForScope({
+  accountIds,
+  status,
+  delivery,
+  search,
+  page,
+}: {
+  accountIds: readonly string[];
+  status: "all" | "active" | "paused";
+  delivery: "all" | "latest" | "missing";
+  search: string | null;
+  page: number;
+}): AdInventoryPage {
+  const normalizedSearch = search?.trim().toLocaleLowerCase("vi") ?? "";
+  const matchesSearch = (ad: AdInventoryItem) =>
+    !normalizedSearch ||
+    [
+      ad.name,
+      ad.metaAdId,
+      ad.campaignName,
+      ad.metaCampaignId,
+      ad.adSetName,
+      ad.metaAdSetId,
+      ad.adAccountName,
+      ad.metaAdAccountId,
+    ].some((value) => value.toLocaleLowerCase("vi").includes(normalizedSearch));
+  const matchesStatus = (ad: AdInventoryItem) => {
+    const effectiveStatus = (ad.effectiveStatus ?? ad.status ?? "").toUpperCase();
+    if (status === "active") {
+      return ad.isActive && effectiveStatus === "ACTIVE";
+    }
+    if (status === "paused") return effectiveStatus.includes("PAUSED");
+    return true;
+  };
+  const matchesDelivery = (ad: AdInventoryItem) =>
+    delivery === "all" ||
+    (delivery === "latest" && ad.deliveryState === "delivering") ||
+    (delivery === "missing" && ad.deliveryState === "missing");
+  const items = demoAdInventoryPage.items.filter(
+    (ad) =>
+      accountIds.includes(ad.metaAdAccountId) &&
+      matchesStatus(ad) &&
+      matchesDelivery(ad) &&
+      matchesSearch(ad),
+  );
+  const offset = (page - 1) * 50;
+  return {
+    items: items.slice(offset, offset + 50),
+    total: items.length,
+    limit: 50,
+    offset,
+  };
+}
+
 async function listCampaignsForScope({
   repository,
   connectionId,
@@ -310,24 +383,91 @@ export default async function CampaignsPage({
     searchParams,
   ]);
   const context = resolveApplicationReportContext(snapshot, query);
+  const routeFilters = parseCampaignsRouteFilters(query);
   const liveConnected =
     snapshot.authenticated &&
     snapshot.connection?.status === "connected";
   const connected = snapshot.demoMode || liveConnected;
   const page = validPage(first(query.page));
-  const showInactive =
-    first(query.showInactive) === "1" ||
-    context.adAccountIds.some((accountId) => {
-      const asset = snapshot.assets.find(
-        (item) =>
-          item.kind === "Ad Account" && item.id === accountId,
-      );
-      return asset ? !isOperationalMetaAssetAccount(asset) : true;
-    });
+  const showInactive = first(query.showInactive) === "1";
   const repository =
     liveConnected && snapshot.connection
       ? await createTrackerRepository()
       : null;
+  const accounts = snapshot.assets
+    .filter((asset) => asset.kind === "Ad Account")
+    .filter(
+      (asset) =>
+        showInactive ||
+        isOperationalMetaAssetAccount(asset) ||
+        asset.id === context.account,
+    )
+    .map((asset) => ({ id: asset.id, name: asset.name }));
+  const currencyOptions = [
+    ...new Set(
+      snapshot.assets.flatMap((asset) =>
+        asset.kind === "Ad Account" && asset.currency
+          ? [asset.currency]
+          : [],
+      ),
+    ),
+  ];
+  const freshness = formatFreshnessFields(
+    snapshot.freshness,
+    snapshot.settings.timezone,
+  );
+  const reportingBar = buildReportingBarModel(
+    snapshot.reportingScope,
+    context,
+    {
+      persistScope:
+        !snapshot.demoMode &&
+        snapshot.authenticated &&
+        Boolean(snapshot.connection),
+    },
+    snapshot.resultDefinitions,
+  );
+
+  if (routeFilters.tab === "ads") {
+    const adsPage = snapshot.demoMode
+      ? demoAdsForScope({
+          accountIds: context.adAccountIds,
+          status: routeFilters.status,
+          delivery: routeFilters.delivery,
+          search: routeFilters.q,
+          page: routeFilters.page,
+        })
+      : repository && snapshot.connection
+        ? await repository.listAdInventory({
+            connectionId: snapshot.connection.connectionId,
+            selectedAdAccountMetaIds: context.adAccountIds,
+            status: routeFilters.status,
+            delivery: routeFilters.delivery,
+            search: routeFilters.q ?? undefined,
+            limit: 50,
+            offset: (routeFilters.page - 1) * 50,
+            includeInactiveAccounts: showInactive,
+            freshnessThresholdDays: 2,
+          })
+        : EMPTY_AD_PAGE;
+
+    return (
+      <AdsInventoryV2
+        data={adsPage}
+        query={query}
+        connected={connected}
+        dateFrom={context.dateFrom}
+        dateTo={context.dateTo}
+        account={context.account}
+        accounts={accounts}
+        reportingCurrency={context.currency}
+        currencyOptions={currencyOptions}
+        compare={context.compareMode}
+        freshness={freshness}
+        reportingBar={reportingBar}
+      />
+    );
+  }
   const resultMappingsPromise =
     repository &&
     context.adAccountIds.length > 0 &&
@@ -361,7 +501,7 @@ export default async function CampaignsPage({
             objectiveRawKeys: objectiveDatabaseKeys(
               context.objectiveKey,
             ),
-            status: first(query.status)?.trim().slice(0, 64) || undefined,
+            status: normalizedCampaignStatus(first(query.status)),
             search: first(query.q)?.trim().slice(0, 200) || undefined,
             includeInactiveAccounts: showInactive,
             page,
@@ -437,16 +577,6 @@ export default async function CampaignsPage({
     context,
     legacyBridge: snapshot.demoMode,
   });
-  const accounts = snapshot.assets
-    .filter((asset) => asset.kind === "Ad Account")
-    .filter(
-      (asset) =>
-        showInactive ||
-        isOperationalMetaAssetAccount(asset) ||
-        asset.id === context.account,
-    )
-    .map((asset) => ({ id: asset.id, name: asset.name }));
-
   return (
     <CampaignsV2
       data={data}
@@ -458,20 +588,9 @@ export default async function CampaignsPage({
       account={context.account}
       accounts={accounts}
       reportingCurrency={context.currency}
-      currencyOptions={[
-        ...new Set(
-          snapshot.assets.flatMap((asset) =>
-            asset.kind === "Ad Account" && asset.currency
-              ? [asset.currency]
-              : [],
-          ),
-        ),
-      ]}
+      currencyOptions={currencyOptions}
       compare={context.compareMode}
-      freshness={formatFreshnessFields(
-        snapshot.freshness,
-        snapshot.settings.timezone,
-      )}
+      freshness={freshness}
       reportingBar={buildReportingBarModel(
         snapshot.reportingScope,
         context,
