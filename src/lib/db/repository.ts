@@ -5352,7 +5352,7 @@ export class TrackerRepository {
                 then 'delivering'
               else 'missing'
             end as delivery_state
-          from selected_accounts account
+          from account_delivery_state account
           join tracker.meta_ads ad
             on ad.ad_account_id = account.ad_account_id
           join tracker.meta_campaigns campaign

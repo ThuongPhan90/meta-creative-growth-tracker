@@ -2652,6 +2652,7 @@ describe("Ad inventory", () => {
     );
     expect(normalized).toContain("$4::text = 'latest'");
     expect(normalized).toContain("), page_rows as (");
+    expect(normalized).toContain("from account_delivery_state account");
     expect(normalized).toContain(
       "coalesce(ad.effective_status, ad.status) like '%PAUSED'",
     );
