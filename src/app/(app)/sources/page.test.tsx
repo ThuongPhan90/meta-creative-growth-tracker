@@ -3,18 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_RESULT_DEFINITIONS } from "@/lib/reporting/result-definition";
 
 const mocks = vi.hoisted(() => ({
-  getApplicationContextSnapshot: vi.fn(),
-  createTrackerRepository: vi.fn(),
+  getApplicationAssetsSnapshot: vi.fn(),
+  getApplicationResultRegistry: vi.fn(),
   evaluateMetaConnectionLifecycle: vi.fn(() => "healthy"),
   SourcesV2: vi.fn(() => null),
 }));
 
 vi.mock("@/lib/app-data", () => ({
-  getApplicationContextSnapshot: mocks.getApplicationContextSnapshot,
-}));
-
-vi.mock("@/lib/db", () => ({
-  createTrackerRepository: mocks.createTrackerRepository,
+  getApplicationAssetsSnapshot: mocks.getApplicationAssetsSnapshot,
+  getApplicationResultRegistry: mocks.getApplicationResultRegistry,
 }));
 
 vi.mock("@/lib/meta", () => ({
@@ -56,45 +53,44 @@ const snapshot = {
 };
 
 describe("Sources page result registry loading", () => {
-  const listResultDefinitions = vi.fn();
-  const listResultMappings = vi.fn();
-
   beforeEach(() => {
     vi.stubEnv("UI_VERSION", "v2");
     vi.clearAllMocks();
-    listResultDefinitions.mockResolvedValue(
-      DEFAULT_RESULT_DEFINITIONS,
-    );
-    listResultMappings.mockResolvedValue([
-      {
-        id: "mapping_1",
-        canonicalResultKey: "lead",
-        rawActionType: "owner_lead",
-        metricSource: "action",
-        priority: 0,
-        mappingSource: "owner",
-        enabled: true,
-      },
-    ]);
-    mocks.createTrackerRepository.mockResolvedValue({
-      listResultDefinitions,
-      listResultMappings,
+    mocks.getApplicationResultRegistry.mockResolvedValue({
+      definitions: DEFAULT_RESULT_DEFINITIONS.filter(
+        (definition) => definition.enabled,
+      ).map((definition) =>
+        definition.canonicalKey === "lead"
+          ? { ...definition, rawActionTypes: ["owner_lead"] }
+          : definition,
+      ),
+      mappings: [
+        {
+          id: "mapping_1",
+          canonicalResultKey: "lead",
+          rawActionType: "owner_lead",
+          metricSource: "action",
+          priority: 0,
+          mappingSource: "owner",
+          enabled: true,
+        },
+      ],
     });
-    mocks.getApplicationContextSnapshot.mockResolvedValue(snapshot);
+    mocks.getApplicationAssetsSnapshot.mockResolvedValue(snapshot);
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
-  it("hydrates live definitions from independent repository reads", async () => {
+  it("reuses the Result registry loaded by the application context", async () => {
     const registry = await loadSourcesResultRegistry(
       snapshot as never,
     );
 
-    expect(mocks.createTrackerRepository).toHaveBeenCalledOnce();
-    expect(listResultDefinitions).toHaveBeenCalledOnce();
-    expect(listResultMappings).toHaveBeenCalledOnce();
+    expect(mocks.getApplicationResultRegistry).toHaveBeenCalledWith(
+      snapshot,
+    );
     expect(registry).toMatchObject({
       source: "database",
       warning: null,
@@ -117,6 +113,7 @@ describe("Sources page result registry loading", () => {
     );
     expect(element.props.resultRegistry.source).toBe("database");
     expect(element.props.scopePersistEnabled).toBe(true);
+    expect(mocks.getApplicationAssetsSnapshot).toHaveBeenCalledOnce();
   });
 
   it("accepts the final /sources?tab=scope route while preserving the internal panel key", async () => {
@@ -142,11 +139,11 @@ describe("Sources page result registry loading", () => {
         (definition) => definition.canonicalKey === "install",
       ),
     ).toBe(true);
-    expect(mocks.createTrackerRepository).not.toHaveBeenCalled();
+    expect(mocks.getApplicationResultRegistry).not.toHaveBeenCalled();
   });
 
   it("shows an explicit built-in fallback warning when live DB reads fail", async () => {
-    listResultDefinitions.mockRejectedValue(
+    mocks.getApplicationResultRegistry.mockRejectedValue(
       new Error("relation unavailable"),
     );
     const consoleError = vi

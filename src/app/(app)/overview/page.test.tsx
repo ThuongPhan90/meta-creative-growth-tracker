@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getApplicationContextSnapshot: vi.fn(),
+  getApplicationOperationalSnapshot: vi.fn(),
   resolveApplicationReportContext: vi.fn(),
   getCreativeRowsForReport: vi.fn(),
   getOverviewTrendForReport: vi.fn(),
@@ -21,6 +22,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/app-data", () => ({
   getApplicationContextSnapshot:
     mocks.getApplicationContextSnapshot,
+  getApplicationOperationalSnapshot:
+    mocks.getApplicationOperationalSnapshot,
   resolveApplicationReportContext:
     mocks.resolveApplicationReportContext,
   getCreativeRowsForReport: mocks.getCreativeRowsForReport,
@@ -145,6 +148,7 @@ beforeEach(() => {
     throw new Error(`NEXT_REDIRECT:${href}`);
   });
   mocks.getApplicationContextSnapshot.mockResolvedValue(snapshot);
+  mocks.getApplicationOperationalSnapshot.mockResolvedValue(snapshot);
   mocks.resolveApplicationReportContext.mockReturnValue(context);
   mocks.getCreativeRowsForReport.mockResolvedValue({
     creatives: [],
@@ -353,7 +357,10 @@ describe("Overview page canonical reporting context", () => {
     expect(element.props.reportWarnings).toEqual([
       "Kết quả chuẩn hóa chưa khả dụng cho snapshot hiện tại.",
     ]);
-    expect(mocks.getApplicationContextSnapshot).toHaveBeenCalledOnce();
+    expect(
+      mocks.getApplicationOperationalSnapshot,
+    ).toHaveBeenCalledOnce();
+    expect(mocks.getApplicationContextSnapshot).not.toHaveBeenCalled();
     expect(element.props).toHaveProperty("dashboard", snapshot.dashboard);
     expect(element.props).toHaveProperty("creatives");
     expect(element.props).toHaveProperty("delivery");
@@ -428,6 +435,10 @@ describe("Overview page canonical reporting context", () => {
     }>;
 
     expect(element.type).toBe(mocks.overviewV3);
+    expect(mocks.getApplicationContextSnapshot).toHaveBeenCalledOnce();
+    expect(
+      mocks.getApplicationOperationalSnapshot,
+    ).not.toHaveBeenCalled();
     expect(element.props.resultDefinitions).toEqual([]);
     expect(element.props.watchlist).toEqual(
       mocks.buildOverviewCreativeWatchlistModel.mock.results[0]?.value,

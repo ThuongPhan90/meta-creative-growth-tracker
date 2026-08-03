@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   dataHealthV2: vi.fn(() => null),
-  getApplicationContextSnapshot: vi.fn(),
+  getApplicationOperationalSnapshot: vi.fn(),
   getDataHealthCreativeReferences: vi.fn(),
   getLiveDeliveryForReport: vi.fn(),
   resolveApplicationReportContext: vi.fn(),
@@ -20,8 +20,8 @@ vi.mock("@/components/ui-v3/surface-page", () => ({
 }));
 
 vi.mock("@/lib/app-data", () => ({
-  getApplicationContextSnapshot:
-    mocks.getApplicationContextSnapshot,
+  getApplicationOperationalSnapshot:
+    mocks.getApplicationOperationalSnapshot,
   getDataHealthCreativeReferences:
     mocks.getDataHealthCreativeReferences,
   getLiveDeliveryForReport: mocks.getLiveDeliveryForReport,
@@ -62,7 +62,7 @@ describe("Data Health page loading", () => {
     const context = { adAccountIds: ["act_1"] };
     const creatives = [{ id: "asset_1" }];
     const liveDelivery = { state: "ready" };
-    mocks.getApplicationContextSnapshot.mockResolvedValue(snapshot);
+    mocks.getApplicationOperationalSnapshot.mockResolvedValue(snapshot);
     mocks.resolveApplicationReportContext.mockReturnValue(context);
     mocks.getDataHealthCreativeReferences.mockResolvedValue(creatives);
     mocks.getLiveDeliveryForReport.mockResolvedValue(liveDelivery);
@@ -71,7 +71,7 @@ describe("Data Health page loading", () => {
       searchParams: Promise.resolve(query),
     })) as DataHealthPageElement;
 
-    expect(mocks.getApplicationContextSnapshot).toHaveBeenCalledOnce();
+    expect(mocks.getApplicationOperationalSnapshot).toHaveBeenCalledOnce();
     expect(mocks.resolveApplicationReportContext).toHaveBeenCalledWith(
       snapshot,
       query,

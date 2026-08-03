@@ -1,7 +1,7 @@
 import { DataHealthV2 } from "@/components/data-health-v2";
 import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import {
-  getApplicationContextSnapshot,
+  getApplicationOperationalSnapshot,
   getDataHealthCreativeReferences,
   getLiveDeliveryForReport,
   resolveApplicationReportContext,
@@ -18,7 +18,7 @@ export default async function DataHealthPage({
   >;
 }) {
   const [snapshot, query] = await Promise.all([
-    getApplicationContextSnapshot(),
+    getApplicationOperationalSnapshot(),
     searchParams,
   ]);
   const context = resolveApplicationReportContext(snapshot, query);

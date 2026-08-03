@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 
 import { CopyIdButton } from "@/components/ui/copy-id-button";
 import { V3SurfacePage } from "@/components/ui-v3/surface-page";
-import { getApplicationContextSnapshot } from "@/lib/app-data";
+import { getApplicationAssetsSnapshot } from "@/lib/app-data";
 import {
   sourceAccountCampaignsHref,
   sourceBusinessAccountsHref,
@@ -66,7 +66,7 @@ export default async function SourceEntityPage({
   const [{ kind, entityId }, query, snapshot] = await Promise.all([
     params,
     searchParams,
-    getApplicationContextSnapshot(),
+    getApplicationAssetsSnapshot(),
   ]);
   const expectedKind = KIND_BY_SLUG[kind];
   if (!expectedKind || entityId.length > 200) notFound();

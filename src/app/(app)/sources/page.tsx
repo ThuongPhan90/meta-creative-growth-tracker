@@ -6,15 +6,14 @@ import {
 } from "@/components/sources-v2";
 import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import {
-  getApplicationContextSnapshot,
+  getApplicationAssetsSnapshot,
+  getApplicationResultRegistry,
   type ApplicationSnapshot,
 } from "@/lib/app-data";
-import { createTrackerRepository } from "@/lib/db";
 import { evaluateMetaConnectionLifecycle } from "@/lib/meta";
 import { isUiV3 } from "@/lib/presentation/ui-version";
 import {
   DEFAULT_RESULT_DEFINITIONS,
-  hydrateResultDefinitions,
   type PersistedResultMapping,
   type ResultDefinition,
 } from "@/lib/reporting/result-definition";
@@ -119,19 +118,13 @@ export async function loadSourcesResultRegistry(
   }
 
   try {
-    const repository = await createTrackerRepository();
-    const [definitions, mappings] = await Promise.all([
-      repository.listResultDefinitions(),
-      repository.listResultMappings(),
-    ]);
+    const { definitions, mappings } =
+      await getApplicationResultRegistry(snapshot);
     if (definitions.length === 0) {
       throw new Error("Result registry has no definitions.");
     }
     return {
-      definitions: hydrateResultDefinitions({
-        definitions,
-        mappings,
-      }).filter((definition) => definition.enabled),
+      definitions,
       mappings,
       source: "database",
       warning: null,
@@ -152,7 +145,7 @@ export default async function SourcesPage({
   >;
 }) {
   const [snapshot, query] = await Promise.all([
-    getApplicationContextSnapshot(),
+    getApplicationAssetsSnapshot(),
     searchParams,
   ]);
   const activeTab = sourceTab(first(query.tab));

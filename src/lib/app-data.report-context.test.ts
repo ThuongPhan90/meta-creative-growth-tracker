@@ -18,7 +18,10 @@ vi.mock("@/lib/db", () => ({
 import {
   getCreativeFamilyRowsForReport,
   buildApplicationResultMetrics,
+  getApplicationAssetsSnapshot,
   getApplicationContextSnapshot,
+  getApplicationOperationalSnapshot,
+  getApplicationResultRegistry,
   getApplicationSnapshot,
   getCanonicalResultsForReport,
   getCreativeRowsForReport,
@@ -517,6 +520,27 @@ describe("application snapshot Result registry", () => {
     });
     serverMocks.readDatabaseHealth.mockResolvedValue({ ok: true });
     const repository = liveSnapshotRepository([liveLeadDefinition]);
+    vi.mocked(repository.listReportingScopeInventory).mockResolvedValue({
+      businesses: [
+        {
+          id: "business_1",
+          name: "Business One",
+          isActive: true,
+          adAccountIds: ["act_1"],
+        },
+      ],
+      adAccounts: [
+        {
+          id: "act_1",
+          name: "Account One",
+          isActive: true,
+          accountStatus: 1,
+          currency: "VND",
+          timezone: "Asia/Ho_Chi_Minh",
+          businessIds: ["business_1"],
+        },
+      ],
+    });
     databaseMocks.createTrackerRepository.mockResolvedValue(repository);
 
     const contextSnapshot = await getApplicationContextSnapshot();
@@ -525,9 +549,28 @@ describe("application snapshot Result registry", () => {
     expect(contextSnapshot.creativesTruncated).toBe(false);
     expect(repository.listCreativeLibrary).not.toHaveBeenCalled();
     expect(repository.listCreativePerformance).not.toHaveBeenCalled();
+    expect(repository.getCoverage).not.toHaveBeenCalled();
+    expect(repository.listMetaAssets).not.toHaveBeenCalled();
+    expect(repository.getDeliveryPerformance).not.toHaveBeenCalled();
+    expect(repository.listRecentSyncRuns).not.toHaveBeenCalled();
+    expect(contextSnapshot.assets).toEqual([
+      expect.objectContaining({
+        id: "business_1",
+        kind: "Business",
+        status: "ACTIVE",
+      }),
+      expect.objectContaining({
+        id: "act_1",
+        kind: "Ad Account",
+        parentName: "Business One",
+        status: "ACTIVE",
+        currency: "VND",
+        timezone: "Asia/Ho_Chi_Minh",
+      }),
+    ]);
   });
 
-  it("loads Data Health Creative identity links without performance rows", async () => {
+  it("loads operational health without full assets or Creative rows", async () => {
     serverMocks.getRuntimeConfiguration.mockReturnValue(
       runtimeConfiguration(false),
     );
@@ -536,6 +579,162 @@ describe("application snapshot Result registry", () => {
     });
     serverMocks.readDatabaseHealth.mockResolvedValue({ ok: true });
     const repository = liveSnapshotRepository([liveLeadDefinition]);
+    const storedSettings = await repository.getSettings();
+    vi.mocked(repository.getSettings)
+      .mockClear()
+      .mockResolvedValue({
+        ...storedSettings,
+        lastInitialSyncAt: null,
+      });
+    vi.mocked(repository.getInsightsFreshness).mockResolvedValue({
+      lastSyncedAt: null,
+      dataThroughAt: null,
+      syncVersion: null,
+      syncStatus: "partial",
+      syncMode: "manual",
+    });
+    vi.mocked(repository.getCoverage).mockResolvedValue({
+      connectionId: liveConnection.connectionId,
+      connectionStatus: "connected",
+      lastValidatedAt: null,
+      businessCount: 1,
+      adAccountCount: 1,
+      pageCount: 1,
+      appCount: 1,
+      creativeContainerCount: 1,
+      creativeAssetCount: 1,
+      campaignCount: 1,
+      adCount: 1,
+      lastSyncAt: "2026-07-30T00:00:00.000Z",
+    });
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    const snapshot = await getApplicationOperationalSnapshot();
+
+    expect(snapshot.creatives).toEqual([]);
+    expect(repository.getCoverage).toHaveBeenCalledOnce();
+    expect(repository.getDeliveryPerformance).toHaveBeenCalledOnce();
+    expect(repository.listRecentSyncRuns).toHaveBeenCalledOnce();
+    expect(repository.listMetaAssets).not.toHaveBeenCalled();
+    expect(repository.listCreativeLibrary).not.toHaveBeenCalled();
+    expect(repository.listCreativePerformance).not.toHaveBeenCalled();
+    expect(snapshot.setupChecks.find((check) => check.id === "sync"))
+      .toMatchObject({ status: "ready" });
+  });
+
+  it("loads full source inventory without Creative performance", async () => {
+    serverMocks.getRuntimeConfiguration.mockReturnValue(
+      runtimeConfiguration(false),
+    );
+    serverMocks.readPageOwnerSession.mockResolvedValue({
+      sub: liveConnection.connectionId,
+    });
+    serverMocks.readDatabaseHealth.mockResolvedValue({ ok: true });
+    const repository = liveSnapshotRepository([liveLeadDefinition]);
+    vi.mocked(repository.listMetaAssets).mockResolvedValue({
+      businesses: [
+        {
+          businessId: "business_db_1",
+          metaBusinessId: "business_1",
+          name: "Business One",
+          verificationStatus: "verified",
+          isActive: true,
+          lastSeenAt: "2026-07-31T00:00:00.000Z",
+        },
+      ],
+      adAccounts: [
+        {
+          adAccountId: "account_db_1",
+          metaAdAccountId: "act_1",
+          accountId: "1",
+          name: "Account One",
+          accountStatus: 1,
+          currency: "VND",
+          timezoneName: "Asia/Ho_Chi_Minh",
+          businessName: "Business One",
+          isActive: true,
+          lastSeenAt: "2026-07-31T00:00:00.000Z",
+        },
+      ],
+      pages: [
+        {
+          pageId: "page_db_1",
+          metaPageId: "page_1",
+          name: "Page One",
+          category: "Sports",
+          pictureUrl: null,
+          isActive: true,
+          lastSeenAt: "2026-07-31T00:00:00.000Z",
+        },
+      ],
+      apps: [
+        {
+          appId: "app_db_1",
+          metaAppId: "app_1",
+          name: "App One",
+          namespace: null,
+          platform: "android",
+          storeUrl: null,
+          isActive: true,
+          lastSeenAt: "2026-07-31T00:00:00.000Z",
+        },
+      ],
+    });
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    const snapshot = await getApplicationAssetsSnapshot();
+    const registry = await getApplicationResultRegistry(snapshot);
+
+    expect(snapshot.creatives).toEqual([]);
+    expect(repository.listMetaAssets).toHaveBeenCalledOnce();
+    expect(repository.getCoverage).not.toHaveBeenCalled();
+    expect(repository.getDeliveryPerformance).not.toHaveBeenCalled();
+    expect(repository.listRecentSyncRuns).not.toHaveBeenCalled();
+    expect(repository.listCreativeLibrary).not.toHaveBeenCalled();
+    expect(repository.listCreativePerformance).not.toHaveBeenCalled();
+    expect(repository.listResultDefinitions).toHaveBeenCalledOnce();
+    expect(repository.listResultMappings).toHaveBeenCalledOnce();
+    expect(registry.definitions).toEqual(snapshot.resultDefinitions);
+    expect(snapshot.dashboard.counts).toMatchObject({
+      businesses: 1,
+      adAccounts: 1,
+      pages: 1,
+    });
+    expect(snapshot.dashboard.lastSyncAt).not.toBeNull();
+    expect(snapshot.assets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "business_1",
+          verificationStatus: "verified",
+          lastSeenAt: "2026-07-31T00:00:00.000Z",
+        }),
+        expect.objectContaining({
+          id: "page_1",
+          category: "Sports",
+          lastSeenAt: "2026-07-31T00:00:00.000Z",
+        }),
+        expect.objectContaining({
+          id: "app_1",
+          platform: "android",
+          lastSeenAt: "2026-07-31T00:00:00.000Z",
+        }),
+      ]),
+    );
+  });
+
+  it("keeps stored Data Health Creative identity links while Meta needs reauth", async () => {
+    serverMocks.getRuntimeConfiguration.mockReturnValue(
+      runtimeConfiguration(false),
+    );
+    serverMocks.readPageOwnerSession.mockResolvedValue({
+      sub: liveConnection.connectionId,
+    });
+    serverMocks.readDatabaseHealth.mockResolvedValue({ ok: true });
+    const repository = liveSnapshotRepository([liveLeadDefinition]);
+    vi.mocked(repository.getConnection).mockResolvedValue({
+      ...liveConnection,
+      status: "needs_reauth",
+    });
     const libraryItem: CreativeLibraryItem = {
       creativeAssetId: "asset_data_health",
       assetKey: "video:video_1",
@@ -579,6 +778,7 @@ describe("application snapshot Result registry", () => {
     }).creativeFamilyId;
 
     expect(databaseMocks.createTrackerRepository).toHaveBeenCalledTimes(1);
+    expect(contextSnapshot.connection?.status).toBe("needs_reauth");
     expect(repository.listCreativeLibrary).toHaveBeenCalledWith({
       connectionId: liveConnection.connectionId,
       limit: 5_001,

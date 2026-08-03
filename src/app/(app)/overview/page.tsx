@@ -7,6 +7,7 @@ import { OverviewV2 } from "@/components/overview-v2";
 import { EntityDrawer } from "@/components/ui/entity-drawer";
 import {
   getApplicationContextSnapshot,
+  getApplicationOperationalSnapshot,
   buildApplicationResultMetrics,
   getCanonicalResultsForReport,
   getCreativeRowsForReport,
@@ -172,8 +173,11 @@ export default async function OverviewPage({
     Record<string, string | string[] | undefined>
   >;
 }) {
+  const v3Enabled = isUiV3();
   const [snapshot, query] = await Promise.all([
-    getApplicationContextSnapshot(),
+    v3Enabled
+      ? getApplicationContextSnapshot()
+      : getApplicationOperationalSnapshot(),
     searchParams,
   ]);
   const context = resolveApplicationReportContext(snapshot, query);
@@ -370,7 +374,7 @@ export default async function OverviewPage({
     selectedDrawer,
   };
 
-  if (isUiV3()) {
+  if (v3Enabled) {
     return (
       <OverviewV3
         {...sharedOverviewProps}

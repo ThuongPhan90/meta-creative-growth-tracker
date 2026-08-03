@@ -8,8 +8,10 @@ import {
   type CreativePerformanceItem,
   type CanonicalCreativeFamilyResultTotals,
   type CanonicalResultTrendPoint as DatabaseCanonicalResultTrendPoint,
+  type ConnectionCoverage,
   type DeliveryPerformanceItem,
   type LiveDeliverySummary,
+  type MetaAssetInventory,
   type MetaBreakdownMetricRow,
   type MetaConnectionRecord,
   type SyncRunRecord,
@@ -170,6 +172,19 @@ const completeSnapshotLoaders = new WeakMap<
   ApplicationSnapshot,
   () => Promise<ApplicationSnapshot>
 >();
+const operationalSnapshotLoaders = new WeakMap<
+  ApplicationSnapshot,
+  () => Promise<ApplicationSnapshot>
+>();
+const assetSnapshotLoaders = new WeakMap<
+  ApplicationSnapshot,
+  () => Promise<ApplicationSnapshot>
+>();
+
+function requestMemoizedLoader<T>(loader: () => Promise<T>) {
+  let pending: Promise<T> | undefined;
+  return () => (pending ??= loader());
+}
 
 // Report pages receive the exact context snapshot created by the app layout.
 // Keep its request-scoped repository and settings attached to that object so
@@ -183,7 +198,7 @@ const snapshotSettings = new WeakMap<
   ApplicationSnapshot,
   TrackerSettings
 >();
-type StoredResultRegistry = {
+export type StoredResultRegistry = {
   definitions: ResultDefinition[];
   mappings: Awaited<
     ReturnType<TrackerRepository["listResultMappings"]>
@@ -193,6 +208,19 @@ const snapshotResultRegistries = new WeakMap<
   ApplicationSnapshot,
   StoredResultRegistry
 >();
+
+function inheritSnapshotResources(
+  source: ApplicationSnapshot,
+  target: ApplicationSnapshot,
+) {
+  const repository = snapshotRepositories.get(source);
+  if (repository) snapshotRepositories.set(target, repository);
+  const settings = snapshotSettings.get(source);
+  if (settings) snapshotSettings.set(target, settings);
+  const registry = snapshotResultRegistries.get(source);
+  if (registry) snapshotResultRegistries.set(target, registry);
+  return target;
+}
 
 async function repositoryForSnapshot(
   snapshot: ApplicationSnapshot,
@@ -254,6 +282,104 @@ function scopeInventoryFromAssets(
         : [],
     })),
   };
+}
+
+function assetsFromReportingScope(
+  inventory: ReportingScopeInventory,
+): MetaAssetRow[] {
+  const businessNames = new Map(
+    inventory.businesses.map((business) => [business.id, business.name]),
+  );
+
+  return [
+    ...inventory.businesses.map((business) => ({
+      id: business.id,
+      name: business.name,
+      kind: "Business" as const,
+      parentName: null,
+      status: business.isActive ? "ACTIVE" : "INACTIVE",
+      isCurrent: business.isActive,
+    })),
+    ...inventory.adAccounts.map((account) => ({
+      id: account.id,
+      name: account.name,
+      kind: "Ad Account" as const,
+      parentName:
+        account.businessIds
+          .map((businessId) => businessNames.get(businessId))
+          .find((name): name is string => Boolean(name)) ?? null,
+      status: metaAdAccountStatusLabel(account.accountStatus),
+      isCurrent: account.isActive,
+      currency: account.currency,
+      timezone: account.timezone,
+    })),
+  ];
+}
+
+function assetsFromFullInventory(
+  inventory: MetaAssetInventory,
+): MetaAssetRow[] {
+  return [
+    ...inventory.businesses.map((item) => ({
+      id: item.metaBusinessId,
+      name: item.name,
+      kind: "Business" as const,
+      parentName: null,
+      status: item.isActive ? "ACTIVE" : "INACTIVE",
+      verificationStatus: item.verificationStatus,
+      isCurrent: item.isActive,
+      lastSeenAt: item.lastSeenAt,
+    })),
+    ...inventory.adAccounts.map((item) => ({
+      id: item.metaAdAccountId,
+      name: item.name,
+      kind: "Ad Account" as const,
+      parentName: item.businessName,
+      status: metaAdAccountStatusLabel(item.accountStatus),
+      isCurrent: item.isActive,
+      lastSeenAt: item.lastSeenAt,
+      currency: item.currency,
+      timezone: item.timezoneName,
+    })),
+    ...inventory.pages.map((item) => ({
+      id: item.metaPageId,
+      name: item.name,
+      kind: "Page" as const,
+      parentName: null,
+      status: "DISCOVERED",
+      category: item.category,
+      isCurrent: item.isActive,
+      lastSeenAt: item.lastSeenAt,
+    })),
+    ...inventory.apps.map((item) => ({
+      id: item.metaAppId,
+      name: item.name,
+      kind: "App" as const,
+      parentName: null,
+      status: item.isActive ? "ACTIVE" : "INACTIVE",
+      platform: item.platform,
+      isCurrent: item.isActive,
+      lastSeenAt: item.lastSeenAt,
+    })),
+  ];
+}
+
+function latestInventorySeenAt(inventory: MetaAssetInventory) {
+  let latest: string | null = null;
+  let latestTime = Number.NEGATIVE_INFINITY;
+  for (const item of [
+    ...inventory.businesses,
+    ...inventory.adAccounts,
+    ...inventory.pages,
+    ...inventory.apps,
+  ]) {
+    const timestamp = new Date(item.lastSeenAt).getTime();
+    if (Number.isFinite(timestamp) && timestamp > latestTime) {
+      latest = item.lastSeenAt;
+      latestTime = timestamp;
+    }
+  }
+  return latest;
 }
 
 function defaultAllReportingScope(
@@ -544,11 +670,7 @@ export async function getDataHealthCreativeReferences(
   if (snapshot.demoMode) {
     return snapshot.creatives.map(dataHealthReferenceFromCreative);
   }
-  if (
-    !snapshot.authenticated ||
-    !snapshot.connection ||
-    snapshot.connection.status !== "connected"
-  ) {
+  if (!snapshot.authenticated || !snapshot.connection) {
     return [];
   }
 
@@ -2696,6 +2818,146 @@ function emptyDashboard(
   };
 }
 
+function liveDashboard({
+  connection,
+  settings,
+  freshness,
+  scopeInventory,
+  coverage = null,
+  delivery = [],
+}: {
+  connection: MetaConnectionRecord;
+  settings: TrackerSettings;
+  freshness: Freshness;
+  scopeInventory: ReportingScopeInventory;
+  coverage?: ConnectionCoverage | null;
+  delivery?: readonly DeliveryPerformanceItem[];
+}): DashboardViewModel {
+  const eventStatus = (
+    operatingSystem: "ANDROID" | "IOS",
+    field: "installs" | "registrations",
+  ) => {
+    const rows = delivery.filter(
+      (item) => item.operatingSystem === operatingSystem,
+    );
+    if (rows.length === 0) return "pending" as const;
+    return rows.some((item) => item[field] > 0)
+      ? ("ready" as const)
+      : ("warning" as const);
+  };
+  const lastSyncAt = freshness.lastSyncedAt ?? coverage?.lastSyncAt ?? null;
+  const hasDelivery = delivery.some(
+    (item) => item.impressions > 0 || item.spend > 0,
+  );
+  const hasInstallData = delivery.some((item) => item.installs > 0);
+  const hasRegistrationData = delivery.some(
+    (item) => item.registrations > 0,
+  );
+  const hasAnyConversion = hasInstallData || hasRegistrationData;
+  const hasCompleteEventMapping = hasInstallData && hasRegistrationData;
+  const connectionLifecycle = evaluateMetaConnectionLifecycle(connection);
+  const connectionReady =
+    connection.status === "connected" &&
+    connectionLifecycle !== "needs_reauth";
+
+  return {
+    mode: connectionReady ? "connected" : "setup",
+    ownerName: connection.metaUserName ?? "Owner",
+    connectionLabel: connectionReady
+      ? connectionLifecycle === "expiring_soon"
+        ? "Meta đã kết nối · token sắp hết hạn"
+        : "Meta đã kết nối"
+      : `Meta ${connection.status}`,
+    connectionDetail: connectionReady
+      ? connectionLifecycle === "unknown"
+        ? "Đang đọc tài sản được cấp quyền; Meta chưa trả thời hạn truy cập."
+        : "Đang đọc toàn bộ tài sản mà owner token được Meta cấp quyền."
+      : "Kết nối cần được xác thực lại trước lần đồng bộ tiếp theo.",
+    lastSyncAt: formatTimestamp(lastSyncAt, settings.reportingTimezone),
+    hasDelivery,
+    counts: {
+      businesses:
+        coverage?.businessCount ?? scopeInventory.businesses.length,
+      adAccounts: scopeInventory.adAccounts.filter(isOperationalAdAccount)
+        .length,
+      pages: coverage?.pageCount ?? 0,
+      creatives: coverage?.creativeAssetCount ?? 0,
+    },
+    events: [
+      {
+        name: "Install",
+        android: eventStatus("ANDROID", "installs"),
+        ios: eventStatus("IOS", "installs"),
+        total:
+          delivery.length > 0
+            ? delivery.reduce((sum, item) => sum + item.installs, 0)
+            : null,
+      },
+      {
+        name: "CompleteRegistration",
+        android: eventStatus("ANDROID", "registrations"),
+        ios: eventStatus("IOS", "registrations"),
+        total:
+          delivery.length > 0
+            ? delivery.reduce(
+                (sum, item) => sum + item.registrations,
+                0,
+              )
+            : null,
+      },
+    ],
+    checklist: [
+      {
+        label: "App events trong Insights",
+        status: hasAnyConversion ? "ready" : "warning",
+        detail: hasAnyConversion
+          ? "Đã quan sát thấy Install hoặc Registration trong Insights"
+          : delivery.length
+            ? "Chưa quan sát thấy Install/Registration trong Insights"
+            : "Chưa có dữ liệu Insights để xác minh",
+      },
+      {
+        label: "Quyền truy cập",
+        status: !connectionReady
+          ? "error"
+          : connectionLifecycle === "healthy"
+            ? "ready"
+            : "warning",
+        detail: !connectionReady
+          ? "Cần kết nối lại"
+          : connectionLifecycle === "healthy"
+            ? "Token read-only còn hiệu lực"
+            : connectionLifecycle === "expiring_soon"
+              ? "Token sắp hết hạn; nên kết nối lại"
+              : "Chưa xác định được thời hạn token",
+      },
+      {
+        label: "Event mapping",
+        status:
+          delivery.length === 0
+            ? "pending"
+            : hasCompleteEventMapping
+              ? "ready"
+              : "warning",
+        detail:
+          delivery.length === 0
+            ? "Chưa có Insights để xác minh"
+            : hasCompleteEventMapping
+              ? "Install và Registration đã có dữ liệu"
+              : hasAnyConversion
+                ? "Mới nhận một trong hai event đã cấu hình"
+                : "Chưa nhận Install/Registration",
+      },
+      {
+        label: "Lần đồng bộ cuối",
+        status: lastSyncAt ? "ready" : "locked",
+        detail:
+          formatTimestamp(lastSyncAt, settings.reportingTimezone) ?? "—",
+      },
+    ],
+  };
+}
+
 function defaultApplicationResultDefinitions(): ResultDefinition[] {
   return DEFAULT_RESULT_DEFINITIONS.filter(
     (definition) => definition.enabled,
@@ -2738,6 +3000,14 @@ async function resultRegistryForSnapshot(
   const registry = await loadStoredResultRegistry(repository);
   snapshotResultRegistries.set(snapshot, registry);
   return registry;
+}
+
+/** Reuses the registry already loaded by the request context when available. */
+export async function getApplicationResultRegistry(
+  snapshot: ApplicationSnapshot,
+): Promise<StoredResultRegistry> {
+  const repository = await repositoryForSnapshot(snapshot);
+  return resultRegistryForSnapshot(snapshot, repository);
 }
 
 async function loadApplicationResultRegistry(
@@ -2922,73 +3192,21 @@ async function loadApplicationContextSnapshot(): Promise<ApplicationSnapshot> {
     const dateTo = localDate(settings.reportingTimezone);
     const dateFrom = addDays(dateTo, -(settings.syncLookbackDays - 1));
     const [
-      coverage,
-      inventory,
-      delivery,
-      runs,
       insightsFreshness,
       scopeInventory,
       persistedScope,
       resultRegistry,
     ] = await Promise.all([
-        repository.getCoverage(connection.connectionId),
-        repository.listMetaAssets(connection.connectionId),
-        repository.getDeliveryPerformance({
-          connectionId: connection.connectionId,
-          dateFrom,
-          dateTo,
-          currency: settings.reportingCurrency ?? undefined,
-        }),
-        repository.listRecentSyncRuns(connection.connectionId, 20),
-        repository.getInsightsFreshness(connection.connectionId),
-        repository.listReportingScopeInventory(connection.connectionId),
-        repository.getReportingScope(connection.connectionId),
-        loadApplicationResultRegistry(repository),
-      ]);
+      repository.getInsightsFreshness(connection.connectionId),
+      repository.listReportingScopeInventory(connection.connectionId),
+      repository.getReportingScope(connection.connectionId),
+      loadApplicationResultRegistry(repository),
+    ]);
 
-    const assets: MetaAssetRow[] = [
-      ...inventory.businesses.map((item) => ({
-        id: item.metaBusinessId,
-        name: item.name,
-        kind: "Business" as const,
-        parentName: null,
-        status: item.isActive ? "ACTIVE" : "INACTIVE",
-        verificationStatus: item.verificationStatus,
-        isCurrent: item.isActive,
-        lastSeenAt: item.lastSeenAt,
-      })),
-      ...inventory.adAccounts.map((item) => ({
-        id: item.metaAdAccountId,
-        name: item.name,
-        kind: "Ad Account" as const,
-        parentName: item.businessName,
-        status: metaAdAccountStatusLabel(item.accountStatus),
-        isCurrent: item.isActive,
-        lastSeenAt: item.lastSeenAt,
-        currency: item.currency,
-        timezone: item.timezoneName,
-      })),
-      ...inventory.pages.map((item) => ({
-        id: item.metaPageId,
-        name: item.name,
-        kind: "Page" as const,
-        parentName: null,
-        status: "DISCOVERED",
-        category: item.category,
-        isCurrent: item.isActive,
-        lastSeenAt: item.lastSeenAt,
-      })),
-      ...inventory.apps.map((item) => ({
-        id: item.metaAppId,
-        name: item.name,
-        kind: "App" as const,
-        parentName: null,
-        status: item.isActive ? "ACTIVE" : "INACTIVE",
-        platform: item.platform,
-        isCurrent: item.isActive,
-        lastSeenAt: item.lastSeenAt,
-      })),
-    ];
+    // Reporting pages only need Business and Ad Account identity. Page/App
+    // inventory, delivery health, coverage and sync history are loaded lazily
+    // by the operational surfaces that actually render them.
+    const assets = assetsFromReportingScope(scopeInventory);
     const freshness = createFreshness({
       lastSyncedAt: insightsFreshness.lastSyncedAt,
       dataThroughAt: insightsFreshness.dataThroughAt,
@@ -3002,161 +3220,12 @@ async function loadApplicationContextSnapshot(): Promise<ApplicationSnapshot> {
           persisted: persistedScope,
         })
       : defaultAllReportingScope(scopeInventory);
-    const latestInsightsRun = runs.find((run) =>
-      ["insights", "incremental", "full"].includes(run.syncKind),
-    );
-    const latestInsightsStats =
-      latestInsightsRun &&
-      typeof latestInsightsRun.stats.insights === "object" &&
-      latestInsightsRun.stats.insights !== null &&
-      !Array.isArray(latestInsightsRun.stats.insights)
-        ? latestInsightsRun.stats.insights
-        : null;
-    const accountsAttempted =
-      latestInsightsStats &&
-      typeof latestInsightsStats.accounts_attempted === "number"
-        ? latestInsightsStats.accounts_attempted
-        : 0;
-    const accountsSucceeded =
-      latestInsightsStats &&
-      typeof latestInsightsStats.accounts_succeeded === "number"
-        ? latestInsightsStats.accounts_succeeded
-        : 0;
-    const coverageRatio =
-      accountsAttempted > 0
-        ? Math.min(1, Math.max(0, accountsSucceeded / accountsAttempted))
-        : insightsFreshness.syncStatus === "healthy"
-          ? 1
-          : 0;
-    const partial =
-      insightsFreshness.syncStatus === "partial" ||
-      latestInsightsRun?.status === "partial";
-    const eventStatus = (
-      operatingSystem: "ANDROID" | "IOS",
-      field: "installs" | "registrations",
-    ) => {
-      const rows = delivery.filter(
-        (item) => item.operatingSystem === operatingSystem,
-      );
-      if (rows.length === 0) return "pending" as const;
-      return rows.some((item) => item[field] > 0)
-        ? ("ready" as const)
-        : ("warning" as const);
-    };
-    const lastSyncAt =
-      insightsFreshness.lastSyncedAt ?? coverage?.lastSyncAt ?? null;
-    const hasDelivery = delivery.some(
-      (item) => item.impressions > 0 || item.spend > 0,
-    );
-    const hasInstallData = delivery.some((item) => item.installs > 0);
-    const hasRegistrationData = delivery.some(
-      (item) => item.registrations > 0,
-    );
-    const hasAnyConversion = hasInstallData || hasRegistrationData;
-    const hasCompleteEventMapping =
-      hasInstallData && hasRegistrationData;
-    const connectionLifecycle =
-      evaluateMetaConnectionLifecycle(connection);
-    const connectionReady =
-      connection.status === "connected" &&
-      connectionLifecycle !== "needs_reauth";
-    const dashboard: DashboardViewModel = {
-      mode: connectionReady ? "connected" : "setup",
-      ownerName: connection.metaUserName ?? "Owner",
-      connectionLabel:
-        connectionReady
-          ? connectionLifecycle === "expiring_soon"
-            ? "Meta đã kết nối · token sắp hết hạn"
-            : "Meta đã kết nối"
-          : `Meta ${connection.status}`,
-      connectionDetail:
-        connectionReady
-          ? connectionLifecycle === "unknown"
-            ? "Đang đọc tài sản được cấp quyền; Meta chưa trả thời hạn truy cập."
-            : "Đang đọc toàn bộ tài sản mà owner token được Meta cấp quyền."
-          : "Kết nối cần được xác thực lại trước lần đồng bộ tiếp theo.",
-      lastSyncAt: formatTimestamp(
-        lastSyncAt,
-        settings.reportingTimezone,
-      ),
-      hasDelivery,
-      counts: {
-        businesses: coverage?.businessCount ?? inventory.businesses.length,
-        adAccounts: inventory.adAccounts.filter(isOperationalAdAccount)
-          .length,
-        pages: coverage?.pageCount ?? inventory.pages.length,
-        creatives: coverage?.creativeAssetCount ?? 0,
-      },
-      events: [
-        {
-          name: "Install",
-          android: eventStatus("ANDROID", "installs"),
-          ios: eventStatus("IOS", "installs"),
-          total: delivery.reduce((sum, item) => sum + item.installs, 0),
-        },
-        {
-          name: "CompleteRegistration",
-          android: eventStatus("ANDROID", "registrations"),
-          ios: eventStatus("IOS", "registrations"),
-          total: delivery.reduce(
-            (sum, item) => sum + item.registrations,
-            0,
-          ),
-        },
-      ],
-      checklist: [
-        {
-          label: "App events trong Insights",
-          status: hasAnyConversion ? "ready" : "warning",
-          detail: hasAnyConversion
-            ? "Đã quan sát thấy Install hoặc Registration trong Insights"
-            : delivery.length
-              ? "Chưa quan sát thấy Install/Registration trong Insights"
-              : "Chưa có dữ liệu Insights để xác minh",
-        },
-        {
-          label: "Quyền truy cập",
-          status:
-            !connectionReady
-              ? "error"
-              : connectionLifecycle === "healthy"
-                ? "ready"
-                : "warning",
-          detail:
-            !connectionReady
-              ? "Cần kết nối lại"
-              : connectionLifecycle === "healthy"
-                ? "Token read-only còn hiệu lực"
-                : connectionLifecycle === "expiring_soon"
-                  ? "Token sắp hết hạn; nên kết nối lại"
-                  : "Chưa xác định được thời hạn token"
-        },
-        {
-          label: "Event mapping",
-          status:
-            delivery.length === 0
-              ? "pending"
-              : hasCompleteEventMapping
-                ? "ready"
-                : "warning",
-          detail:
-            delivery.length === 0
-              ? "Chưa có Insights để xác minh"
-              : hasCompleteEventMapping
-                ? "Install và Registration đã có dữ liệu"
-                : hasAnyConversion
-                  ? "Mới nhận một trong hai event đã cấu hình"
-                  : "Chưa nhận Install/Registration",
-        },
-        {
-          label: "Lần đồng bộ cuối",
-          status: lastSyncAt ? "ready" : "locked",
-          detail:
-            formatTimestamp(lastSyncAt, settings.reportingTimezone) ??
-            "—",
-        },
-      ],
-    };
+    const dashboard = liveDashboard({
+      connection,
+      settings,
+      freshness,
+      scopeInventory,
+    });
 
     const snapshot: ApplicationSnapshot = {
       demoMode: false,
@@ -3167,9 +3236,7 @@ async function loadApplicationContextSnapshot(): Promise<ApplicationSnapshot> {
       assets,
       creatives: [],
       creativesTruncated: false,
-      syncRuns: runs.map((run) =>
-        mapSyncRun(run, settings.reportingTimezone),
-      ),
+      syncRuns: [],
       setupChecks: setupChecks({
         databaseConfigured: true,
         databaseReady: true,
@@ -3177,10 +3244,10 @@ async function loadApplicationContextSnapshot(): Promise<ApplicationSnapshot> {
         securityConfigured: configuration.securityConfigured,
         legalConfigured: configuration.legalConfigured,
         connection,
-        // A terminal partial sync has still completed discovery and produced
-        // usable coverage. Do not leave setup locked solely because Meta
-        // returned non-fatal per-resource warnings.
-        lastInitialSyncAt: settings.lastInitialSyncAt ?? lastSyncAt,
+        // Freshness is part of the light context and is enough to prove a
+        // completed (including partial) initial sync without loading history.
+        lastInitialSyncAt:
+          settings.lastInitialSyncAt ?? freshness.lastSyncedAt,
         reportingTimezone: settings.reportingTimezone,
       }),
       freshness,
@@ -3205,8 +3272,123 @@ async function loadApplicationContextSnapshot(): Promise<ApplicationSnapshot> {
     if (resultRegistry) {
       snapshotResultRegistries.set(snapshot, resultRegistry);
     }
-    completeSnapshotLoaders.set(snapshot, async () => {
-      const [libraryResult, performanceResult] = await Promise.all([
+    const loadOperationalState = requestMemoizedLoader(async () => {
+      const [coverage, delivery, runs] = await Promise.all([
+        repository.getCoverage(connection.connectionId),
+        repository.getDeliveryPerformance({
+          connectionId: connection.connectionId,
+          dateFrom,
+          dateTo,
+          currency: settings.reportingCurrency ?? undefined,
+        }),
+        repository.listRecentSyncRuns(connection.connectionId, 20),
+      ]);
+      const latestInsightsRun = runs.find((run) =>
+        ["insights", "incremental", "full"].includes(run.syncKind),
+      );
+      const latestInsightsStats =
+        latestInsightsRun &&
+        typeof latestInsightsRun.stats.insights === "object" &&
+        latestInsightsRun.stats.insights !== null &&
+        !Array.isArray(latestInsightsRun.stats.insights)
+          ? latestInsightsRun.stats.insights
+          : null;
+      const accountsAttempted =
+        latestInsightsStats &&
+        typeof latestInsightsStats.accounts_attempted === "number"
+          ? latestInsightsStats.accounts_attempted
+          : 0;
+      const accountsSucceeded =
+        latestInsightsStats &&
+        typeof latestInsightsStats.accounts_succeeded === "number"
+          ? latestInsightsStats.accounts_succeeded
+          : 0;
+      const coverageRatio =
+        accountsAttempted > 0
+          ? Math.min(1, Math.max(0, accountsSucceeded / accountsAttempted))
+          : insightsFreshness.syncStatus === "healthy"
+            ? 1
+            : 0;
+      const partial =
+        insightsFreshness.syncStatus === "partial" ||
+        latestInsightsRun?.status === "partial";
+      const operationalSnapshot = inheritSnapshotResources(snapshot, {
+        ...snapshot,
+        dashboard: liveDashboard({
+          connection,
+          settings,
+          freshness,
+          scopeInventory,
+          coverage,
+          delivery,
+        }),
+        syncRuns: runs.map((run) =>
+          mapSyncRun(run, settings.reportingTimezone),
+        ),
+        setupChecks: setupChecks({
+          databaseConfigured: true,
+          databaseReady: true,
+          metaConfigured: configuration.metaConfigured,
+          securityConfigured: configuration.securityConfigured,
+          legalConfigured: configuration.legalConfigured,
+          connection,
+          // Coverage records a completed discovery even when a partial run
+          // did not publish an Insights freshness checkpoint.
+          lastInitialSyncAt:
+            settings.lastInitialSyncAt ??
+            freshness.lastSyncedAt ??
+            coverage?.lastSyncAt ??
+            null,
+          reportingTimezone: settings.reportingTimezone,
+        }),
+      });
+      return {
+        snapshot: operationalSnapshot,
+        coverage,
+        delivery,
+        coverageRatio,
+        partial,
+      };
+    });
+
+    operationalSnapshotLoaders.set(
+      snapshot,
+      requestMemoizedLoader(async () =>
+        (await loadOperationalState()).snapshot,
+      ),
+    );
+    assetSnapshotLoaders.set(
+      snapshot,
+      requestMemoizedLoader(async () => {
+        const fullInventory = await repository.listMetaAssets(
+          connection.connectionId,
+        );
+        return inheritSnapshotResources(snapshot, {
+          ...snapshot,
+          dashboard: {
+            ...snapshot.dashboard,
+            lastSyncAt:
+              snapshot.dashboard.lastSyncAt ??
+              formatTimestamp(
+                latestInventorySeenAt(fullInventory),
+                settings.reportingTimezone,
+              ),
+            counts: {
+              ...snapshot.dashboard.counts,
+              businesses: fullInventory.businesses.length,
+              adAccounts: fullInventory.adAccounts.filter(
+                isOperationalAdAccount,
+              ).length,
+              pages: fullInventory.pages.length,
+            },
+          },
+          assets: assetsFromFullInventory(fullInventory),
+        });
+      }),
+    );
+    completeSnapshotLoaders.set(snapshot, requestMemoizedLoader(async () => {
+      const [operational, libraryResult, performanceResult] = await Promise.all([
+        loadOperationalState(),
         loadCreativeLibrary(repository, connection.connectionId),
         loadPerformance(
           repository,
@@ -3220,29 +3402,30 @@ async function loadApplicationContextSnapshot(): Promise<ApplicationSnapshot> {
       const creatives = mapCreatives(
         library,
         performanceResult.items,
-        delivery,
+        operational.delivery,
         settings,
         dateFrom,
         dateTo,
         freshness,
-        coverageRatio,
-        partial,
+        operational.coverageRatio,
+        operational.partial,
       );
 
-      return {
-        ...snapshot,
+      return inheritSnapshotResources(snapshot, {
+        ...operational.snapshot,
         dashboard: {
-          ...snapshot.dashboard,
+          ...operational.snapshot.dashboard,
           counts: {
-            ...snapshot.dashboard.counts,
-            creatives: coverage?.creativeAssetCount ?? library.length,
+            ...operational.snapshot.dashboard.counts,
+            creatives:
+              operational.coverage?.creativeAssetCount ?? library.length,
           },
         },
         creatives,
         creativesTruncated:
           libraryResult.truncated || performanceResult.truncated,
-      };
-    });
+      });
+    }));
 
     return snapshot;
 }
@@ -3257,6 +3440,31 @@ export const getApplicationContextSnapshot = cache(
 );
 
 /**
+ * Adds delivery health, coverage and recent sync history only for operational
+ * surfaces. Report pages keep the lightweight context and run exact scoped
+ * reporting queries instead of paying for a second default delivery query.
+ */
+export const getApplicationOperationalSnapshot = cache(
+  async (): Promise<ApplicationSnapshot> => {
+    const contextSnapshot = await getApplicationContextSnapshot();
+    const loadOperationalSnapshot =
+      operationalSnapshotLoaders.get(contextSnapshot);
+    return loadOperationalSnapshot
+      ? loadOperationalSnapshot()
+      : contextSnapshot;
+  },
+);
+
+/** Full Business/Ad Account/Page/App inventory for Sources surfaces. */
+export const getApplicationAssetsSnapshot = cache(
+  async (): Promise<ApplicationSnapshot> => {
+    const contextSnapshot = await getApplicationContextSnapshot();
+    const loadAssetSnapshot = assetSnapshotLoaders.get(contextSnapshot);
+    return loadAssetSnapshot ? loadAssetSnapshot() : contextSnapshot;
+  },
+);
+
+/**
  * Complete operational snapshot composed from the same cached request context.
  * This preserves the legacy full-data contract without repeating base queries
  * already made by the application layout.
@@ -3264,9 +3472,17 @@ export const getApplicationContextSnapshot = cache(
 export const getApplicationSnapshot = cache(
   async (): Promise<ApplicationSnapshot> => {
     const contextSnapshot = await getApplicationContextSnapshot();
+    const loadAssetSnapshot = assetSnapshotLoaders.get(contextSnapshot);
     const loadCompleteSnapshot = completeSnapshotLoaders.get(contextSnapshot);
-    return loadCompleteSnapshot
-      ? loadCompleteSnapshot()
-      : contextSnapshot;
+    if (!loadAssetSnapshot && !loadCompleteSnapshot) return contextSnapshot;
+
+    const [assetSnapshot, completeSnapshot] = await Promise.all([
+      loadAssetSnapshot ? loadAssetSnapshot() : contextSnapshot,
+      loadCompleteSnapshot ? loadCompleteSnapshot() : contextSnapshot,
+    ]);
+    return inheritSnapshotResources(contextSnapshot, {
+      ...completeSnapshot,
+      assets: assetSnapshot.assets,
+    });
   },
 );
