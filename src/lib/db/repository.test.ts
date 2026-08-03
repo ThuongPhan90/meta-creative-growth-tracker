@@ -1848,8 +1848,10 @@ describe("Ad account activity filters", () => {
 
     const [query, parameters] = unsafe.mock.calls[0];
     expect(query).toContain("account.connection_id = $1");
-    expect(query).toContain("and account.is_active");
-    expect(query).toContain("and account.account_status = 1");
+    expect(query).toContain("$11::boolean");
+    expect(query).toContain(
+      "or (account.is_active and account.account_status = 1)",
+    );
     expectAccountDefaultAwareAttributionFilter({
       query,
       metricAlias: "metric",
@@ -1869,8 +1871,43 @@ describe("Ad account activity filters", () => {
       "account_default",
       "mixed",
       "sync_42",
+      false,
       null,
     ]);
+  });
+
+  it("applies a normalized multi-account scope and inactive-account override to delivery performance", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await repository.getDeliveryPerformance({
+      connectionId: "connection-1",
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-24",
+      adAccountMetaIds: [" act_2 ", "act_1", "act_2", ""],
+      includeInactiveAccounts: true,
+      objectiveRawKeys: [" outcome_leads "],
+    });
+
+    const [query, parameters] = unsafe.mock.calls[0];
+    const normalized = compactSql(query);
+    expect(normalized).toContain(
+      "$6::text[] is null or account.meta_ad_account_id = any($6::text[])",
+    );
+    expect(normalized).toContain(
+      "$11::boolean or (account.is_active and account.account_status = 1)",
+    );
+    expect(parameters?.[5]).toEqual(["act_2", "act_1"]);
+    expect(parameters?.[10]).toBe(true);
+    expect(parameters?.at(-1)).toEqual(["OUTCOME_LEADS"]);
   });
 
   it("returns daily Overview trend as separate currency series", async () => {
@@ -2375,9 +2412,11 @@ describe("Ad account activity filters", () => {
       dateTo: "2026-07-24",
     });
 
-    const [query] = unsafe.mock.calls[0];
-    expect(query).toContain("and account.is_active");
-    expect(query).toContain("and account.account_status = 1");
+    const [query, parameters] = unsafe.mock.calls[0];
+    expect(compactSql(query)).toContain(
+      "$15::boolean or (account.is_active and account.account_status = 1)",
+    );
+    expect(parameters?.[14]).toBe(false);
   });
 
   it("bounds one complete creative-performance snapshot at 5,001 rows", async () => {
@@ -2402,6 +2441,71 @@ describe("Ad account activity filters", () => {
 
     expect(unsafe.mock.calls[0]?.[1]?.[6]).toBe(5_001);
     expect(unsafe.mock.calls[0]?.[1]?.[7]).toBe(0);
+  });
+
+  it("applies a normalized multi-account scope to creative performance", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await repository.listCreativePerformance({
+      connectionId: "connection-1",
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-24",
+      accountMetaIds: [" act_2 ", "act_1", "act_2", ""],
+      includeInactiveAccounts: true,
+      objectiveRawKeys: [" outcome_leads "],
+    });
+
+    const [query, parameters] = unsafe.mock.calls[0];
+    const normalized = compactSql(query);
+    expect(normalized).toContain(
+      "$9::text[] is null or account.meta_ad_account_id = any($9::text[])",
+    );
+    expect(parameters?.[8]).toEqual(["act_2", "act_1"]);
+    expect(normalized).toContain(
+      "$15::boolean or (account.is_active and account.account_status = 1)",
+    );
+    expect(parameters?.[14]).toBe(true);
+    expect(parameters?.at(-1)).toEqual(["OUTCOME_LEADS"]);
+  });
+
+  it("fails closed for explicit empty performance account scopes", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.listCreativePerformance({
+        connectionId: "connection-1",
+        dateFrom: "2026-07-01",
+        dateTo: "2026-07-24",
+        accountMetaIds: [],
+      }),
+    ).resolves.toEqual([]);
+    await expect(
+      repository.getDeliveryPerformance({
+        connectionId: "connection-1",
+        dateFrom: "2026-07-01",
+        dateTo: "2026-07-24",
+        adAccountMetaIds: [],
+      }),
+    ).resolves.toEqual([]);
+    expect(unsafe).not.toHaveBeenCalled();
   });
 
   it("filters Creative Family performance by canonical ID and context", async () => {
@@ -2441,12 +2545,13 @@ describe("Ad account activity filters", () => {
     expect(query).toContain("metric.action_report_time = $13");
     expect(query).toContain("metric.sync_version = $14");
     expect(parameters?.slice(8)).toEqual([
-      "act_1",
+      ["act_1"],
       "campaign_1",
       familyId,
       "account_default",
       "mixed",
       "sync_42",
+      false,
       null,
     ]);
   });

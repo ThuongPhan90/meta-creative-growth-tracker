@@ -5989,6 +5989,19 @@ export class TrackerRepository {
   async listCreativePerformance(
     filters: CreativePerformanceFilters,
   ): Promise<CreativePerformanceItem[]> {
+    const accountMetaIds =
+      filters.accountMetaIds === undefined
+        ? filters.accountMetaId?.trim()
+          ? [filters.accountMetaId.trim()]
+          : null
+        : normalizeSelectedAdAccountMetaIds(filters.accountMetaIds);
+    if (
+      filters.accountMetaIds !== undefined &&
+      accountMetaIds?.length === 0
+    ) {
+      return [];
+    }
+
     const limit = Math.min(
       Math.max(filters.limit ?? 50, 1),
       MAX_CREATIVE_PERFORMANCE_ROWS,
@@ -6076,13 +6089,15 @@ export class TrackerRepository {
             on account.ad_account_id = metric.ad_account_id
           where metric.metric_date between $2::date and $3::date
             and account.connection_id = $1
-            and account.is_active
-            and account.account_status = 1
+            and (
+              $15::boolean
+              or (account.is_active and account.account_status = 1)
+            )
             and ($4::bigint is null or metric.ad_account_id = $4)
             and ($5::text is null or metric.currency = $5)
             and (
-              $9::text is null
-              or account.meta_ad_account_id = $9
+              $9::text[] is null
+              or account.meta_ad_account_id = any($9::text[])
             )
             and (
               $10::text is null
@@ -6107,13 +6122,13 @@ export class TrackerRepository {
               or metric.sync_version = $14
             )
             and (
-              $15::text[] is null
+              $16::text[] is null
               or exists (
                 select 1
                 from tracker.meta_campaigns objective_campaign
                 where objective_campaign.campaign_id = metric.campaign_id
                   and upper(coalesce(objective_campaign.objective, ''))
-                    = any($15::text[])
+                    = any($16::text[])
               )
             )
           group by
@@ -6160,12 +6175,13 @@ export class TrackerRepository {
         filters.assetType ?? null,
         limit,
         offset,
-        filters.accountMetaId?.trim() || null,
+        accountMetaIds,
         filters.campaignMetaId?.trim() || null,
         filters.creativeFamilyId?.trim() || null,
         filters.attributionWindow?.trim() || null,
         filters.actionReportTime ?? null,
         filters.syncVersion?.trim() || null,
+        filters.includeInactiveAccounts === true,
         filters.objectiveRawKeys?.length
           ? filters.objectiveRawKeys.map((key) =>
               key.trim().toUpperCase(),
@@ -6232,6 +6248,19 @@ export class TrackerRepository {
   async getDeliveryPerformance(
     filters: DeliveryPerformanceFilters,
   ): Promise<DeliveryPerformanceItem[]> {
+    const accountMetaIds =
+      filters.adAccountMetaIds === undefined
+        ? filters.accountMetaId?.trim()
+          ? [filters.accountMetaId.trim()]
+          : null
+        : normalizeSelectedAdAccountMetaIds(filters.adAccountMetaIds);
+    if (
+      filters.adAccountMetaIds !== undefined &&
+      accountMetaIds?.length === 0
+    ) {
+      return [];
+    }
+
     const rows = await this.query<DatabaseRow>(
       `
         select
@@ -6259,13 +6288,15 @@ export class TrackerRepository {
           on account.ad_account_id = metric.ad_account_id
         where metric.metric_date between $2::date and $3::date
           and account.connection_id = $1
-          and account.is_active
-          and account.account_status = 1
+          and (
+            $11::boolean
+            or (account.is_active and account.account_status = 1)
+          )
           and ($4::bigint is null or metric.ad_account_id = $4)
           and ($5::text is null or metric.currency = $5)
           and (
-            $6::text is null
-            or account.meta_ad_account_id = $6
+            $6::text[] is null
+            or account.meta_ad_account_id = any($6::text[])
           )
           and (
             $7::text is null
@@ -6290,13 +6321,13 @@ export class TrackerRepository {
             or metric.sync_version = $10
           )
           and (
-            $11::text[] is null
+            $12::text[] is null
             or exists (
               select 1
               from tracker.meta_campaigns objective_campaign
               where objective_campaign.campaign_id = metric.campaign_id
                 and upper(coalesce(objective_campaign.objective, ''))
-                  = any($11::text[])
+                  = any($12::text[])
             )
           )
         group by operating_system, metric.currency
@@ -6308,11 +6339,12 @@ export class TrackerRepository {
         filters.dateTo,
         filters.adAccountId ?? null,
         filters.currency ?? null,
-        filters.accountMetaId?.trim() || null,
+        accountMetaIds,
         filters.campaignMetaId?.trim() || null,
         filters.attributionWindow?.trim() || null,
         filters.actionReportTime ?? null,
         filters.syncVersion?.trim() || null,
+        filters.includeInactiveAccounts === true,
         filters.objectiveRawKeys?.length
           ? filters.objectiveRawKeys.map((key) =>
               key.trim().toUpperCase(),

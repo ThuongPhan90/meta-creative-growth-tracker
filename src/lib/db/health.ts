@@ -1,14 +1,16 @@
 import type { DatabaseClient } from "./client";
 import { loadMigrations } from "./migrations";
 
-interface HealthRow extends Record<string, unknown> {
-  database_name: string;
-  server_version: string;
-}
-
 interface MigrationRow extends Record<string, unknown> {
   migration_id: string;
   checksum_sha256: string;
+}
+
+interface HealthRow extends Record<string, unknown> {
+  database_name: string;
+  server_version: string;
+  migrations: MigrationRow[];
+  missing_relations: string[];
 }
 
 export interface DatabaseHealth {
@@ -52,17 +54,47 @@ const requiredRelations = [
 export async function checkDatabaseHealth(
   database: DatabaseClient,
 ): Promise<DatabaseHealth> {
-  const healthRows = (await database.unsafe(`
-    select
-      current_database() as database_name,
-      current_setting('server_version') as server_version
-  `)) as unknown as HealthRow[];
-  const migrationRows = (await database.unsafe(`
-    select migration_id, checksum_sha256
-    from tracker.schema_migrations
-    order by migration_id
-  `)) as unknown as MigrationRow[];
-  const localMigrations = await loadMigrations();
+  const [healthRows, localMigrations] = await Promise.all([
+    database.unsafe(
+      `
+        select
+          current_database() as database_name,
+          current_setting('server_version') as server_version,
+          coalesce(
+            (
+              select jsonb_agg(
+                jsonb_build_object(
+                  'migration_id', migration_id,
+                  'checksum_sha256', checksum_sha256
+                )
+                order by migration_id
+              )
+              from tracker.schema_migrations
+            ),
+            '[]'::jsonb
+          ) as migrations,
+          coalesce(
+            (
+              select jsonb_agg(
+                relation_check.relation_name
+                order by relation_check.ordinality
+              )
+              from unnest($1::text[]) with ordinality as relation_check(
+                relation_name,
+                ordinality
+              )
+              where to_regclass(relation_check.relation_name) is null
+            ),
+            '[]'::jsonb
+          ) as missing_relations
+      `,
+      [requiredRelations],
+    ) as unknown as Promise<HealthRow[]>,
+    loadMigrations(),
+  ]);
+  const health = healthRows[0];
+  const migrationRows = health.migrations;
+  const missingRelations = health.missing_relations;
   const appliedMap = new Map(
     migrationRows.map((migration) => [
       migration.migration_id,
@@ -78,17 +110,6 @@ export async function checkDatabaseHealth(
       return Boolean(checksum && checksum !== migration.checksum);
     })
     .map((migration) => migration.id);
-
-  const relationRows = (await database.unsafe(
-    `
-      select relation_name
-      from unnest($1::text[]) as relation_name
-      where to_regclass(relation_name) is null
-    `,
-    [requiredRelations],
-  )) as unknown as Array<{ relation_name: string }>;
-  const missingRelations = relationRows.map((row) => row.relation_name);
-  const health = healthRows[0];
 
   return {
     ok:

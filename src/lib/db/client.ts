@@ -26,7 +26,7 @@ export function isDatabaseConfigured(
 export function getDatabasePoolSize(
   environment: NodeJS.ProcessEnv = process.env,
 ): number {
-  return environment.VERCEL ? 2 : 5;
+  return environment.VERCEL ? 4 : 5;
 }
 
 export function getDatabaseSslMode(
@@ -43,8 +43,8 @@ async function createDatabaseClient(): Promise<DatabaseClient> {
 
   const { default: createPostgresClient } = await import("postgres");
   return createPostgresClient(databaseUrl, {
-    // One connection is reserved for the advisory sync lock while repository
-    // queries continue through the pool. A pool of 1 would deadlock on Vercel.
+    // One connection can be reserved for the advisory sync lock while three
+    // others serve parallel report queries. A pool of 1 would deadlock on Vercel.
     max: getDatabasePoolSize(),
     // verify-full encrypts traffic and validates the provider certificate and
     // hostname. postgres.js `require` encrypts but disables certificate checks.

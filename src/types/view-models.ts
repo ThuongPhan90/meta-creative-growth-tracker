@@ -260,6 +260,26 @@ export type EntityLink = {
   pageIds: string[];
 };
 
+/**
+ * Minimal Creative identity/link projection required by Data Health.
+ * Keeping this separate prevents the route from loading performance-heavy
+ * Creative rows when it only needs coverage and issue navigation.
+ */
+export type DataHealthCreativeReference = {
+  id: string;
+  creativeFamilyId?: string;
+  name: string;
+  format: CreativeFormat;
+  entityLinks?: Pick<
+    EntityLink,
+    | "creativeFamilyId"
+    | "assetId"
+    | "metaCreativeIds"
+    | "adIds"
+    | "campaignIds"
+  >;
+};
+
 export type CreativeFamilyPerformance = {
   currency: string;
   dateFrom: string;

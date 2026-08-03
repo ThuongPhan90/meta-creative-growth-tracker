@@ -3,18 +3,18 @@ import {
   type NavigationQueryInput,
 } from "@/lib/navigation";
 import type {
-  CreativeRow,
+  DataHealthCreativeReference,
   DataHealthAffectedEntity,
 } from "@/types/view-models";
 
 export type DataHealthEntityLinkContext = {
   query?: NavigationQueryInput;
-  creatives?: readonly CreativeRow[];
+  creatives?: readonly DataHealthCreativeReference[];
 };
 
 function resolvedCreativeFamilyId(
   entity: DataHealthAffectedEntity,
-  creatives: readonly CreativeRow[],
+  creatives: readonly DataHealthCreativeReference[],
 ) {
   const familyIds = new Set<string>();
   for (const creative of creatives) {

@@ -1,7 +1,8 @@
 import { DataHealthV2 } from "@/components/data-health-v2";
 import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import {
-  getApplicationSnapshot,
+  getApplicationContextSnapshot,
+  getDataHealthCreativeReferences,
   getLiveDeliveryForReport,
   resolveApplicationReportContext,
 } from "@/lib/app-data";
@@ -17,15 +18,18 @@ export default async function DataHealthPage({
   >;
 }) {
   const [snapshot, query] = await Promise.all([
-    getApplicationSnapshot(),
+    getApplicationContextSnapshot(),
     searchParams,
   ]);
   const context = resolveApplicationReportContext(snapshot, query);
-  const liveDelivery = await getLiveDeliveryForReport({ snapshot, context });
+  const [creatives, liveDelivery] = await Promise.all([
+    getDataHealthCreativeReferences(snapshot),
+    getLiveDeliveryForReport({ snapshot, context }),
+  ]);
   const content = (
     <DataHealthV2
       dashboard={snapshot.dashboard}
-      creatives={snapshot.creatives}
+      creatives={creatives}
       syncRuns={snapshot.syncRuns}
       connected={
         snapshot.demoMode ||

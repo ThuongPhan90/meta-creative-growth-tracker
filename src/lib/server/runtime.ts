@@ -12,6 +12,10 @@ import { getLegalConfiguration } from "./legal";
 
 type RuntimeGlobal = typeof globalThis & {
   __mcgtMigrationPromise?: Promise<MigrationResult>;
+  __mcgtDatabaseHealthCache?: {
+    expiresAt: number;
+    promise: Promise<DatabaseHealth | null>;
+  };
 };
 
 const runtimeGlobal = globalThis as RuntimeGlobal;
@@ -65,7 +69,9 @@ export function getRuntimeConfiguration(): RuntimeConfiguration {
 export async function ensureDatabaseReady(): Promise<MigrationResult> {
   runtimeGlobal.__mcgtMigrationPromise ??= (async () => {
     const database = await getDatabase();
-    return runMigrations(database);
+    const result = await runMigrations(database);
+    runtimeGlobal.__mcgtDatabaseHealthCache = undefined;
+    return result;
   })().catch((error) => {
     runtimeGlobal.__mcgtMigrationPromise = undefined;
     throw error;
@@ -77,9 +83,25 @@ export async function ensureDatabaseReady(): Promise<MigrationResult> {
 export async function readDatabaseHealth(): Promise<DatabaseHealth | null> {
   if (!isDatabaseConfigured()) return null;
 
-  try {
-    return await checkDatabaseHealth(await getDatabase());
-  } catch {
-    return null;
+  const now = Date.now();
+  const cached = runtimeGlobal.__mcgtDatabaseHealthCache;
+  if (cached && cached.expiresAt > now) {
+    return cached.promise;
   }
+
+  const promise: Promise<DatabaseHealth | null> = getDatabase()
+    .then((database) => checkDatabaseHealth(database))
+    .catch(() => {
+      // A transient database failure must be retried by the next request rather
+      // than being remembered as an unavailable schema for the whole TTL.
+      if (runtimeGlobal.__mcgtDatabaseHealthCache?.promise === promise) {
+        runtimeGlobal.__mcgtDatabaseHealthCache = undefined;
+      }
+      return null;
+    });
+  runtimeGlobal.__mcgtDatabaseHealthCache = {
+    expiresAt: now + 60_000,
+    promise,
+  };
+  return promise;
 }

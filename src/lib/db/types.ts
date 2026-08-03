@@ -670,6 +670,14 @@ export interface CreativePerformanceFilters {
   dateTo: string;
   adAccountId?: DatabaseId;
   accountMetaId?: string;
+  /**
+   * Exact Meta ad-account scope for one creative-performance snapshot. An
+   * explicitly empty array intentionally matches no account.
+   */
+  accountMetaIds?: readonly string[];
+  /** Preserve verified historical performance for an explicitly selected
+   * account that is no longer operational today. */
+  includeInactiveAccounts?: boolean;
   campaignMetaId?: string;
   attributionWindow?: string;
   actionReportTime?: "impression" | "conversion" | "mixed";

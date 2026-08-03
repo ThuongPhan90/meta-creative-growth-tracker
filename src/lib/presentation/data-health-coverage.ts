@@ -1,5 +1,5 @@
 import type {
-  CreativeRow,
+  DataHealthCreativeReference,
   EventHealth,
 } from "@/types/view-models";
 
@@ -47,7 +47,7 @@ function ratio(covered: number, total: number) {
  * catalog when Meta has not returned a denominator.
  */
 export function buildDataHealthCoverage(
-  creatives: readonly CreativeRow[],
+  creatives: readonly DataHealthCreativeReference[],
   events: readonly EventHealth[],
   delivery?: DeliveryReadyAccountCoverage,
 ): CoverageDimension[] {

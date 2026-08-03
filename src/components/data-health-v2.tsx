@@ -30,7 +30,7 @@ import { formatDataHealthEntityType } from "@/lib/presentation/data-health-entit
 import { dataHealthEntityHref } from "@/lib/presentation/data-health-links";
 import { buildContextHref } from "@/lib/navigation/query";
 import type {
-  CreativeRow,
+  DataHealthCreativeReference,
   DashboardViewModel,
   DataHealthIssue,
   EventHealth,
@@ -149,7 +149,7 @@ function IssueDrawer({
 }: {
   issue: DataHealthIssue;
   query: Query;
-  creatives: CreativeRow[];
+  creatives: DataHealthCreativeReference[];
 }) {
   return (
     <EntityDrawer
@@ -240,7 +240,7 @@ function CoverageDrawer({
 }: {
   dimension: ReturnType<typeof buildDataHealthCoverage>[number];
   query: Query;
-  creatives: CreativeRow[];
+  creatives: DataHealthCreativeReference[];
   events: EventHealth[];
 }) {
   const missing = dimension.missingFamilyIds.flatMap((familyId) => {
@@ -403,7 +403,7 @@ export function DataHealthV2({
   liveDelivery,
 }: {
   dashboard: DashboardViewModel;
-  creatives: CreativeRow[];
+  creatives: DataHealthCreativeReference[];
   syncRuns: SyncRunView[];
   connected: boolean;
   query: Query;

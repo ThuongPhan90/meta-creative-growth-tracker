@@ -35,10 +35,10 @@ describe("database configuration", () => {
     expect(isDatabaseConfigured(environment)).toBe(true);
   });
 
-  it("keeps a second Vercel connection available while the sync lock is reserved", () => {
+  it("keeps three Vercel query connections while the sync lock is reserved", () => {
     expect(
       getDatabasePoolSize({ NODE_ENV: "production", VERCEL: "1" }),
-    ).toBeGreaterThanOrEqual(2);
+    ).toBe(4);
     expect(getDatabasePoolSize({ NODE_ENV: "development" })).toBe(5);
   });
 

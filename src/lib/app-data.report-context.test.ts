@@ -22,6 +22,7 @@ import {
   getApplicationSnapshot,
   getCanonicalResultsForReport,
   getCreativeRowsForReport,
+  getDataHealthCreativeReferences,
   getLiveDeliveryForReport,
   getOverviewTrendForReport,
   resolveApplicationReportContext,
@@ -39,6 +40,7 @@ import type {
   PeriodReachResult,
   TrackerRepository,
 } from "@/lib/db";
+import { createCreativeFamilyIdentity } from "@/lib/data-contract";
 import { computeResultMappingVersion } from "@/lib/db/result-mapping-version";
 import {
   demoAssets,
@@ -525,6 +527,106 @@ describe("application snapshot Result registry", () => {
     expect(repository.listCreativePerformance).not.toHaveBeenCalled();
   });
 
+  it("loads Data Health Creative identity links without performance rows", async () => {
+    serverMocks.getRuntimeConfiguration.mockReturnValue(
+      runtimeConfiguration(false),
+    );
+    serverMocks.readPageOwnerSession.mockResolvedValue({
+      sub: liveConnection.connectionId,
+    });
+    serverMocks.readDatabaseHealth.mockResolvedValue({ ok: true });
+    const repository = liveSnapshotRepository([liveLeadDefinition]);
+    const libraryItem: CreativeLibraryItem = {
+      creativeAssetId: "asset_data_health",
+      assetKey: "video:video_1",
+      assetType: "video",
+      metaVideoId: "video_1",
+      metaImageHash: null,
+      name: null,
+      thumbnailUrl: null,
+      previewUrl: null,
+      width: 1080,
+      height: 1920,
+      durationSeconds: 15,
+      creativeCodes: [],
+      pageNames: [],
+      creativeContainerCount: 1,
+      adCount: 1,
+      currentAdCount: 1,
+      activeAdCount: 1,
+      adAccountCount: 1,
+      pageCount: 1,
+      metaCreativeIds: ["meta_creative_1"],
+      adIds: ["ad_1"],
+      campaignIds: ["campaign_1"],
+      adAccountIds: ["act_1"],
+      pageIds: ["page_1"],
+      lastUsedAt: "2026-07-31T00:00:00.000Z",
+      lastSeenAt: "2026-07-31T00:00:00.000Z",
+    };
+    vi.mocked(repository.listCreativeLibrary).mockResolvedValue([
+      libraryItem,
+    ]);
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    const contextSnapshot = await getApplicationContextSnapshot();
+    const references = await getDataHealthCreativeReferences(
+      contextSnapshot,
+    );
+    const expectedFamilyId = createCreativeFamilyIdentity({
+      assetKey: libraryItem.assetKey,
+      internalStableIdentifier: libraryItem.creativeAssetId,
+    }).creativeFamilyId;
+
+    expect(databaseMocks.createTrackerRepository).toHaveBeenCalledTimes(1);
+    expect(repository.listCreativeLibrary).toHaveBeenCalledWith({
+      connectionId: liveConnection.connectionId,
+      limit: 5_001,
+      offset: 0,
+    });
+    expect(repository.listCreativePerformance).not.toHaveBeenCalled();
+    expect(references).toEqual([
+      {
+        id: libraryItem.creativeAssetId,
+        creativeFamilyId: expectedFamilyId,
+        name: libraryItem.assetKey,
+        format: "Video",
+        entityLinks: {
+          creativeFamilyId: expectedFamilyId,
+          assetId: libraryItem.creativeAssetId,
+          metaCreativeIds: ["meta_creative_1"],
+          adIds: ["ad_1"],
+          campaignIds: ["campaign_1"],
+        },
+      },
+    ]);
+  });
+
+  it("reuses the context repository and settings for sibling report loaders", async () => {
+    serverMocks.getRuntimeConfiguration.mockReturnValue(
+      runtimeConfiguration(false),
+    );
+    serverMocks.readPageOwnerSession.mockResolvedValue({
+      sub: liveConnection.connectionId,
+    });
+    serverMocks.readDatabaseHealth.mockResolvedValue({ ok: true });
+    const repository = liveSnapshotRepository([liveLeadDefinition]);
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    const contextSnapshot = await getApplicationContextSnapshot();
+    await getCreativeRowsForReport({
+      snapshot: contextSnapshot,
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-07",
+      accountMetaIds: ["act_1", "act_2"],
+      currency: "VND",
+      syncVersion: "run-1",
+    });
+
+    expect(databaseMocks.createTrackerRepository).toHaveBeenCalledTimes(1);
+    expect(repository.getSettings).toHaveBeenCalledTimes(1);
+  });
+
   it("composes the full snapshot from one base query set", async () => {
     serverMocks.getRuntimeConfiguration.mockReturnValue(
       runtimeConfiguration(false),
@@ -772,6 +874,9 @@ describe("live Creative fatigue integration", () => {
         }),
       ]),
     );
+    for (const filters of performanceCampaignCalls) {
+      expect(filters.includeInactiveAccounts).toBe(true);
+    }
   });
 
   it("keeps one 7D report insufficient until a previous 7D window is available", async () => {
@@ -828,6 +933,37 @@ describe("live Creative fatigue integration", () => {
 });
 
 describe("live Creative campaign scope", () => {
+  it("batches an exact multi-account scope into one performance and one delivery read", async () => {
+    const snapshot = connectedApplicationSnapshot([liveLeadDefinition]);
+    const repository = liveSnapshotRepository([liveLeadDefinition]);
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    await getCreativeRowsForReport({
+      snapshot,
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-07",
+      accountMetaIds: ["act_1", "act_2"],
+      currency: "VND",
+      syncVersion: "run-1",
+    });
+
+    expect(repository.listCreativePerformance).toHaveBeenCalledTimes(1);
+    expect(repository.listCreativePerformance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountMetaId: undefined,
+        accountMetaIds: ["act_1", "act_2"],
+        includeInactiveAccounts: true,
+      }),
+    );
+    expect(repository.getDeliveryPerformance).toHaveBeenCalledTimes(1);
+    expect(repository.getDeliveryPerformance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        adAccountMetaIds: ["act_1", "act_2"],
+        includeInactiveAccounts: true,
+      }),
+    );
+  });
+
   it("filters library families by the exact trimmed campaign before mapping", async () => {
     const dateFrom = "2026-07-01";
     const dateTo = "2026-07-07";
