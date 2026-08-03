@@ -25,7 +25,7 @@ import {
   getApplicationSnapshot,
   getCanonicalResultsForReport,
   getCreativeRowsForReport,
-  getDataHealthCreativeReferences,
+  getDataHealthCreativeReferenceSnapshot,
   getLiveDeliveryForReport,
   getOverviewTrendForReport,
   resolveApplicationReportContext,
@@ -955,7 +955,7 @@ describe("application snapshot Result registry", () => {
     databaseMocks.createTrackerRepository.mockResolvedValue(repository);
 
     const contextSnapshot = await getApplicationContextSnapshot();
-    const references = await getDataHealthCreativeReferences(
+    const referenceSnapshot = await getDataHealthCreativeReferenceSnapshot(
       contextSnapshot,
     );
     const expectedFamilyId = createCreativeFamilyIdentity({
@@ -970,21 +970,59 @@ describe("application snapshot Result registry", () => {
     );
     expect(repository.listCreativeLibrary).not.toHaveBeenCalled();
     expect(repository.listCreativePerformance).not.toHaveBeenCalled();
-    expect(references).toEqual([
-      {
-        id: libraryItem.creativeAssetId,
-        creativeFamilyId: expectedFamilyId,
-        name: libraryItem.assetKey,
-        format: "Video",
-        entityLinks: {
+    expect(referenceSnapshot).toEqual({
+      truncated: false,
+      items: [
+        {
+          id: libraryItem.creativeAssetId,
           creativeFamilyId: expectedFamilyId,
-          assetId: libraryItem.creativeAssetId,
-          metaCreativeIds: ["meta_creative_1"],
-          adIds: ["ad_1"],
-          campaignIds: ["campaign_1"],
+          name: libraryItem.assetKey,
+          format: "Video",
+          entityLinks: {
+            creativeFamilyId: expectedFamilyId,
+            assetId: libraryItem.creativeAssetId,
+            metaCreativeIds: ["meta_creative_1"],
+            adIds: ["ad_1"],
+            campaignIds: ["campaign_1"],
+          },
         },
-      },
-    ]);
+      ],
+    });
+  });
+
+  it("uses the sentinel Creative identity row to expose a bounded projection", async () => {
+    serverMocks.getRuntimeConfiguration.mockReturnValue(
+      runtimeConfiguration(false),
+    );
+    serverMocks.readPageOwnerSession.mockResolvedValue({
+      sub: liveConnection.connectionId,
+    });
+    serverMocks.readDatabaseHealth.mockResolvedValue({ ok: true });
+    const repository = liveSnapshotRepository([liveLeadDefinition]);
+    const identities = Array.from({ length: 5_001 }, (_, index) => ({
+      creativeAssetId: `asset_${index}`,
+      creativeFamilyId: `cf_${index}`,
+      assetKey: `video:${index}`,
+      assetType: "video" as const,
+      name: `Creative ${index}`,
+      metaCreativeIds: [`creative_${index}`],
+      adIds: [`ad_${index}`],
+      campaignIds: [`campaign_${index}`],
+    }));
+    const listDataHealthCreativeReferences = vi
+      .fn()
+      .mockResolvedValue(identities);
+    Object.assign(repository, { listDataHealthCreativeReferences });
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    const contextSnapshot = await getApplicationContextSnapshot();
+    const referenceSnapshot = await getDataHealthCreativeReferenceSnapshot(
+      contextSnapshot,
+    );
+
+    expect(referenceSnapshot.truncated).toBe(true);
+    expect(referenceSnapshot.items).toHaveLength(5_000);
+    expect(referenceSnapshot.items.at(-1)?.id).toBe("asset_4999");
   });
 
   it("reuses the context repository and settings for sibling report loaders", async () => {

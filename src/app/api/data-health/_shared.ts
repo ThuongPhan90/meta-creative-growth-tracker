@@ -14,6 +14,7 @@ import type {
 } from "@/lib/reporting/reporting-response";
 import { resolveSnapshotReportingRequest } from "@/lib/reporting/snapshot-reporting-request";
 import type {
+  DataHealthCreativeReference,
   DataHealthIssue,
   SyncRunView,
 } from "@/types/view-models";
@@ -42,12 +43,15 @@ export function publicIssueContract(issue: DataHealthIssue) {
 
 export function dataHealthCoverageContract(
   snapshot: ApplicationSnapshot,
+  creatives: readonly DataHealthCreativeReference[],
+  creativeReferencesTruncated: boolean,
   liveDelivery?: DeliveryReadyAccountCoverage,
 ) {
   return buildDataHealthCoverage(
-    snapshot.creatives,
+    creatives,
     snapshot.dashboard.events,
     liveDelivery,
+    { creativeReferencesTruncated },
   ).map((dimension) => ({
     key: dimension.key,
     label: dimension.label,
@@ -58,12 +62,19 @@ export function dataHealthCoverageContract(
       dimension.total - dimension.covered,
     ),
     ratio: dimension.ratio,
+    state:
+      dimension.state ??
+      (dimension.ratio === null ? "unavailable" : "ready"),
+    complete:
+      dimension.state !== "partial" && dimension.ratio !== null,
     basis:
       dimension.key === "event"
         ? "objective_result_mapping_cells"
         : dimension.key === "delivery_ready_account"
           ? "delivery_eligible_ad_accounts"
-        : "synchronized_creative_families",
+          : creativeReferencesTruncated
+            ? "bounded_synchronized_creative_family_projection"
+            : "synchronized_creative_families",
   }));
 }
 
@@ -71,16 +82,25 @@ export function ownerReportingMetadata({
   snapshot,
   searchParams,
   liveDelivery,
+  creatives,
+  creativeReferencesTruncated,
 }: {
   snapshot: ApplicationSnapshot;
   searchParams: URLSearchParams;
   liveDelivery?: DeliveryReadyAccountCoverage;
+  creatives: readonly DataHealthCreativeReference[];
+  creativeReferencesTruncated: boolean;
 }) {
   const reporting = resolveSnapshotReportingRequest({
     snapshot,
     searchParams,
   });
-  const dimensions = dataHealthCoverageContract(snapshot, liveDelivery);
+  const dimensions = dataHealthCoverageContract(
+    snapshot,
+    creatives,
+    creativeReferencesTruncated,
+    liveDelivery,
+  );
   const coverage: ReportingCoverage = Object.fromEntries(
     dimensions.map((dimension) => [
       dimension.key,
@@ -96,6 +116,7 @@ export function ownerReportingMetadata({
   const gaps = dimensions.filter(
     (dimension) =>
       (dimension.total > 0 && dimension.covered < dimension.total) ||
+      dimension.state === "partial" ||
       (dimension.key === "delivery_ready_account" &&
         dimension.ratio === null),
   );
@@ -111,6 +132,7 @@ export function ownerReportingMetadata({
           key: dimension.key,
           covered: dimension.covered,
           total: dimension.total,
+          state: dimension.state,
         })),
       },
     });

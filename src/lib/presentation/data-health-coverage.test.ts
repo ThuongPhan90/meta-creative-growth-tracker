@@ -114,6 +114,24 @@ describe("Data Health coverage", () => {
     });
   });
 
+  it("marks a bounded Creative projection partial instead of publishing an exact-looking ratio", () => {
+    const coverage = buildDataHealthCoverage(
+      [creative("cf_1", ["campaign_1"], ["ad_1"])],
+      [],
+      undefined,
+      { creativeReferencesTruncated: true },
+    );
+
+    for (const key of ["campaign", "ad", "creative"] as const) {
+      expect(coverage.find((item) => item.key === key)).toMatchObject({
+        covered: 1,
+        total: 1,
+        ratio: null,
+        state: "partial",
+      });
+    }
+  });
+
   it("keeps an unavailable delivery snapshot distinct from an actual 0% coverage", () => {
     const coverage = buildDataHealthCoverage([], [], {
       selectedAccountCount: 2,

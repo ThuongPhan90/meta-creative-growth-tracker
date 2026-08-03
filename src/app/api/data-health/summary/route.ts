@@ -2,10 +2,14 @@ import { NextRequest } from "next/server";
 
 import {
   detailErrorResponse,
-  requireOwnerDetailSnapshot,
+  requireOwnerDetailOperationalSnapshot,
 } from "@/lib/detail-api";
-import { getLiveDeliveryForReport } from "@/lib/app-data";
+import {
+  getDataHealthCreativeReferenceSnapshot,
+  getLiveDeliveryForReport,
+} from "@/lib/app-data";
 import { createReportingResponse } from "@/lib/reporting/reporting-response";
+import { resolveSnapshotReportingRequest } from "@/lib/reporting/snapshot-reporting-request";
 
 import {
   dataHealthCoverageContract,
@@ -19,19 +23,24 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   try {
     const { snapshot } =
-      await requireOwnerDetailSnapshot(request);
-    const baseMetadata = ownerReportingMetadata({
+      await requireOwnerDetailOperationalSnapshot(request);
+    const context = resolveSnapshotReportingRequest({
       snapshot,
       searchParams: request.nextUrl.searchParams,
-    });
-    const liveDelivery = await getLiveDeliveryForReport({
-      snapshot,
-      context: baseMetadata.context,
-    });
+    }).context;
+    const [creativeReferences, liveDelivery] = await Promise.all([
+      getDataHealthCreativeReferenceSnapshot(snapshot),
+      getLiveDeliveryForReport({
+        snapshot,
+        context,
+      }),
+    ]);
     const metadata = ownerReportingMetadata({
       snapshot,
       searchParams: request.nextUrl.searchParams,
       liveDelivery,
+      creatives: creativeReferences.items,
+      creativeReferencesTruncated: creativeReferences.truncated,
     });
     const issues = stableDataHealthIssues(snapshot);
     const issueCounts = {
@@ -44,12 +53,16 @@ export async function GET(request: NextRequest) {
       issueCounts[issue.severity] += 1;
     }
     const latestRun = snapshot.syncRuns[0] ?? null;
+    const hasCoverageWarning = metadata.warnings.some(
+      (warning) => warning.source === "coverage",
+    );
     const attentionLevel =
       issueCounts.critical > 0 ||
       issueCounts.error > 0 ||
       metadata.syncStatus === "failed"
         ? "error"
         : issueCounts.warning > 0 ||
+            hasCoverageWarning ||
             metadata.syncStatus === "partial" ||
             metadata.syncStatus ===
               "completed_with_warnings" ||
@@ -65,7 +78,12 @@ export async function GET(request: NextRequest) {
             ...issueCounts,
             total: issues.length,
           },
-          coverage: dataHealthCoverageContract(snapshot, liveDelivery),
+          coverage: dataHealthCoverageContract(
+            snapshot,
+            creativeReferences.items,
+            creativeReferences.truncated,
+            liveDelivery,
+          ),
           latestRun: latestRun
             ? {
                 syncRunId: latestRun.id,

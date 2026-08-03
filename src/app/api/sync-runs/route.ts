@@ -2,8 +2,9 @@ import { NextRequest } from "next/server";
 
 import {
   detailErrorResponse,
-  requireOwnerDetailSnapshot,
+  requireOwnerDetailOperationalSnapshot,
 } from "@/lib/detail-api";
+import { getDataHealthCreativeReferenceSnapshot } from "@/lib/app-data";
 import { createReportingResponse } from "@/lib/reporting/reporting-response";
 import type { SyncRunView } from "@/types/view-models";
 
@@ -38,7 +39,9 @@ function integerParameter(
 export async function GET(request: NextRequest) {
   try {
     const { snapshot } =
-      await requireOwnerDetailSnapshot(request);
+      await requireOwnerDetailOperationalSnapshot(request);
+    const creativeReferences =
+      await getDataHealthCreativeReferenceSnapshot(snapshot);
     const requestedStatus =
       request.nextUrl.searchParams.get("status");
     const status =
@@ -84,6 +87,8 @@ export async function GET(request: NextRequest) {
         ownerReportingMetadata({
           snapshot,
           searchParams: request.nextUrl.searchParams,
+          creatives: creativeReferences.items,
+          creativeReferencesTruncated: creativeReferences.truncated,
         }),
       ),
     );

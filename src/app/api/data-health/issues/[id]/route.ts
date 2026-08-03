@@ -6,7 +6,7 @@ import {
   DetailApiError,
   detailErrorResponse,
   detailSuccess,
-  requireOwnerDetailSnapshot,
+  requireOwnerDetailOperationalSnapshot,
 } from "@/lib/detail-api";
 
 export const dynamic = "force-dynamic";
@@ -28,7 +28,8 @@ export async function GET(
       );
     }
 
-    const { snapshot } = await requireOwnerDetailSnapshot(request);
+    const { snapshot } =
+      await requireOwnerDetailOperationalSnapshot(request);
     const detail = dataHealthIssueContract(
       id,
       snapshot.syncRuns,

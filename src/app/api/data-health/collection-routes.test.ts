@@ -2,7 +2,10 @@ import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  requireOwnerDetailOperationalSnapshot: vi.fn(),
   requireOwnerDetailSnapshot: vi.fn(),
+  getDataHealthCreativeReferenceSnapshot: vi.fn(),
+  getLiveDeliveryForReport: vi.fn(),
   detailErrorResponse: vi.fn(
     () => Response.json({ ok: false }, { status: 500 }),
   ),
@@ -15,9 +18,21 @@ vi.mock("@/lib/detail-api", async (importOriginal) => {
     await importOriginal<typeof import("@/lib/detail-api")>();
   return {
     ...actual,
+    requireOwnerDetailOperationalSnapshot:
+      mocks.requireOwnerDetailOperationalSnapshot,
     requireOwnerDetailSnapshot:
       mocks.requireOwnerDetailSnapshot,
     detailErrorResponse: mocks.detailErrorResponse,
+  };
+});
+
+vi.mock("@/lib/app-data", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/app-data")>();
+  return {
+    ...actual,
+    getDataHealthCreativeReferenceSnapshot:
+      mocks.getDataHealthCreativeReferenceSnapshot,
+    getLiveDeliveryForReport: mocks.getLiveDeliveryForReport,
   };
 });
 
@@ -139,10 +154,25 @@ function snapshot() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.requireOwnerDetailSnapshot.mockResolvedValue({
+  const ownerSnapshot = snapshot();
+  const ownerContext = {
     repository: {},
     connection: { connectionId: "connection_1" },
-    snapshot: snapshot(),
+    snapshot: ownerSnapshot,
+  };
+  mocks.requireOwnerDetailSnapshot.mockResolvedValue(ownerContext);
+  mocks.requireOwnerDetailOperationalSnapshot.mockResolvedValue(
+    ownerContext,
+  );
+  mocks.getDataHealthCreativeReferenceSnapshot.mockResolvedValue({
+    items: ownerSnapshot.creatives,
+    truncated: false,
+  });
+  mocks.getLiveDeliveryForReport.mockResolvedValue({
+    selectedAccountCount: 0,
+    deliveryEligibleAccountCount: 0,
+    deliveryReadyAccountCount: 0,
+    state: "unavailable",
   });
 });
 
@@ -273,6 +303,57 @@ describe("read-only Data Health collection APIs", () => {
     expect(JSON.stringify(body.data)).not.toContain(
       "META_INSIGHT_ROW_UNMAPPED",
     );
+  });
+
+  it("uses the same bounded Creative projection as the UI and never publishes a sampled ratio", async () => {
+    mocks.getDataHealthCreativeReferenceSnapshot.mockResolvedValue({
+      items: [
+        {
+          id: "asset_compact",
+          creativeFamilyId: "cf_compact",
+          name: "Compact Creative",
+          format: "Video",
+          entityLinks: {
+            creativeFamilyId: "cf_compact",
+            assetId: "asset_compact",
+            metaCreativeIds: ["creative_compact"],
+            adIds: ["ad_compact"],
+            campaignIds: ["campaign_compact"],
+          },
+        },
+      ],
+      truncated: true,
+    });
+
+    const response = await getSummary(
+      new NextRequest(
+        "https://tracker.example/api/data-health/summary" +
+          "?from=2026-07-01&to=2026-07-30",
+      ),
+    );
+    const body = await response.json();
+    const campaign = body.data.coverage.find(
+      (dimension: { key: string }) => dimension.key === "campaign",
+    );
+
+    expect(campaign).toMatchObject({
+      covered: 1,
+      total: 1,
+      ratio: null,
+      state: "partial",
+      complete: false,
+      basis: "bounded_synchronized_creative_family_projection",
+    });
+    expect(body.meta.coverage.campaign).toMatchObject({
+      covered: 1,
+      total: 1,
+      ratio: null,
+      basis: "bounded_synchronized_creative_family_projection",
+    });
+    expect(
+      mocks.requireOwnerDetailOperationalSnapshot,
+    ).toHaveBeenCalledOnce();
+    expect(mocks.requireOwnerDetailSnapshot).not.toHaveBeenCalled();
   });
 
   it("aggregates repeated warnings under one stable public issue without raw codes", async () => {

@@ -2,7 +2,11 @@ import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
 
-import { getApplicationSnapshot } from "@/lib/app-data";
+import {
+  getApplicationOperationalSnapshot,
+  getApplicationSnapshot,
+  type ApplicationSnapshot,
+} from "@/lib/app-data";
 import {
   createTrackerRepository,
   type MetaConnectionRecord,
@@ -70,9 +74,17 @@ export async function requireOwnerDetailContext(
 export async function requireOwnerDetailSnapshot(request: NextRequest) {
   const context = await requireOwnerDetailContext(request);
   const snapshot = await getApplicationSnapshot();
+  assertSnapshotOwnerContext(snapshot, context.connection.connectionId);
+  return { ...context, snapshot };
+}
+
+function assertSnapshotOwnerContext(
+  snapshot: ApplicationSnapshot,
+  connectionId: string,
+) {
   if (
     !snapshot.authenticated ||
-    snapshot.connection?.connectionId !== context.connection.connectionId
+    snapshot.connection?.connectionId !== connectionId
   ) {
     throw new DetailApiError(
       409,
@@ -80,5 +92,17 @@ export async function requireOwnerDetailSnapshot(request: NextRequest) {
       "Không thể tải dữ liệu cho phiên owner hiện tại.",
     );
   }
+}
+
+/**
+ * Owner-bound operational projection for health endpoints. It deliberately
+ * omits full asset and Creative performance hydration.
+ */
+export async function requireOwnerDetailOperationalSnapshot(
+  request: NextRequest,
+) {
+  const context = await requireOwnerDetailContext(request);
+  const snapshot = await getApplicationOperationalSnapshot();
+  assertSnapshotOwnerContext(snapshot, context.connection.connectionId);
   return { ...context, snapshot };
 }

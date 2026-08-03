@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   dataHealthV2: vi.fn(() => null),
   getApplicationContextSnapshot: vi.fn(),
   getApplicationOperationalSnapshot: vi.fn(),
-  getDataHealthCreativeReferences: vi.fn(),
+  getDataHealthCreativeReferenceSnapshot: vi.fn(),
   getLiveDeliveryForReport: vi.fn(),
   resolveApplicationReportContext: vi.fn(),
   isUiV3: vi.fn(() => false),
@@ -25,8 +25,8 @@ vi.mock("@/lib/app-data", () => ({
     mocks.getApplicationContextSnapshot,
   getApplicationOperationalSnapshot:
     mocks.getApplicationOperationalSnapshot,
-  getDataHealthCreativeReferences:
-    mocks.getDataHealthCreativeReferences,
+  getDataHealthCreativeReferenceSnapshot:
+    mocks.getDataHealthCreativeReferenceSnapshot,
   getLiveDeliveryForReport: mocks.getLiveDeliveryForReport,
   resolveApplicationReportContext:
     mocks.resolveApplicationReportContext,
@@ -40,6 +40,7 @@ import DataHealthPage from "./page";
 
 type DataHealthPageElement = ReactElement<{
   creatives: unknown[];
+  creativeReferencesTruncated: boolean;
   liveDelivery: unknown;
   query: Record<string, string | string[] | undefined>;
 }>;
@@ -77,7 +78,10 @@ describe("Data Health page loading", () => {
       }),
     );
     mocks.resolveApplicationReportContext.mockReturnValue(context);
-    mocks.getDataHealthCreativeReferences.mockResolvedValue(creatives);
+    mocks.getDataHealthCreativeReferenceSnapshot.mockResolvedValue({
+      items: creatives,
+      truncated: true,
+    });
     mocks.getLiveDeliveryForReport.mockResolvedValue(liveDelivery);
 
     const loading = DataHealthPage({
@@ -86,9 +90,9 @@ describe("Data Health page loading", () => {
 
     await vi.waitFor(() => {
       expect(mocks.getApplicationOperationalSnapshot).toHaveBeenCalledOnce();
-      expect(mocks.getDataHealthCreativeReferences).toHaveBeenCalledWith(
-        contextSnapshot,
-      );
+      expect(
+        mocks.getDataHealthCreativeReferenceSnapshot,
+      ).toHaveBeenCalledWith(contextSnapshot);
       expect(mocks.getLiveDeliveryForReport).toHaveBeenCalledWith({
         snapshot: contextSnapshot,
         context,
@@ -105,6 +109,7 @@ describe("Data Health page loading", () => {
     );
     expect(element.type).toBe(mocks.dataHealthV2);
     expect(element.props.creatives).toBe(creatives);
+    expect(element.props.creativeReferencesTruncated).toBe(true);
     expect(element.props.liveDelivery).toBe(liveDelivery);
     expect(element.props.query).toBe(query);
   });

@@ -83,6 +83,7 @@ import type {
   CreativePlatform,
   CreativeRow,
   DataHealthCreativeReference,
+  DataHealthCreativeReferenceSnapshot,
   DashboardViewModel,
   Freshness,
   MetaAssetRow,
@@ -687,29 +688,48 @@ function dataHealthReferenceFromCreative(
  * Loads only the Creative identity graph consumed by Data Health. This keeps
  * the route independent from Creative performance, benchmarks and ratings.
  */
-export async function getDataHealthCreativeReferences(
+export async function getDataHealthCreativeReferenceSnapshot(
   snapshot: ApplicationSnapshot,
-): Promise<DataHealthCreativeReference[]> {
+): Promise<DataHealthCreativeReferenceSnapshot> {
   if (snapshot.demoMode) {
-    return snapshot.creatives.map(dataHealthReferenceFromCreative);
+    return {
+      items: snapshot.creatives.map(dataHealthReferenceFromCreative),
+      truncated: snapshot.creativesTruncated,
+    };
   }
   if (!snapshot.authenticated || !snapshot.connection) {
-    return [];
+    return { items: [], truncated: false };
   }
 
   const repository = await repositoryForSnapshot(snapshot);
-  const identities =
-    typeof repository.listDataHealthCreativeReferences === "function"
-      ? await repository.listDataHealthCreativeReferences(
-          snapshot.connection.connectionId,
-        )
-      : (
-          await loadCreativeLibrary(
-            repository,
-            snapshot.connection.connectionId,
-          )
-        ).items;
-  return identities.map(dataHealthReferenceFromIdentity);
+  if (typeof repository.listDataHealthCreativeReferences === "function") {
+    const identities =
+      await repository.listDataHealthCreativeReferences(
+        snapshot.connection.connectionId,
+      );
+    return {
+      items: identities
+        .slice(0, MAX_VIEW_ROWS)
+        .map(dataHealthReferenceFromIdentity),
+      truncated: identities.length > MAX_VIEW_ROWS,
+    };
+  }
+
+  const library = await loadCreativeLibrary(
+    repository,
+    snapshot.connection.connectionId,
+  );
+  return {
+    items: library.items.map(dataHealthReferenceFromIdentity),
+    truncated: library.truncated,
+  };
+}
+
+/** Backward-compatible array view for narrow callers and test doubles. */
+export async function getDataHealthCreativeReferences(
+  snapshot: ApplicationSnapshot,
+): Promise<DataHealthCreativeReference[]> {
+  return (await getDataHealthCreativeReferenceSnapshot(snapshot)).items;
 }
 
 async function loadPerformance(

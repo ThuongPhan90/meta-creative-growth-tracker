@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   createTrackerRepository: vi.fn(),
+  getApplicationOperationalSnapshot: vi.fn(),
   getApplicationSnapshot: vi.fn(),
   assertOwnerSessionBinding: vi.fn(),
   requireOwnerSession: vi.fn(() => ({ sub: "connection-1" })),
@@ -14,6 +15,8 @@ vi.mock("@/lib/db", () => ({
   createTrackerRepository: mocks.createTrackerRepository,
 }));
 vi.mock("@/lib/app-data", () => ({
+  getApplicationOperationalSnapshot:
+    mocks.getApplicationOperationalSnapshot,
   getApplicationSnapshot: mocks.getApplicationSnapshot,
 }));
 vi.mock("@/lib/server", () => ({
@@ -25,6 +28,7 @@ vi.mock("@/lib/server", () => ({
 import {
   DetailApiError,
   requireOwnerDetailContext,
+  requireOwnerDetailOperationalSnapshot,
   requireOwnerDetailSnapshot,
 } from "./response";
 
@@ -83,5 +87,23 @@ describe("owner detail API context", () => {
     ).rejects.toMatchObject({
       code: "OWNER_CONTEXT_UNAVAILABLE",
     });
+  });
+
+  it("loads the owner-bound operational projection without the full snapshot", async () => {
+    const connection = { connectionId: "connection-1" };
+    mocks.createTrackerRepository.mockResolvedValue({
+      getConnection: vi.fn().mockResolvedValue(connection),
+    });
+    const snapshot = {
+      authenticated: true,
+      connection,
+    };
+    mocks.getApplicationOperationalSnapshot.mockResolvedValue(snapshot);
+
+    await expect(
+      requireOwnerDetailOperationalSnapshot(request),
+    ).resolves.toMatchObject({ connection, snapshot });
+    expect(mocks.getApplicationOperationalSnapshot).toHaveBeenCalledOnce();
+    expect(mocks.getApplicationSnapshot).not.toHaveBeenCalled();
   });
 });

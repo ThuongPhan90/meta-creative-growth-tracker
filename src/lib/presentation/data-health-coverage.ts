@@ -50,7 +50,12 @@ export function buildDataHealthCoverage(
   creatives: readonly DataHealthCreativeReference[],
   events: readonly EventHealth[],
   delivery?: DeliveryReadyAccountCoverage,
+  options?: {
+    creativeReferencesTruncated?: boolean;
+  },
 ): CoverageDimension[] {
+  const creativeReferencesTruncated =
+    options?.creativeReferencesTruncated === true;
   const families = new Map<
     string,
     {
@@ -93,6 +98,18 @@ export function buildDataHealthCoverage(
         .length,
     0,
   );
+  const creativeCoverageDetail = (
+    covered: number,
+    label: string,
+  ) =>
+    creativeReferencesTruncated
+      ? `${covered}/${familyTotal} Creative Family trong ${creatives.length} asset đã tải ${label}; projection đã chạm giới hạn nên tỷ lệ toàn bộ chưa khả dụng`
+      : `${covered}/${familyTotal} Creative Family ${label}`;
+  const creativeCoverageRatio = (covered: number) =>
+    creativeReferencesTruncated ? null : ratio(covered, familyTotal);
+  const creativeCoverageState = creativeReferencesTruncated
+    ? ("partial" as const)
+    : undefined;
 
   const dimensions: CoverageDimension[] = [
     {
@@ -100,33 +117,42 @@ export function buildDataHealthCoverage(
       label: "Campaign coverage",
       covered: campaignCovered,
       total: familyTotal,
-      ratio: ratio(campaignCovered, familyTotal),
-      detail: `${campaignCovered}/${familyTotal} Creative Family có liên kết Campaign`,
+      ratio: creativeCoverageRatio(campaignCovered),
+      detail: creativeCoverageDetail(
+        campaignCovered,
+        "có liên kết Campaign",
+      ),
       missingFamilyIds: familyEntries
         .filter(([, family]) => !family.campaignLinked)
         .map(([familyId]) => familyId),
+      state: creativeCoverageState,
     },
     {
       key: "ad",
       label: "Ad coverage",
       covered: adCovered,
       total: familyTotal,
-      ratio: ratio(adCovered, familyTotal),
-      detail: `${adCovered}/${familyTotal} Creative Family có liên kết Ad`,
+      ratio: creativeCoverageRatio(adCovered),
+      detail: creativeCoverageDetail(adCovered, "có liên kết Ad"),
       missingFamilyIds: familyEntries
         .filter(([, family]) => !family.adLinked)
         .map(([familyId]) => familyId),
+      state: creativeCoverageState,
     },
     {
       key: "creative",
       label: "Creative coverage",
       covered: creativeCovered,
       total: familyTotal,
-      ratio: ratio(creativeCovered, familyTotal),
-      detail: `${creativeCovered}/${familyTotal} Creative Family có ID canonical`,
+      ratio: creativeCoverageRatio(creativeCovered),
+      detail: creativeCoverageDetail(
+        creativeCovered,
+        "có ID canonical",
+      ),
       missingFamilyIds: familyEntries
         .filter(([, family]) => !family.canonical)
         .map(([familyId]) => familyId),
+      state: creativeCoverageState,
     },
     {
       key: "event",

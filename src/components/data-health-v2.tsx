@@ -287,11 +287,19 @@ function CoverageDrawer({
               <dd>{formatNumber(dimension.covered)}</dd>
             </div>
             <div>
-              <dt>Tổng đã đồng bộ</dt>
+              <dt>
+                {dimension.state === "partial"
+                  ? "Số Family đã kiểm tra"
+                  : "Tổng đã đồng bộ"}
+              </dt>
               <dd>{formatNumber(dimension.total)}</dd>
             </div>
             <div>
-              <dt>Còn thiếu</dt>
+              <dt>
+                {dimension.state === "partial"
+                  ? "Thiếu trong phần đã kiểm tra"
+                  : "Còn thiếu"}
+              </dt>
               <dd>{formatNumber(Math.max(0, dimension.total - dimension.covered))}</dd>
             </div>
           </dl>
@@ -380,6 +388,14 @@ function CoverageDrawer({
                 </Link>
               </div>
             )
+          ) : dimension.state === "partial" ? (
+            <div className="v2-compact-empty">
+              <Clock3 aria-hidden="true" size={22} />
+              <p>
+                Projection Creative đã chạm giới hạn tải. Danh sách này chỉ
+                phản ánh phần đã kiểm tra và không được xem là toàn bộ dữ liệu.
+              </p>
+            </div>
           ) : (
             <div className="v2-compact-empty">
               <CheckCircle2 aria-hidden="true" size={22} />
@@ -397,6 +413,7 @@ function CoverageDrawer({
 export function DataHealthV2({
   dashboard,
   creatives,
+  creativeReferencesTruncated = false,
   syncRuns,
   connected,
   query,
@@ -404,6 +421,7 @@ export function DataHealthV2({
 }: {
   dashboard: DashboardViewModel;
   creatives: DataHealthCreativeReference[];
+  creativeReferencesTruncated?: boolean;
   syncRuns: SyncRunView[];
   connected: boolean;
   query: Query;
@@ -414,6 +432,7 @@ export function DataHealthV2({
     creatives,
     dashboard.events,
     liveDelivery,
+    { creativeReferencesTruncated },
   );
   const overall = overallStatus(latest, connected);
   const issues = buildDataHealthIssuesFromRuns(syncRuns);
@@ -542,10 +561,10 @@ export function DataHealthV2({
                   ? "—"
                   : formatPercent(dimension.ratio * 100, 0)}
                 <small>
-                  {dimension.ratio === null
-                    ? " · Chưa khả dụng"
-                    : dimension.state === "partial"
-                      ? " · Một phần"
+                  {dimension.state === "partial"
+                    ? " · Một phần"
+                    : dimension.ratio === null
+                      ? " · Chưa khả dụng"
                     : dimension.ratio < 0.8
                     ? " · Cần kiểm tra"
                     : " · Đạt"}
@@ -558,15 +577,22 @@ export function DataHealthV2({
                 aria-valuemin={0}
                 aria-valuemax={100}
                 {...(dimension.ratio === null
-                  ? { "aria-valuetext": "Chưa khả dụng" }
+                  ? {
+                      "aria-valuetext":
+                        dimension.state === "partial"
+                          ? "Coverage một phần"
+                          : "Chưa khả dụng",
+                    }
                   : { "aria-valuenow": Math.round(dimension.ratio * 100) })}
               >
                 <i style={{ width: `${(dimension.ratio ?? 0) * 100}%` }} />
               </div>
               <small>{dimension.detail}</small>
               <small className="v2-link">
-                {dimension.ratio === null
-                  ? "Xem định nghĩa mẫu số"
+                {dimension.state === "partial"
+                  ? "Xem phạm vi đã kiểm tra"
+                  : dimension.ratio === null
+                    ? "Xem định nghĩa mẫu số"
                   : `Xem ${Math.max(0, dimension.total - dimension.covered)} mục thiếu`}
               </small>
             </Link>

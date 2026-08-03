@@ -72,7 +72,9 @@ import type {
 type DatabaseRow = Record<string, unknown>;
 const MAX_CREATIVE_LIBRARY_ROWS = 5_001;
 const MAX_CREATIVE_PERFORMANCE_ROWS = 5_001;
-const MAX_DATA_HEALTH_CREATIVE_ROWS = 5_000;
+// Read one sentinel row so callers can distinguish a complete projection from
+// a bounded one without loading the performance-heavy Creative library.
+const MAX_DATA_HEALTH_CREATIVE_ROWS = 5_001;
 
 interface IdRow extends DatabaseRow {
   internal_id: unknown;
@@ -6019,6 +6021,16 @@ export class TrackerRepository {
   async listDataHealthCreativeReferences(connectionId: DatabaseId) {
     const rows = await this.query<DatabaseRow>(
       `
+        with selected_asset_ids as (
+          select candidate.creative_asset_id
+          from tracker.creative_assets candidate
+          where candidate.connection_id = $1
+            and candidate.is_active
+          order by
+            candidate.last_seen_at desc,
+            candidate.creative_asset_id desc
+          limit $2
+        )
         select
           asset.creative_asset_id::text as creative_asset_id,
           asset.creative_family_id,
@@ -6050,7 +6062,9 @@ export class TrackerRepository {
             ),
             '{}'::text[]
           ) as campaign_ids
-        from tracker.creative_assets asset
+        from selected_asset_ids selected
+        inner join tracker.creative_assets asset
+          on asset.creative_asset_id = selected.creative_asset_id
         left join tracker.creative_asset_links asset_link
           on asset_link.creative_asset_id = asset.creative_asset_id
         left join tracker.meta_creatives creative
@@ -6067,7 +6081,6 @@ export class TrackerRepository {
           on campaign.campaign_id = ad.campaign_id
           and campaign.ad_account_id = account.ad_account_id
         where asset.connection_id = $1
-          and asset.is_active
         group by asset.creative_asset_id
         order by
           asset.last_seen_at desc,

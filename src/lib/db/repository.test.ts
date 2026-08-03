@@ -2309,6 +2309,10 @@ describe("Ad account activity filters", () => {
     const [query, parameters] = unsafe.mock.calls[0];
     expect(query).not.toContain("creative_asset_usage");
     expect(query).not.toContain("current_ad_usage");
+    expect(query).toContain("with selected_asset_ids as");
+    expect(query.indexOf("limit $2")).toBeLessThan(
+      query.indexOf("left join tracker.creative_asset_links"),
+    );
     expect(query).toContain("where asset.connection_id = $1");
     expect(query).toContain(
       "creative.connection_id = asset.connection_id",
@@ -2318,7 +2322,7 @@ describe("Ad account activity filters", () => {
     );
     expect(query).toContain("asset.creative_asset_id::text");
     expect(query).toContain("asset.creative_asset_id desc");
-    expect(parameters).toEqual(["connection-1", 5_000]);
+    expect(parameters).toEqual(["connection-1", 5_001]);
   });
 
   it("filters exact linked Account and Campaign IDs before the creative-library limit", async () => {

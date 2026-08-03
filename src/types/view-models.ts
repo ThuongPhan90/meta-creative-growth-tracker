@@ -280,6 +280,15 @@ export type DataHealthCreativeReference = {
   >;
 };
 
+/**
+ * Bounded identity projection used by Data Health. When `truncated` is true,
+ * consumers must not publish the observed subset as an exact global ratio.
+ */
+export type DataHealthCreativeReferenceSnapshot = {
+  items: DataHealthCreativeReference[];
+  truncated: boolean;
+};
+
 export type CreativeFamilyPerformance = {
   currency: string;
   dateFrom: string;

@@ -11,5 +11,6 @@ export {
   detailErrorResponse,
   detailSuccess,
   requireOwnerDetailContext,
+  requireOwnerDetailOperationalSnapshot,
   requireOwnerDetailSnapshot,
 } from "./response";
