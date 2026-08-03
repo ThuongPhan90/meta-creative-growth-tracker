@@ -799,7 +799,7 @@ describe("application snapshot Result registry", () => {
       syncStatus: "partial",
       syncMode: "manual",
     });
-    vi.mocked(repository.getCoverage).mockResolvedValue({
+    const coverage = {
       connectionId: liveConnection.connectionId,
       connectionStatus: "connected",
       lastValidatedAt: null,
@@ -812,15 +812,25 @@ describe("application snapshot Result registry", () => {
       campaignCount: 1,
       adCount: 1,
       lastSyncAt: "2026-07-30T00:00:00.000Z",
+    } as const;
+    vi.mocked(repository.getCoverage).mockResolvedValue(coverage);
+    const getDataHealthOperationalRegistry = vi.fn().mockResolvedValue({
+      coverage,
+      runs: [],
     });
+    Object.assign(repository, { getDataHealthOperationalRegistry });
     databaseMocks.createTrackerRepository.mockResolvedValue(repository);
 
     const snapshot = await getApplicationOperationalSnapshot();
 
     expect(snapshot.creatives).toEqual([]);
-    expect(repository.getCoverage).toHaveBeenCalledOnce();
+    expect(getDataHealthOperationalRegistry).toHaveBeenCalledWith(
+      liveConnection.connectionId,
+      20,
+    );
+    expect(repository.getCoverage).not.toHaveBeenCalled();
     expect(repository.getDeliveryPerformance).toHaveBeenCalledOnce();
-    expect(repository.listRecentSyncRuns).toHaveBeenCalledOnce();
+    expect(repository.listRecentSyncRuns).not.toHaveBeenCalled();
     expect(repository.listMetaAssets).not.toHaveBeenCalled();
     expect(repository.listCreativeLibrary).not.toHaveBeenCalled();
     expect(repository.listCreativePerformance).not.toHaveBeenCalled();

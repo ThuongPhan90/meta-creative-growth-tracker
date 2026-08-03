@@ -422,6 +422,23 @@ function mapSyncRun(row: DatabaseRow): SyncRunRecord {
   };
 }
 
+function mapConnectionCoverage(row: DatabaseRow): ConnectionCoverage {
+  return {
+    connectionId: asId(row.connection_id),
+    connectionStatus: row.connection_status as ConnectionStatus,
+    lastValidatedAt: asNullableIso(row.last_validated_at),
+    businessCount: asNumber(row.business_count),
+    adAccountCount: asNumber(row.ad_account_count),
+    pageCount: asNumber(row.page_count),
+    appCount: asNumber(row.app_count),
+    creativeContainerCount: asNumber(row.creative_container_count),
+    creativeAssetCount: asNumber(row.creative_asset_count),
+    campaignCount: asNumber(row.campaign_count),
+    adCount: asNumber(row.ad_count),
+    lastSyncAt: asNullableIso(row.last_sync_at),
+  };
+}
+
 const CANONICAL_RESULT_KEY_PATTERN =
   /^[a-z0-9][a-z0-9._-]*$/;
 const ACCOUNT_DEFAULT_ATTRIBUTION_WINDOW = "account_default";
@@ -3110,19 +3127,98 @@ export class TrackerRepository {
       return null;
     }
 
+    return mapConnectionCoverage(row);
+  }
+
+  /**
+   * One read for the two small operational projections Data Health consumes.
+   * Keeping delivery and Creative identity separate lets those larger queries
+   * still run in parallel without exceeding the Vercel pool of four.
+   */
+  async getDataHealthOperationalRegistry(
+    connectionId: DatabaseId,
+    runLimit = 20,
+  ): Promise<{
+    coverage: ConnectionCoverage | null;
+    runs: SyncRunRecord[];
+  }> {
+    const safeLimit = Math.min(Math.max(runLimit, 1), 100);
+    const rows = await this.query<DatabaseRow>(
+      `
+        select
+          (
+            select to_jsonb(coverage_row)
+            from (
+              select
+                connection_id::text as connection_id,
+                connection_status,
+                last_validated_at,
+                business_count,
+                ad_account_count,
+                page_count,
+                app_count,
+                creative_container_count,
+                creative_asset_count,
+                campaign_count,
+                ad_count,
+                last_sync_at
+              from tracker.connection_coverage
+              where connection_id = $1
+            ) coverage_row
+          ) as coverage,
+          coalesce(
+            (
+              select jsonb_agg(
+                to_jsonb(sync_row)
+                order by sync_row.created_at desc, sync_row.sync_run_id::bigint desc
+              )
+              from (
+                select
+                  sync_run_id::text as sync_run_id,
+                  connection_id::text as connection_id,
+                  request_key,
+                  sync_kind,
+                  trigger_source,
+                  status,
+                  window_start,
+                  window_end,
+                  started_at,
+                  finished_at,
+                  current_stage,
+                  progress,
+                  stats,
+                  error_code,
+                  error_message,
+                  created_at,
+                  updated_at
+                from tracker.sync_runs
+                where connection_id = $1
+                order by created_at desc, sync_run_id desc
+                limit $2
+              ) sync_row
+            ),
+            '[]'::jsonb
+          ) as sync_runs
+      `,
+      [connectionId, safeLimit],
+    );
+    const row = rows[0] ?? {};
+    const coverageRow =
+      row.coverage &&
+      typeof row.coverage === "object" &&
+      !Array.isArray(row.coverage)
+        ? (row.coverage as DatabaseRow)
+        : null;
+    const runs = asJsonArray(row.sync_runs).flatMap((item) =>
+      item && typeof item === "object" && !Array.isArray(item)
+        ? [mapSyncRun(item as DatabaseRow)]
+        : [],
+    );
     return {
-      connectionId: asId(row.connection_id),
-      connectionStatus: row.connection_status as ConnectionStatus,
-      lastValidatedAt: asNullableIso(row.last_validated_at),
-      businessCount: asNumber(row.business_count),
-      adAccountCount: asNumber(row.ad_account_count),
-      pageCount: asNumber(row.page_count),
-      appCount: asNumber(row.app_count),
-      creativeContainerCount: asNumber(row.creative_container_count),
-      creativeAssetCount: asNumber(row.creative_asset_count),
-      campaignCount: asNumber(row.campaign_count),
-      adCount: asNumber(row.ad_count),
-      lastSyncAt: asNullableIso(row.last_sync_at),
+      coverage: coverageRow
+        ? mapConnectionCoverage(coverageRow)
+        : null,
+      runs,
     };
   }
 

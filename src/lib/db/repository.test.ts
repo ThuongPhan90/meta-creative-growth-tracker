@@ -2275,6 +2275,79 @@ describe("Ad account activity filters", () => {
     ]);
   });
 
+  it("loads Data Health coverage and recent runs in one operational read", async () => {
+    const unsafe = vi.fn().mockResolvedValue([
+      {
+        coverage: {
+          connection_id: "connection-1",
+          connection_status: "connected",
+          last_validated_at: "2026-08-01T00:00:00.000Z",
+          business_count: 1,
+          ad_account_count: 2,
+          page_count: 3,
+          app_count: 1,
+          creative_container_count: 4,
+          creative_asset_count: 5,
+          campaign_count: 6,
+          ad_count: 7,
+          last_sync_at: "2026-08-01T01:00:00.000Z",
+        },
+        sync_runs: [
+          {
+            sync_run_id: "run-1",
+            connection_id: "connection-1",
+            request_key: null,
+            sync_kind: "incremental",
+            trigger_source: "manual",
+            status: "succeeded",
+            window_start: "2026-07-01",
+            window_end: "2026-07-31",
+            started_at: "2026-08-01T00:00:00.000Z",
+            finished_at: "2026-08-01T01:00:00.000Z",
+            current_stage: "complete",
+            progress: {},
+            stats: {},
+            error_code: null,
+            error_message: null,
+            created_at: "2026-08-01T00:00:00.000Z",
+            updated_at: "2026-08-01T01:00:00.000Z",
+          },
+        ],
+      },
+    ]);
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.getDataHealthOperationalRegistry("connection-1", 20),
+    ).resolves.toMatchObject({
+      coverage: {
+        connectionId: "connection-1",
+        creativeAssetCount: 5,
+        adCount: 7,
+      },
+      runs: [
+        {
+          syncRunId: "run-1",
+          connectionId: "connection-1",
+          status: "succeeded",
+        },
+      ],
+    });
+    const [query, parameters] = unsafe.mock.calls[0];
+    expect(query).toContain("from tracker.connection_coverage");
+    expect(query).toContain("from tracker.sync_runs");
+    expect(query).toContain("connection_id::text as connection_id");
+    expect(query).toContain("sync_run_id::text as sync_run_id");
+    expect(query).toContain("where connection_id = $1");
+    expect(query).toContain(
+      "order by sync_row.created_at desc, sync_row.sync_run_id::bigint desc",
+    );
+    expect(query).toContain("order by created_at desc, sync_run_id desc");
+    expect(parameters).toEqual(["connection-1", 20]);
+  });
+
   it("loads only the compact Creative identity graph for Data Health", async () => {
     const unsafe = vi.fn().mockResolvedValue([
       {

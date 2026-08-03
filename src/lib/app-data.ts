@@ -3399,16 +3399,27 @@ async function loadApplicationContextSnapshot(): Promise<ApplicationSnapshot> {
       snapshotResultRegistries.set(snapshot, resultRegistry);
     }
     const loadOperationalState = requestMemoizedLoader(async () => {
-      const [coverage, delivery, runs] = await Promise.all([
-        repository.getCoverage(connection.connectionId),
+      const [operationalRegistry, delivery] = await Promise.all([
+        typeof repository.getDataHealthOperationalRegistry === "function"
+          ? repository.getDataHealthOperationalRegistry(
+              connection.connectionId,
+              20,
+            )
+          : Promise.all([
+              repository.getCoverage(connection.connectionId),
+              repository.listRecentSyncRuns(
+                connection.connectionId,
+                20,
+              ),
+            ]).then(([coverage, runs]) => ({ coverage, runs })),
         repository.getDeliveryPerformance({
           connectionId: connection.connectionId,
           dateFrom,
           dateTo,
           currency: settings.reportingCurrency ?? undefined,
         }),
-        repository.listRecentSyncRuns(connection.connectionId, 20),
       ]);
+      const { coverage, runs } = operationalRegistry;
       const latestInsightsRun = runs.find((run) =>
         ["insights", "incremental", "full"].includes(run.syncKind),
       );
