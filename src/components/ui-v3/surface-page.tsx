@@ -61,9 +61,9 @@ export type V3SurfacePageProps = {
 };
 
 /**
- * A presentation boundary for route-by-route V3 migration. Its children keep
- * the existing server data and URL contracts; CSS only restyles legacy V2
- * components when the explicit V3 flag is enabled.
+ * A presentation boundary for the route-scoped V3 release. Its children keep
+ * the existing server data and URL contracts; CSS only restyles the retained
+ * V2 components when the V3 shell is active.
  */
 export function V3SurfacePage({
   surface,

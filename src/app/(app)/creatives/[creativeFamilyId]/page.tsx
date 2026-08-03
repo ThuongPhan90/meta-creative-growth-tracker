@@ -12,7 +12,7 @@ import { CopyIdButton } from "@/components/ui/copy-id-button";
 import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import {
   buildApplicationResultMetrics,
-  getApplicationSnapshot,
+  getApplicationContextSnapshot,
   getCanonicalResultsForReport,
   getCreativeFamilyRowsForReport,
   getDeliveryForReport,
@@ -37,7 +37,7 @@ export default async function CreativeFamilyPage({
   >;
 }) {
   const [snapshot, route, query] = await Promise.all([
-    getApplicationSnapshot(),
+    getApplicationContextSnapshot(),
     params,
     searchParams,
   ]);

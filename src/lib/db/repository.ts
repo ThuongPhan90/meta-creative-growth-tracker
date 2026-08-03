@@ -71,6 +71,7 @@ import type {
 
 type DatabaseRow = Record<string, unknown>;
 const MAX_CREATIVE_LIBRARY_ROWS = 5_001;
+const MAX_CREATIVE_PERFORMANCE_ROWS = 5_001;
 
 interface IdRow extends DatabaseRow {
   internal_id: unknown;
@@ -5988,7 +5989,10 @@ export class TrackerRepository {
   async listCreativePerformance(
     filters: CreativePerformanceFilters,
   ): Promise<CreativePerformanceItem[]> {
-    const limit = Math.min(Math.max(filters.limit ?? 50, 1), 200);
+    const limit = Math.min(
+      Math.max(filters.limit ?? 50, 1),
+      MAX_CREATIVE_PERFORMANCE_ROWS,
+    );
     const offset = Math.max(filters.offset ?? 0, 0);
     const rows = await this.query<DatabaseRow>(
       `

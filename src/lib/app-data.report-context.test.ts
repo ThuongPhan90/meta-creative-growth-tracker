@@ -18,6 +18,7 @@ vi.mock("@/lib/db", () => ({
 import {
   getCreativeFamilyRowsForReport,
   buildApplicationResultMetrics,
+  getApplicationContextSnapshot,
   getApplicationSnapshot,
   getCanonicalResultsForReport,
   getCreativeRowsForReport,
@@ -505,6 +506,49 @@ beforeEach(() => {
 });
 
 describe("application snapshot Result registry", () => {
+  it("keeps report context lightweight", async () => {
+    serverMocks.getRuntimeConfiguration.mockReturnValue(
+      runtimeConfiguration(false),
+    );
+    serverMocks.readPageOwnerSession.mockResolvedValue({
+      sub: liveConnection.connectionId,
+    });
+    serverMocks.readDatabaseHealth.mockResolvedValue({ ok: true });
+    const repository = liveSnapshotRepository([liveLeadDefinition]);
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    const contextSnapshot = await getApplicationContextSnapshot();
+
+    expect(contextSnapshot.creatives).toEqual([]);
+    expect(contextSnapshot.creativesTruncated).toBe(false);
+    expect(repository.listCreativeLibrary).not.toHaveBeenCalled();
+    expect(repository.listCreativePerformance).not.toHaveBeenCalled();
+  });
+
+  it("composes the full snapshot from one base query set", async () => {
+    serverMocks.getRuntimeConfiguration.mockReturnValue(
+      runtimeConfiguration(false),
+    );
+    serverMocks.readPageOwnerSession.mockResolvedValue({
+      sub: liveConnection.connectionId,
+    });
+    serverMocks.readDatabaseHealth.mockResolvedValue({ ok: true });
+    const repository = liveSnapshotRepository([liveLeadDefinition]);
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    const fullSnapshot = await getApplicationSnapshot();
+
+    expect(fullSnapshot.creatives).toEqual([]);
+    expect(repository.getCoverage).toHaveBeenCalledTimes(1);
+    expect(repository.listMetaAssets).toHaveBeenCalledTimes(1);
+    expect(repository.getDeliveryPerformance).toHaveBeenCalledTimes(1);
+    expect(repository.listCreativeLibrary).toHaveBeenCalledTimes(1);
+    expect(repository.listCreativePerformance).toHaveBeenCalledTimes(1);
+    expect(repository.listCreativePerformance).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 5_001, offset: 0 }),
+    );
+  });
+
   it("includes enabled fallback definitions in demo mode", async () => {
     serverMocks.getRuntimeConfiguration.mockReturnValue(
       runtimeConfiguration(true),

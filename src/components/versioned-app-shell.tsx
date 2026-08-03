@@ -15,7 +15,7 @@ export type VersionedAppShellProps = AppShellV3Props & {
 };
 
 /**
- * Keeps the V3 migration route-scoped while a single app layout still owns the
+ * Keeps the V3 release route-scoped while a single app layout still owns the
  * shared server snapshot. Query handling remains inside each existing shell.
  */
 export function VersionedAppShell({

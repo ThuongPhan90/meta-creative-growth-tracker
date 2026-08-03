@@ -16,7 +16,7 @@ import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import {
   buildApplicationResultMetrics,
   getCanonicalResultsForReport,
-  getApplicationSnapshot,
+  getApplicationContextSnapshot,
   getDeliveryForReport,
   resolveApplicationReportContext,
 } from "@/lib/app-data";
@@ -83,7 +83,7 @@ export default async function CampaignDetailPage({
   >;
 }) {
   const [snapshot, route, query] = await Promise.all([
-    getApplicationSnapshot(),
+    getApplicationContextSnapshot(),
     params,
     searchParams,
   ]);

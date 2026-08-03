@@ -2,7 +2,7 @@ import type { ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  getApplicationSnapshot: vi.fn(),
+  getApplicationContextSnapshot: vi.fn(),
   resolveApplicationReportContext: vi.fn(),
   getCreativeRowsForReport: vi.fn(),
   getOverviewTrendForReport: vi.fn(),
@@ -13,12 +13,14 @@ const mocks = vi.hoisted(() => ({
   buildApplicationResultMetrics: vi.fn(),
   buildReportingBarModel: vi.fn(),
   formatFreshnessFields: vi.fn(),
+  buildOverviewCreativeWatchlistModel: vi.fn(),
   redirect: vi.fn(),
   overviewV3: vi.fn(() => null),
 }));
 
 vi.mock("@/lib/app-data", () => ({
-  getApplicationSnapshot: mocks.getApplicationSnapshot,
+  getApplicationContextSnapshot:
+    mocks.getApplicationContextSnapshot,
   resolveApplicationReportContext:
     mocks.resolveApplicationReportContext,
   getCreativeRowsForReport: mocks.getCreativeRowsForReport,
@@ -30,6 +32,11 @@ vi.mock("@/lib/app-data", () => ({
     mocks.getCanonicalResultsForReport,
   buildApplicationResultMetrics:
     mocks.buildApplicationResultMetrics,
+}));
+
+vi.mock("@/features/overview-v3/creative-watchlist-model", () => ({
+  buildOverviewCreativeWatchlistModel:
+    mocks.buildOverviewCreativeWatchlistModel,
 }));
 
 vi.mock("@/components/creative-performance-v2", () => ({
@@ -137,7 +144,7 @@ beforeEach(() => {
   mocks.redirect.mockImplementation((href: string) => {
     throw new Error(`NEXT_REDIRECT:${href}`);
   });
-  mocks.getApplicationSnapshot.mockResolvedValue(snapshot);
+  mocks.getApplicationContextSnapshot.mockResolvedValue(snapshot);
   mocks.resolveApplicationReportContext.mockReturnValue(context);
   mocks.getCreativeRowsForReport.mockResolvedValue({
     creatives: [],
@@ -167,8 +174,22 @@ beforeEach(() => {
     kpiCards: [],
     crossObjectiveSections: [],
   });
-  mocks.buildReportingBarModel.mockReturnValue({});
+  mocks.buildReportingBarModel.mockReturnValue({
+    objective: "sales",
+    result: "purchase",
+  });
   mocks.formatFreshnessFields.mockReturnValue({});
+  mocks.buildOverviewCreativeWatchlistModel.mockReturnValue({
+    canEvaluate: true,
+    resultLabel: "Purchase",
+    items: [],
+    itemIdsByView: {
+      priority: [],
+      running: [],
+      insufficient: [],
+      all: [],
+    },
+  });
 });
 
 describe("Overview page canonical reporting context", () => {
@@ -322,6 +343,7 @@ describe("Overview page canonical reporting context", () => {
   });
 
   it("renders a canonical URL without redirecting again", async () => {
+    process.env.UI_VERSION = "v2";
     const element = (await OverviewPage({
       searchParams: Promise.resolve(canonicalQuery),
     })) as OverviewPageElement;
@@ -331,6 +353,14 @@ describe("Overview page canonical reporting context", () => {
     expect(element.props.reportWarnings).toEqual([
       "Kết quả chuẩn hóa chưa khả dụng cho snapshot hiện tại.",
     ]);
+    expect(mocks.getApplicationContextSnapshot).toHaveBeenCalledOnce();
+    expect(element.props).toHaveProperty("dashboard", snapshot.dashboard);
+    expect(element.props).toHaveProperty("creatives");
+    expect(element.props).toHaveProperty("delivery");
+    expect(element.props).toHaveProperty("freshness");
+    expect(
+      mocks.buildOverviewCreativeWatchlistModel,
+    ).not.toHaveBeenCalled();
   });
 
   it("applies the campaign scope to current and previous canonical Result totals", async () => {
@@ -386,7 +416,7 @@ describe("Overview page canonical reporting context", () => {
     });
   });
 
-  it("renders V3 only behind the server feature flag and keeps reset scope", async () => {
+  it("renders released V3 for an explicit server value and keeps reset scope", async () => {
     process.env.UI_VERSION = "v3";
 
     const element = (await OverviewPage({
@@ -394,10 +424,28 @@ describe("Overview page canonical reporting context", () => {
     })) as ReactElement<{
       resetHref: string;
       resultDefinitions: unknown[];
+      watchlist: unknown;
     }>;
 
     expect(element.type).toBe(mocks.overviewV3);
     expect(element.props.resultDefinitions).toEqual([]);
+    expect(element.props.watchlist).toEqual(
+      mocks.buildOverviewCreativeWatchlistModel.mock.results[0]?.value,
+    );
+    expect(
+      mocks.buildOverviewCreativeWatchlistModel,
+    ).toHaveBeenCalledWith({
+      creatives: [],
+      objectiveKey: "sales",
+      resultKey: "purchase",
+      resultDefinitions: [],
+      currency: "VND",
+    });
+    expect(element.props).not.toHaveProperty("creatives");
+    expect(element.props).not.toHaveProperty("dashboard");
+    expect(element.props).not.toHaveProperty("delivery");
+    expect(element.props).not.toHaveProperty("freshness");
+    expect(mocks.formatFreshnessFields).not.toHaveBeenCalled();
     const reset = new URL(element.props.resetHref, "https://tracker.test");
     expect(reset.pathname).toBe("/overview");
     expect(reset.searchParams.get("business_ids")).toBe("business_1");

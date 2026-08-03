@@ -1,9 +1,9 @@
 import type { ReactElement } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AdsInventoryV2 } from "@/components/ads-inventory-v2";
 import {
-  getApplicationSnapshot,
+  getApplicationContextSnapshot,
   getCanonicalResultsForReport,
   getDeliveryForReport,
   resolveApplicationReportContext,
@@ -20,7 +20,7 @@ import {
 import CampaignsPage from "./page";
 
 vi.mock("@/lib/app-data", () => ({
-  getApplicationSnapshot: vi.fn(),
+  getApplicationContextSnapshot: vi.fn(),
   getDeliveryForReport: vi.fn().mockResolvedValue([]),
   getCanonicalResultsForReport: vi.fn(),
   resolveApplicationReportContext: vi.fn(),
@@ -282,8 +282,9 @@ function repositoryMock() {
 }
 
 beforeEach(() => {
+  vi.stubEnv("UI_VERSION", "v2");
   vi.clearAllMocks();
-  vi.mocked(getApplicationSnapshot).mockResolvedValue(
+  vi.mocked(getApplicationContextSnapshot).mockResolvedValue(
     snapshot() as never,
   );
   vi.mocked(resolveApplicationReportContext).mockReturnValue(
@@ -298,6 +299,10 @@ beforeEach(() => {
     state: "live",
     warning: null,
   });
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("Campaign page canonical row results", () => {

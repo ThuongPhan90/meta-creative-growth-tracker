@@ -4,7 +4,7 @@ import {
   type SettingsTab,
 } from "@/components/settings-v2";
 import { V3SurfacePage } from "@/components/ui-v3/surface-page";
-import { getApplicationSnapshot } from "@/lib/app-data";
+import { getApplicationContextSnapshot } from "@/lib/app-data";
 import {
   createTrackerRepository,
   type SettingsAuditRecord,
@@ -107,7 +107,7 @@ export default async function SettingsPage({
   >;
 }) {
   const [snapshot, query] = await Promise.all([
-    getApplicationSnapshot(),
+    getApplicationContextSnapshot(),
     searchParams,
   ]);
   const tabValue = first(query.tab);

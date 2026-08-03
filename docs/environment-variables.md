@@ -9,6 +9,7 @@ Production/Preview/Development.
 | Biến | Bắt buộc | Phạm vi | Mô tả |
 |---|---:|---|---|
 | `APP_URL` | Có | Server | Origin cuối cùng, không có slash cuối/path/query; local là `http://localhost:3000`, production là HTTPS |
+| `UI_VERSION` | Có | Server | Giao diện phát hành; mặc định `v3`, chỉ đặt `v2` khi cần rollback tạm thời |
 | `LEGAL_ENTITY_NAME` | Live | Server | Tên cá nhân/đơn vị vận hành hiển thị trên trang pháp lý; tối thiểu 2 ký tự |
 | `PRIVACY_CONTACT_EMAIL` | Live | Server | Email liên hệ thật hiển thị trên trang pháp lý |
 | `META_APP_ID` | Live | Server | App ID dạng số của Meta App riêng cho deployment |
@@ -23,6 +24,11 @@ Production/Preview/Development.
 
 Không biến nào cần tiền tố `NEXT_PUBLIC_`. Không đưa secret vào Deploy Button URL,
 GitHub Actions log, screenshot hoặc client bundle.
+
+`UI_VERSION` không phải secret. Source mặc định an toàn về `v3` nếu biến bị
+thiếu hoặc có giá trị không hợp lệ. `UI_VERSION=v2` chỉ là đường rollback tạm
+thời cho giao diện cũ; sau khi thay đổi trên Vercel phải redeploy đúng environment
+và kiểm tra lại shell trên các route đã phát hành.
 
 `LEGAL_ENTITY_NAME` và `PRIVACY_CONTACT_EMAIL` là gate kỹ thuật trước khi backend
 mở Meta OAuth. Chúng không thay thế việc owner đọc lại nội dung thực tế tại:

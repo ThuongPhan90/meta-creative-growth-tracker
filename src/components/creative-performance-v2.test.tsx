@@ -496,6 +496,57 @@ describe("Creative V2 navigation and audit interactions", () => {
     expect(rating.hash).toBe("#benchmark-explanation");
   });
 
+  it("paginates large Creative tables before rendering rows", () => {
+    const creatives = Array.from({ length: 101 }, (_, index) => ({
+      ...canonicalDemoCreatives[0],
+      id: `creative-page-${index + 1}`,
+      creativeFamilyId: `cf_page_${index + 1}`,
+      assetKey: `video:page-${index + 1}`,
+      aliases: [`PAGE-${index + 1}`],
+      name: `Creative page ${index + 1}`,
+    }));
+    const markup = renderToStaticMarkup(
+      <CreativePerformanceV2
+        creatives={creatives}
+        delivery={[]}
+        connected
+        query={{
+          view: "table",
+          page: "2",
+          objective: "app_promotion",
+          result: "install",
+        }}
+        dateFrom="2026-07-01"
+        dateTo="2026-07-30"
+        accounts={[]}
+        account=""
+        reportingCurrency="VND"
+        currencyOptions={["VND"]}
+        compare="previous_period"
+        freshness="Dữ liệu mới"
+        reportingBar={{
+          businesses: [],
+          scopeAccounts: [],
+          selectedBusinessIds: [],
+          selectedAccountIds: [],
+          persistScope: false,
+          objective: "app_promotion",
+          objectives: [],
+          results: [],
+        }}
+        resultMetrics={resultMetrics}
+      />,
+    );
+
+    expect(markup).toContain("PAGE-101");
+    expect(markup).not.toContain("PAGE-100</strong>");
+    expect(markup).toContain("Trang 2 / 2");
+    expect(markup).toContain("page=1");
+    expect(markup).not.toContain(
+      "page=2&amp;objective=app_promotion&amp;result=install&amp;format=video",
+    );
+  });
+
   it("keeps visual bubble sizing separate from the CSS hitbox", () => {
     expect(creativeScatterPointStyle(32, 48, 19)).toEqual({
       left: "32%",

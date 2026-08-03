@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  getApplicationSnapshot,
+  getApplicationContextSnapshot,
   type ApplicationSnapshot,
 } from "@/lib/app-data";
 import { createTrackerRepository } from "@/lib/db";
@@ -13,7 +13,7 @@ vi.mock("@/lib/app-data", async (importOriginal) => {
     await importOriginal<typeof import("@/lib/app-data")>();
   return {
     ...actual,
-    getApplicationSnapshot: vi.fn(),
+    getApplicationContextSnapshot: vi.fn(),
     getDeliveryForReport: vi.fn().mockResolvedValue([]),
     getCanonicalResultsForReport: vi.fn().mockResolvedValue({
       definitions: [],
@@ -134,7 +134,9 @@ function hrefFor(markup: string, path: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(getApplicationSnapshot).mockResolvedValue(demoSnapshot());
+  vi.mocked(getApplicationContextSnapshot).mockResolvedValue(
+    demoSnapshot(),
+  );
 });
 
 describe("Campaign full page in demo mode", () => {

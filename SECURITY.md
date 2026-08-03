@@ -2,7 +2,8 @@
 
 ## Phiên bản được hỗ trợ
 
-Personal v1 chỉ nhận bản vá bảo mật trên nhánh `main` mới nhất.
+Chỉ nhánh `main` mới nhất nhận bản vá bảo mật. Giao diện V2 chỉ là đường rollback
+tạm thời của cùng codebase, không phải một phiên bản được hỗ trợ độc lập.
 
 ## Báo cáo lỗ hổng
 

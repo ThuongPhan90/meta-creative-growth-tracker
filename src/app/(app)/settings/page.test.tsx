@@ -1,16 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TrackerSettings } from "@/lib/db";
 import { DEFAULT_RESULT_DEFINITIONS } from "@/lib/reporting/result-definition";
 
 const mocks = vi.hoisted(() => ({
-  getApplicationSnapshot: vi.fn(),
+  getApplicationContextSnapshot: vi.fn(),
   createTrackerRepository: vi.fn(),
   SettingsV2: vi.fn(() => null),
 }));
 
 vi.mock("@/lib/app-data", () => ({
-  getApplicationSnapshot: mocks.getApplicationSnapshot,
+  getApplicationContextSnapshot: mocks.getApplicationContextSnapshot,
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -84,6 +84,7 @@ describe("Settings page V2 contract loading", () => {
   const listCampaignResultOverrides = vi.fn();
 
   beforeEach(() => {
+    vi.stubEnv("UI_VERSION", "v2");
     vi.clearAllMocks();
     getSettings.mockResolvedValue(settings);
     listSettingsAuditLog.mockResolvedValue([]);
@@ -113,7 +114,11 @@ describe("Settings page V2 contract loading", () => {
       listResultMappings,
       listCampaignResultOverrides,
     });
-    mocks.getApplicationSnapshot.mockResolvedValue(snapshot);
+    mocks.getApplicationContextSnapshot.mockResolvedValue(snapshot);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("maps the legacy events URL to Results and loads independent registry reads", async () => {
@@ -188,7 +193,7 @@ describe("Settings page V2 contract loading", () => {
   });
 
   it("uses read-only built-in definitions in demo without opening the database", async () => {
-    mocks.getApplicationSnapshot.mockResolvedValue({
+    mocks.getApplicationContextSnapshot.mockResolvedValue({
       ...snapshot,
       demoMode: true,
       authenticated: false,

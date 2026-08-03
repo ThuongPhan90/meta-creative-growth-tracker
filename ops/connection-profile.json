@@ -10,8 +10,8 @@
   "vercel": {
     "teamSlug": "mrphanthuong2112-1637s-projects",
     "projectSlug": "meta-creative-growth-tracker",
-    "orgId": null,
-    "projectId": null,
+    "orgId": "team_ApDX4dEA4AsdnyFfYQBYmrFq",
+    "projectId": "prj_J9faEIZBT2TLkaOcxydrTCu635SX",
     "productionUrl": "https://meta-creative-growth-tracker.vercel.app",
     "healthPath": "/api/health",
     "cronPath": "/api/cron/sync"
@@ -28,6 +28,7 @@
   },
   "requiredEnvironmentVariables": [
     "APP_URL",
+    "UI_VERSION",
     "LEGAL_ENTITY_NAME",
     "PRIVACY_CONTACT_EMAIL",
     "META_APP_ID",

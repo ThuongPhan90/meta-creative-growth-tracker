@@ -117,6 +117,7 @@ function href(
     ...NAVIGATION_QUERY_KEYS,
     "q",
     "view",
+    "page",
     "delivery",
     "origin",
     "explain",
@@ -1346,6 +1347,7 @@ function CreativeTable({
                   className="v2-chip v2-chip--accent"
                   href={href("/creatives", query, {
                     format: family.format.toLocaleLowerCase("vi-VN"),
+                    page: null,
                     selected: null,
                     tab: null,
                   })}
@@ -1357,6 +1359,7 @@ function CreativeTable({
                     className="v2-chip"
                     href={href("/creatives", query, {
                       os: platform.toLocaleLowerCase("vi-VN"),
+                      page: null,
                       selected: null,
                       tab: null,
                     })}
@@ -2080,6 +2083,23 @@ export function CreativePerformanceV2({
         navigationQuery.result,
       )
     : families;
+  const requestedTablePage = Math.max(
+    1,
+    Math.min(
+      100_000,
+      Number.parseInt(first(query.page) ?? "1", 10) || 1,
+    ),
+  );
+  const tablePageSize = 100;
+  const tablePageCount = Math.max(
+    1,
+    Math.ceil(orderedFamilies.length / tablePageSize),
+  );
+  const tablePage = Math.min(requestedTablePage, tablePageCount);
+  const visibleTableFamilies = orderedFamilies.slice(
+    (tablePage - 1) * tablePageSize,
+    tablePage * tablePageSize,
+  );
   const deliverySummary = summarizeDelivery(delivery);
   const singleCurrency =
     deliverySummary.singleCurrency?.currency ?? null;
@@ -2226,6 +2246,7 @@ export function CreativePerformanceV2({
               performance: null,
               data_status: null,
               delivery: null,
+              page: null,
               selected: null,
               tab: null,
             })}
@@ -2244,6 +2265,7 @@ export function CreativePerformanceV2({
             className="v2-tab"
             href={href("/creatives", query, {
               view: item.value,
+              page: null,
               selected: null,
               tab: null,
             })}
@@ -2257,7 +2279,11 @@ export function CreativePerformanceV2({
       <section className="v2-kpi-grid" aria-label="Chỉ số Creative">
         <Link
           className="v2-kpi"
-          href={href("/library", query, { selected: null, tab: null })}
+          href={href("/library", query, {
+            page: null,
+            selected: null,
+            tab: null,
+          })}
         >
           <span className="v2-kpi__label">
             Creative Family <ImageIcon aria-hidden="true" size={16} />
@@ -2348,13 +2374,63 @@ export function CreativePerformanceV2({
           </div>
         </section>
       ) : view === "table" ? (
-        <CreativeTable
-          families={orderedFamilies}
-          query={query}
-          metric={activeMetric}
-          direction={metricSort}
-          resultMetrics={resultMetrics}
-        />
+        <>
+          <CreativeTable
+            families={visibleTableFamilies}
+            query={query}
+            metric={activeMetric}
+            direction={metricSort}
+            resultMetrics={resultMetrics}
+          />
+          {orderedFamilies.length > tablePageSize ? (
+            <nav
+              className="v2-pagination"
+              aria-label="Phân trang hiệu quả Creative"
+            >
+              {tablePage > 1 ? (
+                <Link
+                  className="button button--secondary"
+                  href={href("/creatives", query, {
+                    page: String(tablePage - 1),
+                    selected: null,
+                    tab: null,
+                  })}
+                >
+                  Trang trước
+                </Link>
+              ) : (
+                <span
+                  className="button button--secondary"
+                  aria-disabled="true"
+                >
+                  Trang trước
+                </span>
+              )}
+              <span>
+                Trang {tablePage} / {tablePageCount}
+              </span>
+              {tablePage < tablePageCount ? (
+                <Link
+                  className="button button--secondary"
+                  href={href("/creatives", query, {
+                    page: String(tablePage + 1),
+                    selected: null,
+                    tab: null,
+                  })}
+                >
+                  Trang sau
+                </Link>
+              ) : (
+                <span
+                  className="button button--secondary"
+                  aria-disabled="true"
+                >
+                  Trang sau
+                </span>
+              )}
+            </nav>
+          ) : null}
+        </>
       ) : view === "compare" ? (
         <CompareView
           families={families}

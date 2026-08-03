@@ -87,7 +87,6 @@ import type {
   SyncRunView,
 } from "@/types/view-models";
 
-const PAGE_SIZE = 200;
 const MAX_VIEW_ROWS = 5_000;
 const DEFAULT_INSTALL_ACTION_TYPES = [
   "mobile_app_install",
@@ -165,6 +164,11 @@ export type ApplicationSnapshot = {
     updatedAt: string | null;
   };
 };
+
+const completeSnapshotLoaders = new WeakMap<
+  ApplicationSnapshot,
+  () => Promise<ApplicationSnapshot>
+>();
 
 const EMPTY_FRESHNESS: Freshness = {
   lastSyncedAt: null,
@@ -448,27 +452,21 @@ async function loadPerformance(
   syncVersion?: string,
   objectiveRawKeys?: readonly string[],
 ) {
-  const items: CreativePerformanceItem[] = [];
-  for (let offset = 0; offset <= MAX_VIEW_ROWS; offset += PAGE_SIZE) {
-    const limit = Math.min(PAGE_SIZE, MAX_VIEW_ROWS + 1 - items.length);
-    const batch = await repository.listCreativePerformance({
-      connectionId,
-      dateFrom,
-      dateTo,
-      currency: currency ?? undefined,
-      accountMetaId: accountMetaId || undefined,
-      campaignMetaId: campaignMetaId || undefined,
-      attributionWindow: attributionWindow || undefined,
-      actionReportTime,
-      syncVersion: syncVersion || undefined,
-      objectiveRawKeys:
-        objectiveRawKeys?.length ? objectiveRawKeys : undefined,
-      limit,
-      offset,
-    });
-    items.push(...batch);
-    if (items.length > MAX_VIEW_ROWS || batch.length < limit) break;
-  }
+  const items = await repository.listCreativePerformance({
+    connectionId,
+    dateFrom,
+    dateTo,
+    currency: currency ?? undefined,
+    accountMetaId: accountMetaId || undefined,
+    campaignMetaId: campaignMetaId || undefined,
+    attributionWindow: attributionWindow || undefined,
+    actionReportTime,
+    syncVersion: syncVersion || undefined,
+    objectiveRawKeys:
+      objectiveRawKeys?.length ? objectiveRawKeys : undefined,
+    limit: MAX_VIEW_ROWS + 1,
+    offset: 0,
+  });
   return {
     items: items.slice(0, MAX_VIEW_ROWS),
     truncated: items.length > MAX_VIEW_ROWS,
@@ -2803,8 +2801,7 @@ async function loadApplicationResultDefinitions(
   }
 }
 
-export const getApplicationSnapshot = cache(
-  async (): Promise<ApplicationSnapshot> => {
+async function loadApplicationContextSnapshot(): Promise<ApplicationSnapshot> {
     const configuration = getRuntimeConfiguration();
     const configuredForLive =
       configuration.databaseConfigured &&
@@ -2977,8 +2974,6 @@ export const getApplicationSnapshot = cache(
     const [
       coverage,
       inventory,
-      libraryResult,
-      performanceResult,
       delivery,
       runs,
       insightsFreshness,
@@ -2988,14 +2983,6 @@ export const getApplicationSnapshot = cache(
     ] = await Promise.all([
         repository.getCoverage(connection.connectionId),
         repository.listMetaAssets(connection.connectionId),
-        loadCreativeLibrary(repository, connection.connectionId),
-        loadPerformance(
-          repository,
-          connection.connectionId,
-          dateFrom,
-          dateTo,
-          settings.reportingCurrency,
-        ),
         repository.getDeliveryPerformance({
           connectionId: connection.connectionId,
           dateFrom,
@@ -3008,8 +2995,6 @@ export const getApplicationSnapshot = cache(
         repository.getReportingScope(connection.connectionId),
         loadApplicationResultDefinitions(repository),
       ]);
-    const library = libraryResult.items;
-    const performance = performanceResult.items;
 
     const assets: MetaAssetRow[] = [
       ...inventory.businesses.map((item) => ({
@@ -3096,18 +3081,6 @@ export const getApplicationSnapshot = cache(
     const partial =
       insightsFreshness.syncStatus === "partial" ||
       latestInsightsRun?.status === "partial";
-    const creatives = mapCreatives(
-      library,
-      performance,
-      delivery,
-      settings,
-      dateFrom,
-      dateTo,
-      freshness,
-      coverageRatio,
-      partial,
-    );
-
     const eventStatus = (
       operatingSystem: "ANDROID" | "IOS",
       field: "installs" | "registrations",
@@ -3162,8 +3135,7 @@ export const getApplicationSnapshot = cache(
         adAccounts: inventory.adAccounts.filter(isOperationalAdAccount)
           .length,
         pages: coverage?.pageCount ?? inventory.pages.length,
-        creatives:
-          coverage?.creativeAssetCount ?? library.length,
+        creatives: coverage?.creativeAssetCount ?? 0,
       },
       events: [
         {
@@ -3236,16 +3208,15 @@ export const getApplicationSnapshot = cache(
       ],
     };
 
-    return {
+    const snapshot: ApplicationSnapshot = {
       demoMode: false,
       authenticated,
       configuredForLive,
       connection,
       dashboard,
       assets,
-      creatives,
-      creativesTruncated:
-        libraryResult.truncated || performanceResult.truncated,
+      creatives: [],
+      creativesTruncated: false,
       syncRuns: runs.map((run) =>
         mapSyncRun(run, settings.reportingTimezone),
       ),
@@ -3277,5 +3248,69 @@ export const getApplicationSnapshot = cache(
         updatedAt: settings.updatedAt,
       },
     };
+
+    completeSnapshotLoaders.set(snapshot, async () => {
+      const [libraryResult, performanceResult] = await Promise.all([
+        loadCreativeLibrary(repository, connection.connectionId),
+        loadPerformance(
+          repository,
+          connection.connectionId,
+          dateFrom,
+          dateTo,
+          settings.reportingCurrency,
+        ),
+      ]);
+      const library = libraryResult.items;
+      const creatives = mapCreatives(
+        library,
+        performanceResult.items,
+        delivery,
+        settings,
+        dateFrom,
+        dateTo,
+        freshness,
+        coverageRatio,
+        partial,
+      );
+
+      return {
+        ...snapshot,
+        dashboard: {
+          ...snapshot.dashboard,
+          counts: {
+            ...snapshot.dashboard.counts,
+            creatives: coverage?.creativeAssetCount ?? library.length,
+          },
+        },
+        creatives,
+        creativesTruncated:
+          libraryResult.truncated || performanceResult.truncated,
+      };
+    });
+
+    return snapshot;
+}
+
+/**
+ * Lightweight request context for report pages and the application shell.
+ * Live Creative rows are intentionally omitted because report pages load the
+ * exact filtered range after resolving their reporting context.
+ */
+export const getApplicationContextSnapshot = cache(
+  (): Promise<ApplicationSnapshot> => loadApplicationContextSnapshot(),
+);
+
+/**
+ * Complete operational snapshot composed from the same cached request context.
+ * This preserves the legacy full-data contract without repeating base queries
+ * already made by the application layout.
+ */
+export const getApplicationSnapshot = cache(
+  async (): Promise<ApplicationSnapshot> => {
+    const contextSnapshot = await getApplicationContextSnapshot();
+    const loadCompleteSnapshot = completeSnapshotLoaders.get(contextSnapshot);
+    return loadCompleteSnapshot
+      ? loadCompleteSnapshot()
+      : contextSnapshot;
   },
 );

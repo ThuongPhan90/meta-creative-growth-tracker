@@ -1,6 +1,6 @@
 {
   "name": "meta-creative-growth-tracker",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "private": true,
   "description": "Self-hosted, read-only Meta creative and app growth tracker for a single owner.",
   "license": "MIT",
@@ -23,8 +23,8 @@
     "db:check": "tsx scripts/check-database.ts"
   },
   "dependencies": {
-    "lucide-react": "^1.26.0",
-    "next": "16.2.11",
+    "lucide-react": "^1.28.0",
+    "next": "16.2.12",
     "postgres": "^3.4.9",
     "react": "19.2.8",
     "react-dom": "19.2.8",
@@ -33,10 +33,11 @@
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
-    "@types/react": "^19.0.2",
-    "@types/react-dom": "^19.0.2",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "eslint": "^9.17.0",
     "eslint-config-next": "16.2.12",
+    "jsdom": "25.0.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^4.1.10"

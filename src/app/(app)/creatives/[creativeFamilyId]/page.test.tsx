@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  getApplicationSnapshot,
+  getApplicationContextSnapshot,
   getCanonicalResultsForReport,
   getCreativeFamilyRowsForReport,
   getDeliveryForReport,
@@ -30,7 +30,7 @@ vi.mock("@/lib/app-data", async (importOriginal) => {
     await importOriginal<typeof import("@/lib/app-data")>();
   return {
     ...actual,
-    getApplicationSnapshot: vi.fn(),
+    getApplicationContextSnapshot: vi.fn(),
     getCreativeFamilyRowsForReport: vi.fn(),
     getCanonicalResultsForReport: vi.fn(),
     getDeliveryForReport: vi.fn(),
@@ -83,7 +83,7 @@ function demoSnapshot() {
 describe("Creative Family direct URL", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getApplicationSnapshot).mockResolvedValue(
+    vi.mocked(getApplicationContextSnapshot).mockResolvedValue(
       demoSnapshot(),
     );
     vi.mocked(getCreativeFamilyRowsForReport).mockResolvedValue(

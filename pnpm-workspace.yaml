@@ -4,8 +4,13 @@ packages:
 overrides:
   # CVE-2026-14257: remove with the patch below once ESLint drops minimatch 3.
   "minimatch@3.1.5>brace-expansion": 5.0.8
+  # Keep the verified toolchain outside the supply-chain quarantine window.
+  baseline-browser-mapping: 2.11.4
+  get-tsconfig: 4.14.0
   postcss: ^8.5.12
   sharp: ^0.35.0
+  tsx: 4.23.1
+  vite: 7.3.6
 
 patchedDependencies:
   minimatch@3.1.5: patches/minimatch@3.1.5.patch

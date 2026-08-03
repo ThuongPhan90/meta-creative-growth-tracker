@@ -2,7 +2,7 @@ import { CreativeLibraryV2 } from "@/components/creative-library-v2";
 import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import {
   buildApplicationResultMetrics,
-  getApplicationSnapshot,
+  getApplicationContextSnapshot,
   getCanonicalResultsForReport,
   getCreativeRowsForReport,
   resolveApplicationReportContext,
@@ -21,7 +21,7 @@ export default async function LibraryPage({
   >;
 }) {
   const [snapshot, query] = await Promise.all([
-    getApplicationSnapshot(),
+    getApplicationContextSnapshot(),
     searchParams,
   ]);
   const context = resolveApplicationReportContext(snapshot, query);

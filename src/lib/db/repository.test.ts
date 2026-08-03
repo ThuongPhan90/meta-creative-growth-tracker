@@ -2380,6 +2380,30 @@ describe("Ad account activity filters", () => {
     expect(query).toContain("and account.account_status = 1");
   });
 
+  it("bounds one complete creative-performance snapshot at 5,001 rows", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await repository.listCreativePerformance({
+      connectionId: "connection-1",
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-24",
+      limit: 9_000,
+      offset: 0,
+    });
+
+    expect(unsafe.mock.calls[0]?.[1]?.[6]).toBe(5_001);
+    expect(unsafe.mock.calls[0]?.[1]?.[7]).toBe(0);
+  });
+
   it("filters Creative Family performance by canonical ID and context", async () => {
     const familyId = "cf_0123456789abcdef01234567";
     const unsafe = vi.fn(

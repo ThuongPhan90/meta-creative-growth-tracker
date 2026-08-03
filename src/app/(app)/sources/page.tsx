@@ -6,7 +6,7 @@ import {
 } from "@/components/sources-v2";
 import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import {
-  getApplicationSnapshot,
+  getApplicationContextSnapshot,
   type ApplicationSnapshot,
 } from "@/lib/app-data";
 import { createTrackerRepository } from "@/lib/db";
@@ -152,7 +152,7 @@ export default async function SourcesPage({
   >;
 }) {
   const [snapshot, query] = await Promise.all([
-    getApplicationSnapshot(),
+    getApplicationContextSnapshot(),
     searchParams,
   ]);
   const activeTab = sourceTab(first(query.tab));

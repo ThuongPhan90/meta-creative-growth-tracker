@@ -66,7 +66,7 @@ describe("VersionedAppShell", () => {
     expect(markup).not.toContain('class="v3-app-shell"');
   });
 
-  it("keeps V2 as the default even on Overview", () => {
+  it("keeps V2 as an explicit rollback even on Overview", () => {
     const markup = render("/overview", false);
 
     expect(markup).toContain('class="app-shell"');

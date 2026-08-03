@@ -17,7 +17,7 @@ import {
 } from "@/lib/demo-campaigns";
 import {
   buildApplicationResultMetrics,
-  getApplicationSnapshot,
+  getApplicationContextSnapshot,
   getCanonicalResultsForReport,
   getDeliveryForReport,
   resolveApplicationReportContext,
@@ -381,7 +381,7 @@ export default async function CampaignsPage({
   >;
 }) {
   const [snapshot, query] = await Promise.all([
-    getApplicationSnapshot(),
+    getApplicationContextSnapshot(),
     searchParams,
   ]);
   const context = resolveApplicationReportContext(snapshot, query);

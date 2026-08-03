@@ -6,7 +6,7 @@ import { OverviewV3 } from "@/features/overview-v3/overview-page";
 import { OverviewV2 } from "@/components/overview-v2";
 import { EntityDrawer } from "@/components/ui/entity-drawer";
 import {
-  getApplicationSnapshot,
+  getApplicationContextSnapshot,
   buildApplicationResultMetrics,
   getCanonicalResultsForReport,
   getCreativeRowsForReport,
@@ -16,6 +16,7 @@ import {
   getOverviewTrendForReport,
   resolveApplicationReportContext,
 } from "@/lib/app-data";
+import { buildOverviewCreativeWatchlistModel } from "@/features/overview-v3/creative-watchlist-model";
 import { addReportDays } from "@/lib/reporting";
 import { formatFreshnessFields } from "@/lib/presentation/freshness-presentation";
 import { buildReportingBarModel } from "@/lib/presentation/reporting-bar";
@@ -172,7 +173,7 @@ export default async function OverviewPage({
   >;
 }) {
   const [snapshot, query] = await Promise.all([
-    getApplicationSnapshot(),
+    getApplicationContextSnapshot(),
     searchParams,
   ]);
   const context = resolveApplicationReportContext(snapshot, query);
@@ -340,10 +341,7 @@ export default async function OverviewPage({
       />
     </EntityDrawer>
   ) : null;
-  const overviewProps = {
-    dashboard: snapshot.dashboard,
-    creatives: report.creatives,
-    delivery: report.delivery,
+  const sharedOverviewProps = {
     liveDelivery,
     trend,
     connected,
@@ -362,22 +360,12 @@ export default async function OverviewPage({
       ),
     ],
     compare: context.compareMode,
-    attribution: context.attributionSettingKey,
-    actionReportTime: context.actionReportTime,
-    syncVersion: context.syncVersion,
     accounts: snapshot.assets
       .filter((asset) => asset.kind === "Ad Account")
       .map((asset) => ({ id: asset.id, name: asset.name })),
-    freshness: formatFreshnessFields(
-      snapshot.freshness,
-      snapshot.settings.timezone,
-    ),
     reportingBar,
     resultMetrics,
     previousResultMetrics,
-    metricDisplayPresets: snapshot.settings.metricDisplayPresets,
-    settingsUpdatedAt: snapshot.settings.updatedAt,
-    metaBreakdown,
     reportWarnings,
     selectedDrawer,
   };
@@ -385,12 +373,36 @@ export default async function OverviewPage({
   if (isUiV3()) {
     return (
       <OverviewV3
-        {...overviewProps}
+        {...sharedOverviewProps}
+        attribution={context.attributionSettingKey}
+        actionReportTime={context.actionReportTime}
+        syncVersion={context.syncVersion}
+        metricDisplayPresets={snapshot.settings.metricDisplayPresets}
+        settingsUpdatedAt={snapshot.settings.updatedAt}
+        metaBreakdown={metaBreakdown}
         resultDefinitions={canonicalResults.definitions}
+        watchlist={buildOverviewCreativeWatchlistModel({
+          creatives: report.creatives,
+          objectiveKey: reportingBar.objective,
+          resultKey: reportingBar.result,
+          resultDefinitions: canonicalResults.definitions,
+          currency: context.currency,
+        })}
         resetHref={resetOverviewHref(canonicalQuery)}
       />
     );
   }
 
-  return <OverviewV2 {...overviewProps} />;
+  return (
+    <OverviewV2
+      {...sharedOverviewProps}
+      dashboard={snapshot.dashboard}
+      creatives={report.creatives}
+      delivery={report.delivery}
+      freshness={formatFreshnessFields(
+        snapshot.freshness,
+        snapshot.settings.timezone,
+      )}
+    />
+  );
 }

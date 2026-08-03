@@ -9,11 +9,9 @@ Web app tự host để một owner kết nối Meta Marketing API, rà soát Bu
 Portfolio/BM, ad account, campaign và đánh giá hiệu quả creative theo video hoặc
 banner. Ứng dụng chỉ đọc dữ liệu quảng cáo; không tạo, sửa hay tắt chiến dịch.
 
-> Trạng thái: personal v1 sẵn sàng triển khai production cho một owner, với các
-> giới hạn dữ liệu và vận hành được ghi rõ bên dưới. Hãy hoàn tất checklist Meta,
-> database, privacy và bảo mật trước khi kết nối tài khoản thật.
-
-![Màn hình Creative Library](design/concepts/creative-library.png)
+> Trạng thái: personal v1 dùng giao diện V3 làm mặc định phát hành, sẵn sàng
+> triển khai production cho một owner. Hãy hoàn tất checklist Meta, database,
+> privacy và bảo mật trước khi kết nối tài khoản thật.
 
 ## Bài toán dự án giải quyết
 
@@ -88,7 +86,11 @@ Mở `http://localhost:3000`.
 
 ```dotenv
 DEMO_MODE=true
+UI_VERSION=v3
 ```
+
+`UI_VERSION=v2` chỉ dành cho rollback tạm thời. Khi biến bị thiếu hoặc không hợp
+lệ, ứng dụng vẫn dùng V3 để bản clone/deploy mới không rơi về giao diện cũ.
 
 ## Từ repo đến Live
 

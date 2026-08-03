@@ -134,12 +134,8 @@ export function OverviewV3(props: OverviewV3Props) {
           />
 
           <CreativeWatchlistV3
-            creatives={props.creatives}
+            model={props.watchlist}
             query={props.query}
-            objectiveKey={props.reportingBar.objective}
-            resultKey={props.reportingBar.result}
-            resultDefinitions={props.resultDefinitions}
-            currency={props.reportingCurrency}
           />
 
           <AnalyticsPanelV3

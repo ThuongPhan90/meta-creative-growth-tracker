@@ -1,8 +1,8 @@
 export const UI_VERSIONS = ["v2", "v3"] as const;
 /**
- * V3 is intentionally an explicit release flag, not an automatic redesign.
  * A route is listed here only when its page surface and any reachable detail
- * route share the V3 shell. V2 remains the server-side default.
+ * route share the V3 shell. V3 is the released default; V2 remains available
+ * only as an explicit server-side rollback.
  */
 export const UI_V3_ROUTE_PATHS = [
   "/overview",
@@ -48,11 +48,12 @@ export const UI_V3_ROUTE_MATRIX = [
 export type UiVersion = (typeof UI_VERSIONS)[number];
 
 /**
- * Presentation migration gate. Keep the legacy surface as the safe default
- * until the V3 flag is explicitly enabled in the server environment.
+ * Presentation release gate. V3 is the safe default for fresh installs and
+ * missing/unknown values. Set UI_VERSION=v2 explicitly for a temporary
+ * rollback to the legacy surface.
  */
 export function resolveUiVersion(value = process.env.UI_VERSION): UiVersion {
-  return value?.trim().toLowerCase() === "v3" ? "v3" : "v2";
+  return value?.trim().toLowerCase() === "v2" ? "v2" : "v3";
 }
 
 export function isUiV3(value = process.env.UI_VERSION) {
@@ -75,7 +76,7 @@ function isV3DetailRoute(pathname: string) {
 }
 
 /**
- * V3 is migrated route by route. Detail patterns are deliberately explicit:
+ * V3 is released route by route. Detail patterns are deliberately explicit:
  * a V3 top-level page must never navigate to a legacy shell just because the
  * destination has an entity ID. Unknown nested paths stay outside the gate.
  */

@@ -3,29 +3,24 @@
 import { ArrowUpRight, Image as ImageIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import { groupCreativeFamiliesForView } from "@/lib/presentation/creative-family-view";
 import {
   formatMoney,
   formatNumber,
   formatPercent,
 } from "@/lib/presentation/formatters";
-import {
-  buildCreativeWatchlist,
-  filterCreativeWatchlist,
-  type CreativeFatigueStatus,
-  type CreativeWatchlistDataStatus,
-  type CreativeWatchlistItem,
-  type CreativeWatchlistView,
-  type ResultDefinition,
-} from "@/lib/reporting";
+import type { CreativeFatigueStatus } from "@/lib/reporting";
 import { buildContextHref } from "@/lib/navigation";
 import { ContextualEntityLink } from "@/components/ui/contextual-entity-link";
-import type { CreativeRow, DataStatus } from "@/types/view-models";
 
+import type {
+  OverviewCreativeWatchlistModel,
+  OverviewWatchlistItem,
+  OverviewWatchlistView,
+} from "./creative-watchlist-model";
 import type { OverviewV3Query } from "./types";
 import styles from "./overview-v3.module.css";
 
-type WatchlistTab = CreativeWatchlistView;
+type WatchlistTab = OverviewWatchlistView;
 
 const WATCHLIST_TABS: ReadonlyArray<readonly [WatchlistTab, string]> = [
   ["priority", "Ưu tiên"],
@@ -34,22 +29,11 @@ const WATCHLIST_TABS: ReadonlyArray<readonly [WatchlistTab, string]> = [
   ["all", "Tất cả"],
 ];
 
-type DisplayWatchlistItem = CreativeWatchlistItem & {
-  name: string;
-  format: string;
-  thumbnailUrl: string;
-  adCount: number;
-};
-
-function asDataStatus(value: DataStatus): CreativeWatchlistDataStatus {
-  return value;
-}
-
 function formatCount(value: number | null) {
   return value === null ? "—" : formatNumber(value);
 }
 
-function dataLabel(status: DisplayWatchlistItem["dataStatus"]) {
+function dataLabel(status: OverviewWatchlistItem["dataStatus"]) {
   switch (status) {
     case "ready":
       return "Đủ dữ liệu";
@@ -64,7 +48,7 @@ function dataLabel(status: DisplayWatchlistItem["dataStatus"]) {
   }
 }
 
-function performanceLabel(item: DisplayWatchlistItem) {
+function performanceLabel(item: OverviewWatchlistItem) {
   if (item.action === "zero_result_delivery") return "0 kết quả cần kiểm tra";
   switch (item.performance.status) {
     case "better_than_benchmark":
@@ -91,14 +75,14 @@ function fatigueLabel(status: CreativeFatigueStatus) {
   }
 }
 
-function actionLabel(item: DisplayWatchlistItem) {
+function actionLabel(item: OverviewWatchlistItem) {
   if (item.action === "zero_result_delivery") return "Kiểm tra delivery";
   if (item.performance.status === "needs_review") return "Xem benchmark";
   if (item.fatigueStatus === "fatigue_risk") return "Xem fatigue";
   return "Mở chi tiết";
 }
 
-function statusTone(item: DisplayWatchlistItem) {
+function statusTone(item: OverviewWatchlistItem) {
   if (item.action === "zero_result_delivery") return styles.performancePillWatch;
   if (item.performance.status === "better_than_benchmark") {
     return styles.performancePillGood;
@@ -121,99 +105,22 @@ function trendTone(status: CreativeFatigueStatus) {
  * fatigue stay visually separate; a partial data state cannot become green.
  */
 export function CreativeWatchlistV3({
-  creatives,
+  model,
   query,
-  objectiveKey,
-  resultKey,
-  resultDefinitions,
-  currency,
 }: {
-  creatives: readonly CreativeRow[];
+  model: OverviewCreativeWatchlistModel;
   query: OverviewV3Query;
-  objectiveKey: string;
-  resultKey?: string;
-  resultDefinitions: readonly ResultDefinition[];
-  currency: string;
 }) {
   const [tab, setTab] = useState<WatchlistTab>("priority");
-  const resultDefinition = resultDefinitions.find(
-    (definition) => definition.enabled && definition.canonicalKey === resultKey,
+  const itemById = useMemo(
+    () => new Map(model.items.map((item) => [item.creativeId, item])),
+    [model.items],
   );
-  const families = useMemo(
-    () => groupCreativeFamiliesForView(creatives),
-    [creatives],
-  );
-
-  const items = useMemo<DisplayWatchlistItem[]>(() => {
-    if (!resultKey || !resultDefinition || objectiveKey === "all" || !currency) return [];
-    const familyById = new Map(families.map((family) => [family.id, family]));
-    const candidates = families.flatMap((family) => {
-      const performance = family.performance;
-      const evaluation =
-        performance?.evaluation?.resultKey === resultKey
-          ? performance.evaluation
-          : null;
-      const dataStatus = performance?.confidence?.dataStatus;
-      const selectedCurrency = performance?.currency?.trim().toUpperCase();
-      if (!performance || !selectedCurrency || !dataStatus) return [];
-      if (currency && selectedCurrency !== currency.toUpperCase()) return [];
-      const primaryResults = performance.resultValues?.[resultKey] ?? null;
-      const costPerResult =
-        evaluation?.metricKey === "cost_per_result"
-          ? evaluation.actualValue
-          : primaryResults !== null && primaryResults > 0
-            ? performance.spend / primaryResults
-            : null;
-      const benchmarkCostPerResult =
-        evaluation?.metricKey === "cost_per_result"
-          ? evaluation.benchmarkValue
-          : null;
-      return [
-        {
-          creativeId: family.id,
-          objectiveKey,
-          resultKey,
-          currency: selectedCurrency,
-          activeAds: family.activeAdCount,
-          spend: performance.spend,
-          impressions: performance.impressions,
-          primaryResults,
-          costPerResult,
-          benchmarkCostPerResult,
-          dataStatus: asDataStatus(dataStatus),
-          fatigueStatus: evaluation?.fatigueStatus ?? "insufficient",
-        },
-      ];
-    });
-    const group = buildCreativeWatchlist(candidates, {
-      minimumImpressions: resultDefinition.minimumImpressions,
-      minimumResults: resultDefinition.minimumResults,
-    }).find(
-      (candidateGroup) =>
-        candidateGroup.objectiveKey === objectiveKey &&
-        candidateGroup.resultKey === resultKey &&
-        (!currency || candidateGroup.currency === currency.toUpperCase()),
-    );
-
-    return (group?.items ?? []).flatMap((item) => {
-      const family = familyById.get(item.creativeId);
-      if (!family) return [];
-      return [
-        {
-          ...item,
-          name: family.name,
-          format: family.format,
-          thumbnailUrl: family.imageUrl,
-          adCount: family.adCount,
-        },
-      ];
-    });
-  }, [currency, families, objectiveKey, resultDefinition, resultKey]);
-
-  const visible = filterCreativeWatchlist(items, tab).slice(0, 5);
-  const canEvaluate = Boolean(
-    resultDefinition && resultKey && objectiveKey !== "all" && currency,
-  );
+  const visible = model.itemIdsByView[tab].flatMap((creativeId) => {
+    const item = itemById.get(creativeId);
+    return item ? [item] : [];
+  });
+  const canEvaluate = model.canEvaluate;
 
   return (
     <section className={styles.watchlistPanel} aria-labelledby="watchlist-v3-title">
@@ -259,7 +166,7 @@ export function CreativeWatchlistV3({
                 <th className={styles.watchlistCreative}>Creative</th>
                 <th>Ads active/tổng</th>
                 <th>Spend</th>
-                <th>{resultDefinition?.shortLabel ?? "Kết quả"}</th>
+                <th>{model.resultLabel}</th>
                 <th>Chi phí/KQ</th>
                 <th>Benchmark</th>
                 <th>Xu hướng</th>

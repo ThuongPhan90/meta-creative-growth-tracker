@@ -1,14 +1,13 @@
-import type { ReportingFreshness } from "@/components/ui/reporting-context";
 import type { LiveDeliverySummary } from "@/lib/db";
 import type { ReportingBarModel } from "@/lib/presentation/reporting-bar";
 import type { MetricDisplayPresets } from "@/lib/reporting/metric-preset";
 import type {
-  DeliveryMetricRow,
   DynamicResultMetricsModel,
   MetaBreakdownModel,
   ResultDefinition,
 } from "@/lib/reporting";
-import type { DashboardViewModel, CreativeRow } from "@/types/view-models";
+
+import type { OverviewCreativeWatchlistModel } from "./creative-watchlist-model";
 
 export type OverviewV3TrendPoint = {
   date: string;
@@ -26,9 +25,7 @@ export type OverviewV3Query = Record<
 >;
 
 export type OverviewV3Props = {
-  dashboard: DashboardViewModel;
-  creatives: CreativeRow[];
-  delivery: readonly DeliveryMetricRow[];
+  watchlist: OverviewCreativeWatchlistModel;
   liveDelivery?: LiveDeliverySummary;
   trend: OverviewV3TrendPoint[];
   connected: boolean;
@@ -43,7 +40,6 @@ export type OverviewV3Props = {
   attribution: string;
   actionReportTime: "impression" | "conversion" | "mixed";
   syncVersion: string;
-  freshness: ReportingFreshness;
   reportingBar: ReportingBarModel;
   resultMetrics: DynamicResultMetricsModel;
   previousResultMetrics?: DynamicResultMetricsModel;

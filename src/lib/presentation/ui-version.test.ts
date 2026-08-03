@@ -8,15 +8,18 @@ import {
 } from "./ui-version";
 
 describe("resolveUiVersion", () => {
-  it("keeps V2 as the safe server-side default", () => {
-    expect(resolveUiVersion(undefined)).toBe("v2");
-    expect(resolveUiVersion("unexpected")).toBe("v2");
+  it("uses V3 as the safe server-side default", () => {
+    expect(resolveUiVersion(undefined)).toBe("v3");
+    expect(resolveUiVersion("unexpected")).toBe("v3");
   });
 
-  it("accepts an explicit V3 server flag", () => {
+  it("accepts V3 and requires an explicit V2 rollback flag", () => {
     expect(resolveUiVersion("v3")).toBe("v3");
     expect(resolveUiVersion(" V3 ")).toBe("v3");
+    expect(resolveUiVersion("v2")).toBe("v2");
+    expect(resolveUiVersion(" V2 ")).toBe("v2");
     expect(isUiV3("v3")).toBe(true);
+    expect(isUiV3("v2")).toBe(false);
   });
 
   it("matches only the released V3 routes and their explicit detail routes", () => {

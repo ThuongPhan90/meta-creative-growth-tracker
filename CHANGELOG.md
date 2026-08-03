@@ -5,6 +5,35 @@ dự án theo Semantic Versioning khi phát hành public.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-03
+
+### Added
+
+- Bổ sung root global error boundary để lỗi render ngoài app shell vẫn có màn
+  phục hồi hợp lệ.
+
+### Changed
+
+- Đặt giao diện V3 làm mặc định cho local, bản clone và production; chỉ dùng
+  `UI_VERSION=v2` khi cần rollback tạm thời.
+- Đồng bộ tài liệu biến môi trường và connection profile với Vercel project
+  hiện hữu.
+- Tách snapshot ngữ cảnh khỏi dữ liệu Creative nặng, đồng thời tái sử dụng cùng
+  snapshot nền giữa app shell và page để tránh truy vấn trùng hoặc lệch dữ liệu.
+- Gộp truy vấn Creative Performance từ tối đa 26 lượt xuống một lượt có giới
+  hạn 5.001 dòng; dữ liệu hiển thị vẫn giữ ngưỡng an toàn 5.000 dòng.
+- Xếp hạng Watchlist trên server và chỉ gửi tối đa 20 Creative cần hiển thị sang
+  client; bảng Creative chi tiết phân trang 100 dòng sau khi lọc và sắp xếp.
+- Nâng Next.js và Lucide trong cùng dòng tương thích; khóa các dependency build
+  đã kiểm chứng để lockfile đáp ứng chính sách an toàn chuỗi cung ứng.
+
+### Removed
+
+- Xóa các view thế hệ cũ, test và CSS rating không còn được route/build hiện tại
+  tham chiếu.
+- Xóa sáu ảnh concept/QA V2 không còn tài liệu hoặc build tham chiếu; lịch sử Git
+  vẫn giữ khả năng khôi phục.
+
 ## [1.0.2] - 2026-07-24
 
 ### Changed

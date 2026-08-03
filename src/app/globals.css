@@ -5587,10 +5587,6 @@ a.v2-kpi:hover {
   font-size: 14px;
 }
 
-.v2-compare-grid .performance-rating {
-  margin-top: 10px;
-}
-
 @media (max-width: 1320px) {
   .v2-filter-bar {
     position: static;
@@ -5656,11 +5652,6 @@ a.v2-kpi:hover {
 
   .v2-ranked-list li {
     grid-template-columns: 20px 40px minmax(0, 1fr);
-  }
-
-  .v2-ranked-list li > .performance-rating {
-    grid-column: 3;
-    justify-self: start;
   }
 
   .v2-compare-grid {
@@ -6452,44 +6443,6 @@ a.v2-kpi:hover {
 .performance-cell {
   color: #6f7685;
   line-height: 1.4;
-}
-
-.performance-rating {
-  display: inline-flex;
-  align-items: center;
-  min-height: 22px;
-  padding: 3px 7px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-family: var(--font-geist-mono), monospace;
-  font-size: 12px;
-  font-weight: 720;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-}
-
-.performance-rating--good {
-  border-color: #c7d2fe;
-  color: #4338ca;
-  background: #eef2ff;
-}
-
-.performance-rating--stable {
-  border-color: #a5f0fc;
-  color: #0e7090;
-  background: #ecfdff;
-}
-
-.performance-rating--poor {
-  border-color: #fecdca;
-  color: #b42318;
-  background: #fef3f2;
-}
-
-.performance-rating--limited {
-  border-color: #fedf89;
-  color: #b54708;
-  background: #fffaeb;
 }
 
 .creative-no-results {

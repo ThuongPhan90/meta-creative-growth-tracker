@@ -1,16 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_RESULT_DEFINITIONS } from "@/lib/reporting/result-definition";
 
 const mocks = vi.hoisted(() => ({
-  getApplicationSnapshot: vi.fn(),
+  getApplicationContextSnapshot: vi.fn(),
   createTrackerRepository: vi.fn(),
   evaluateMetaConnectionLifecycle: vi.fn(() => "healthy"),
   SourcesV2: vi.fn(() => null),
 }));
 
 vi.mock("@/lib/app-data", () => ({
-  getApplicationSnapshot: mocks.getApplicationSnapshot,
+  getApplicationContextSnapshot: mocks.getApplicationContextSnapshot,
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -60,6 +60,7 @@ describe("Sources page result registry loading", () => {
   const listResultMappings = vi.fn();
 
   beforeEach(() => {
+    vi.stubEnv("UI_VERSION", "v2");
     vi.clearAllMocks();
     listResultDefinitions.mockResolvedValue(
       DEFAULT_RESULT_DEFINITIONS,
@@ -79,7 +80,11 @@ describe("Sources page result registry loading", () => {
       listResultDefinitions,
       listResultMappings,
     });
-    mocks.getApplicationSnapshot.mockResolvedValue(snapshot);
+    mocks.getApplicationContextSnapshot.mockResolvedValue(snapshot);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("hydrates live definitions from independent repository reads", async () => {

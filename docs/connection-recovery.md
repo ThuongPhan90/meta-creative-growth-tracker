@@ -119,7 +119,7 @@ Quyền read-only cần xin:
 Fast path:
 
 1. Đối chiếu toàn bộ `requiredEnvironmentVariables` trong
-   `ops/connection-profile.json`. Production phải có `APP_URL`,
+   `ops/connection-profile.json`. Production phải có `APP_URL`, `UI_VERSION`,
    `LEGAL_ENTITY_NAME`, `PRIVACY_CONTACT_EMAIL`, `META_APP_ID`,
    `META_APP_SECRET`, `META_GRAPH_VERSION`, `TOKEN_ENCRYPTION_KEY`,
    `SESSION_SECRET`, `OWNER_SETUP_SECRET`, `DATABASE_URL`, `CRON_SECRET` và

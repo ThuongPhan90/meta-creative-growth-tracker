@@ -1,5 +1,5 @@
 import { VersionedAppShell } from "@/components/versioned-app-shell";
-import { getApplicationSnapshot } from "@/lib/app-data";
+import { getApplicationContextSnapshot } from "@/lib/app-data";
 import { formatFreshnessLabel } from "@/lib/presentation/formatters";
 import { isUiV3 } from "@/lib/presentation/ui-version";
 
@@ -10,7 +10,7 @@ export default async function ProductLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const snapshot = await getApplicationSnapshot();
+  const snapshot = await getApplicationContextSnapshot();
   const shellProps = {
     demoMode: snapshot.demoMode,
     ownerName: snapshot.dashboard.ownerName,
