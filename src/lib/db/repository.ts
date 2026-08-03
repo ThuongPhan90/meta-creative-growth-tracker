@@ -6290,82 +6290,29 @@ export class TrackerRepository {
     const offset = Math.max(filters.offset ?? 0, 0);
     const rows = await this.query<DatabaseRow>(
       `
-        with ad_asset_counts as (
+        with scoped_metrics as (
           select
-            ad_link.ad_id,
-            min(asset_link.creative_asset_id) as only_asset_id,
-            count(distinct asset_link.creative_asset_id) as asset_count
-          from tracker.ad_creative_links ad_link
-          join tracker.creative_asset_links asset_link
-            on asset_link.creative_id = ad_link.creative_id
-          group by ad_link.ad_id
-        ),
-        attributable_metrics as (
-          select
-            metric.*,
-            metric.creative_asset_id as attributed_asset_id,
-            case
-              when lower(metric.impression_device) like 'android%' then 'ANDROID'
-              when lower(metric.impression_device) in (
-                'ios',
-                'iphone',
-                'ipad',
-                'ipod'
-              ) then 'IOS'
-              else 'UNKNOWN'
-            end as operating_system
-          from tracker.daily_metrics metric
-          where metric.metric_scope = 'asset'
-            and metric.creative_asset_id is not null
-
-          union all
-
-          select
-            metric.*,
-            counts.only_asset_id as attributed_asset_id,
-            case
-              when lower(metric.impression_device) like 'android%' then 'ANDROID'
-              when lower(metric.impression_device) in (
-                'ios',
-                'iphone',
-                'ipad',
-                'ipod'
-              ) then 'IOS'
-              else 'UNKNOWN'
-            end as operating_system
-          from tracker.daily_metrics metric
-          join ad_asset_counts counts
-            on counts.ad_id = metric.ad_id
-           and counts.asset_count = 1
-          where metric.metric_scope = 'ad'
-            and not exists (
-              select 1
-              from tracker.daily_metrics exact_metric
-              where exact_metric.ad_id = metric.ad_id
-                and exact_metric.metric_date = metric.metric_date
-                and exact_metric.metric_scope = 'asset'
-                and exact_metric.country = metric.country
-                and exact_metric.publisher_platform = metric.publisher_platform
-                and exact_metric.platform_position = metric.platform_position
-                and exact_metric.impression_device = metric.impression_device
-                and exact_metric.attribution_window = metric.attribution_window
-            )
-        ),
-        aggregate as (
-          select
-            metric.attributed_asset_id,
-            metric.operating_system,
+            metric.metric_date,
+            metric.ad_account_id,
+            metric.campaign_id,
+            metric.ad_id,
+            metric.creative_asset_id,
+            metric.metric_scope,
+            metric.country,
+            metric.publisher_platform,
+            metric.platform_position,
+            metric.impression_device,
+            metric.attribution_window,
             metric.currency,
-            sum(metric.spend) as spend,
-            sum(metric.impressions) as impressions,
-            sum(metric.reported_reach) as daily_reach_sum,
-            sum(metric.link_clicks) as link_clicks,
-            sum(metric.installs) as installs,
-            sum(metric.registrations) as registrations,
-            sum(metric.video_3s_views) as video_3s_views,
-            sum(metric.video_100_views) as video_100_views,
-            count(distinct metric.metric_date) as metric_days
-          from attributable_metrics metric
+            metric.spend,
+            metric.impressions,
+            metric.reported_reach,
+            metric.link_clicks,
+            metric.installs,
+            metric.registrations,
+            metric.video_3s_views,
+            metric.video_100_views
+          from tracker.daily_metrics metric
           join tracker.meta_ad_accounts account
             on account.ad_account_id = metric.ad_account_id
           where metric.metric_date between $2::date and $3::date
@@ -6412,6 +6359,89 @@ export class TrackerRepository {
                     = any($16::text[])
               )
             )
+        ),
+        ad_asset_counts as (
+          select
+            ad_link.ad_id,
+            min(asset_link.creative_asset_id) as only_asset_id,
+            count(distinct asset_link.creative_asset_id) as asset_count
+          from (
+            select distinct scoped.ad_id
+            from scoped_metrics scoped
+            where scoped.metric_scope = 'ad'
+          ) relevant_ad
+          join tracker.ad_creative_links ad_link
+            on ad_link.ad_id = relevant_ad.ad_id
+          join tracker.creative_asset_links asset_link
+            on asset_link.creative_id = ad_link.creative_id
+          group by ad_link.ad_id
+        ),
+        attributable_metrics as (
+          select
+            metric.*,
+            metric.creative_asset_id as attributed_asset_id,
+            case
+              when lower(metric.impression_device) like 'android%' then 'ANDROID'
+              when lower(metric.impression_device) in (
+                'ios',
+                'iphone',
+                'ipad',
+                'ipod'
+              ) then 'IOS'
+              else 'UNKNOWN'
+            end as operating_system
+          from scoped_metrics metric
+          where metric.metric_scope = 'asset'
+            and metric.creative_asset_id is not null
+
+          union all
+
+          select
+            metric.*,
+            counts.only_asset_id as attributed_asset_id,
+            case
+              when lower(metric.impression_device) like 'android%' then 'ANDROID'
+              when lower(metric.impression_device) in (
+                'ios',
+                'iphone',
+                'ipad',
+                'ipod'
+              ) then 'IOS'
+              else 'UNKNOWN'
+            end as operating_system
+          from scoped_metrics metric
+          join ad_asset_counts counts
+            on counts.ad_id = metric.ad_id
+           and counts.asset_count = 1
+          where metric.metric_scope = 'ad'
+            and not exists (
+              select 1
+              from tracker.daily_metrics exact_metric
+              where exact_metric.ad_id = metric.ad_id
+                and exact_metric.metric_date = metric.metric_date
+                and exact_metric.metric_scope = 'asset'
+                and exact_metric.country = metric.country
+                and exact_metric.publisher_platform = metric.publisher_platform
+                and exact_metric.platform_position = metric.platform_position
+                and exact_metric.impression_device = metric.impression_device
+                and exact_metric.attribution_window = metric.attribution_window
+            )
+        ),
+        aggregate as (
+          select
+            metric.attributed_asset_id,
+            metric.operating_system,
+            metric.currency,
+            sum(metric.spend) as spend,
+            sum(metric.impressions) as impressions,
+            sum(metric.reported_reach) as daily_reach_sum,
+            sum(metric.link_clicks) as link_clicks,
+            sum(metric.installs) as installs,
+            sum(metric.registrations) as registrations,
+            sum(metric.video_3s_views) as video_3s_views,
+            sum(metric.video_100_views) as video_100_views,
+            count(distinct metric.metric_date) as metric_days
+          from attributable_metrics metric
           group by
             metric.attributed_asset_id,
             metric.operating_system,
@@ -6511,84 +6541,31 @@ export class TrackerRepository {
             selection_order
           )
         ),
-        ad_asset_counts as (
-          select
-            ad_link.ad_id,
-            min(asset_link.creative_asset_id) as only_asset_id,
-            count(distinct asset_link.creative_asset_id) as asset_count
-          from tracker.ad_creative_links ad_link
-          join tracker.creative_asset_links asset_link
-            on asset_link.creative_id = ad_link.creative_id
-          group by ad_link.ad_id
-        ),
-        attributable_metrics as (
-          select
-            metric.*,
-            metric.creative_asset_id as attributed_asset_id,
-            case
-              when lower(metric.impression_device) like 'android%' then 'ANDROID'
-              when lower(metric.impression_device) in (
-                'ios',
-                'iphone',
-                'ipad',
-                'ipod'
-              ) then 'IOS'
-              else 'UNKNOWN'
-            end as operating_system
-          from tracker.daily_metrics metric
-          where metric.metric_scope = 'asset'
-            and metric.creative_asset_id is not null
-
-          union all
-
-          select
-            metric.*,
-            counts.only_asset_id as attributed_asset_id,
-            case
-              when lower(metric.impression_device) like 'android%' then 'ANDROID'
-              when lower(metric.impression_device) in (
-                'ios',
-                'iphone',
-                'ipad',
-                'ipod'
-              ) then 'IOS'
-              else 'UNKNOWN'
-            end as operating_system
-          from tracker.daily_metrics metric
-          join ad_asset_counts counts
-            on counts.ad_id = metric.ad_id
-           and counts.asset_count = 1
-          where metric.metric_scope = 'ad'
-            and not exists (
-              select 1
-              from tracker.daily_metrics exact_metric
-              where exact_metric.ad_id = metric.ad_id
-                and exact_metric.metric_date = metric.metric_date
-                and exact_metric.metric_scope = 'asset'
-                and exact_metric.country = metric.country
-                and exact_metric.publisher_platform = metric.publisher_platform
-                and exact_metric.platform_position = metric.platform_position
-                and exact_metric.impression_device = metric.impression_device
-                and exact_metric.attribution_window = metric.attribution_window
-            )
-        ),
-        aggregate as (
+        scoped_metrics as (
           select
             selected.meta_ad_account_id,
             selected.selection_order,
-            metric.attributed_asset_id,
-            metric.operating_system,
+            metric.metric_date,
+            metric.ad_account_id,
+            metric.campaign_id,
+            metric.ad_id,
+            metric.creative_asset_id,
+            metric.metric_scope,
+            metric.country,
+            metric.publisher_platform,
+            metric.platform_position,
+            metric.impression_device,
+            metric.attribution_window,
             metric.currency,
-            sum(metric.spend) as spend,
-            sum(metric.impressions) as impressions,
-            sum(metric.reported_reach) as daily_reach_sum,
-            sum(metric.link_clicks) as link_clicks,
-            sum(metric.installs) as installs,
-            sum(metric.registrations) as registrations,
-            sum(metric.video_3s_views) as video_3s_views,
-            sum(metric.video_100_views) as video_100_views,
-            count(distinct metric.metric_date) as metric_days
-          from attributable_metrics metric
+            metric.spend,
+            metric.impressions,
+            metric.reported_reach,
+            metric.link_clicks,
+            metric.installs,
+            metric.registrations,
+            metric.video_3s_views,
+            metric.video_100_views
+          from tracker.daily_metrics metric
           join tracker.meta_ad_accounts account
             on account.ad_account_id = metric.ad_account_id
           join selected_accounts selected
@@ -6633,9 +6610,94 @@ export class TrackerRepository {
                     = any($16::text[])
               )
             )
+        ),
+        ad_asset_counts as (
+          select
+            ad_link.ad_id,
+            min(asset_link.creative_asset_id) as only_asset_id,
+            count(distinct asset_link.creative_asset_id) as asset_count
+          from (
+            select distinct scoped.ad_id
+            from scoped_metrics scoped
+            where scoped.metric_scope = 'ad'
+          ) relevant_ad
+          join tracker.ad_creative_links ad_link
+            on ad_link.ad_id = relevant_ad.ad_id
+          join tracker.creative_asset_links asset_link
+            on asset_link.creative_id = ad_link.creative_id
+          group by ad_link.ad_id
+        ),
+        attributable_metrics as (
+          select
+            metric.*,
+            metric.creative_asset_id as attributed_asset_id,
+            case
+              when lower(metric.impression_device) like 'android%' then 'ANDROID'
+              when lower(metric.impression_device) in (
+                'ios',
+                'iphone',
+                'ipad',
+                'ipod'
+              ) then 'IOS'
+              else 'UNKNOWN'
+            end as operating_system
+          from scoped_metrics metric
+          where metric.metric_scope = 'asset'
+            and metric.creative_asset_id is not null
+
+          union all
+
+          select
+            metric.*,
+            counts.only_asset_id as attributed_asset_id,
+            case
+              when lower(metric.impression_device) like 'android%' then 'ANDROID'
+              when lower(metric.impression_device) in (
+                'ios',
+                'iphone',
+                'ipad',
+                'ipod'
+              ) then 'IOS'
+              else 'UNKNOWN'
+            end as operating_system
+          from scoped_metrics metric
+          join ad_asset_counts counts
+            on counts.ad_id = metric.ad_id
+           and counts.asset_count = 1
+          where metric.metric_scope = 'ad'
+            and not exists (
+              select 1
+              from tracker.daily_metrics exact_metric
+              where exact_metric.ad_id = metric.ad_id
+                and exact_metric.metric_date = metric.metric_date
+                and exact_metric.metric_scope = 'asset'
+                and exact_metric.country = metric.country
+                and exact_metric.publisher_platform = metric.publisher_platform
+                and exact_metric.platform_position = metric.platform_position
+                and exact_metric.impression_device = metric.impression_device
+                and exact_metric.attribution_window = metric.attribution_window
+            )
+        ),
+        aggregate as (
+          select
+            metric.meta_ad_account_id,
+            metric.selection_order,
+            metric.attributed_asset_id,
+            metric.operating_system,
+            metric.currency,
+            sum(metric.spend) as spend,
+            sum(metric.impressions) as impressions,
+            sum(metric.reported_reach) as daily_reach_sum,
+            sum(metric.link_clicks) as link_clicks,
+            sum(metric.installs) as installs,
+            sum(metric.registrations) as registrations,
+            sum(metric.video_3s_views) as video_3s_views,
+            sum(metric.video_100_views) as video_100_views,
+            count(distinct metric.metric_date) as metric_days
+          from attributable_metrics metric
           group by
-            selected.meta_ad_account_id,
-            selected.selection_order,
+            metric.meta_ad_account_id,
+            metric.selection_order,
             metric.attributed_asset_id,
             metric.operating_system,
             metric.currency

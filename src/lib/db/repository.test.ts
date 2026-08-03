@@ -2589,6 +2589,19 @@ describe("Ad account activity filters", () => {
 
     const [query, parameters] = unsafe.mock.calls[0];
     const normalized = compactSql(query);
+    expect(normalized).toContain("with scoped_metrics as");
+    expect(query.indexOf("scoped_metrics as")).toBeLessThan(
+      query.indexOf("attributable_metrics as"),
+    );
+    expect(query.indexOf("metric.metric_date between $2::date and $3::date")).toBeLessThan(
+      query.indexOf("attributable_metrics as"),
+    );
+    expect(normalized).toContain(
+      "select distinct scoped.ad_id from scoped_metrics scoped where scoped.metric_scope = 'ad'",
+    );
+    expect(normalized).not.toContain(
+      "select metric.* from tracker.daily_metrics metric",
+    );
     expect(normalized).toContain(
       "$9::text[] is null or account.meta_ad_account_id = any($9::text[])",
     );
@@ -2638,6 +2651,19 @@ describe("Ad account activity filters", () => {
     expect(unsafe).toHaveBeenCalledTimes(1);
     const [query, parameters] = unsafe.mock.calls[0];
     const normalized = compactSql(query);
+    expect(normalized).toContain("scoped_metrics as");
+    expect(query.indexOf("scoped_metrics as")).toBeLessThan(
+      query.indexOf("attributable_metrics as"),
+    );
+    expect(query.indexOf("metric.metric_date between $2::date and $3::date")).toBeLessThan(
+      query.indexOf("attributable_metrics as"),
+    );
+    expect(normalized).toContain(
+      "select distinct scoped.ad_id from scoped_metrics scoped where scoped.metric_scope = 'ad'",
+    );
+    expect(normalized).not.toContain(
+      "select metric.* from tracker.daily_metrics metric",
+    );
     expect(normalized).toContain(
       "from unnest($9::text[]) with ordinality",
     );

@@ -48,7 +48,6 @@ import {
   type CanonicalReportingScope,
   type CanonicalResultValue,
   type AccountCreativePerformance,
-  type CreativeFamilyFatigueComparison,
   type DynamicResultMetricsModel,
   type MetaBreakdownModel,
   type MetricDisplayPresets,
@@ -91,8 +90,8 @@ import type {
 } from "@/types/view-models";
 
 const MAX_VIEW_ROWS = 5_000;
-// Exact benchmark/fatigue evaluation keeps up to MAX_VIEW_ROWS per account
-// for three periods. Larger scopes remain visible, but fail closed on the
+// Exact benchmark evaluation keeps up to MAX_VIEW_ROWS per account for one
+// bounded window. Larger scopes remain visible, but fail closed on the
 // optional evaluation instead of risking an unbounded serverless payload.
 const MAX_EXACT_CREATIVE_EVALUATION_ACCOUNTS = 8;
 const DEFAULT_INSTALL_ACTION_TYPES = [
@@ -867,45 +866,6 @@ function benchmarkDateFrom(dateTo: string, windowDays: number) {
   return end.toISOString().slice(0, 10);
 }
 
-function splitFatigueComparisonRange(
-  dateFrom: string,
-  dateTo: string,
-) {
-  const start = new Date(`${dateFrom}T00:00:00.000Z`);
-  const end = new Date(`${dateTo}T00:00:00.000Z`);
-  const windowDays =
-    Math.floor((end.getTime() - start.getTime()) / 86_400_000) +
-    1;
-  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
-    return null;
-  }
-
-  // V5 uses two equal, auditable windows. A selected report needs at least
-  // 14 days for 7D-vs-7D, or 56 days for the optional 28D-vs-28D mode.
-  // Never split an arbitrary range into unequal halves just to show fatigue.
-  const comparisonDays = windowDays >= 56 ? 28 : windowDays >= 14 ? 7 : null;
-  if (!comparisonDays) return null;
-  const laterStart = new Date(end);
-  laterStart.setUTCDate(laterStart.getUTCDate() - comparisonDays + 1);
-  const earlierEnd = new Date(laterStart);
-  earlierEnd.setUTCDate(earlierEnd.getUTCDate() - 1);
-  const earlierStart = new Date(earlierEnd);
-  earlierStart.setUTCDate(earlierStart.getUTCDate() - comparisonDays + 1);
-  return {
-    windowDays: comparisonDays,
-    earlier: {
-      dateFrom: earlierStart.toISOString().slice(0, 10),
-      dateTo: earlierEnd.toISOString().slice(0, 10),
-      days: comparisonDays,
-    },
-    later: {
-      dateFrom: laterStart.toISOString().slice(0, 10),
-      dateTo,
-      days: comparisonDays,
-    },
-  };
-}
-
 function markLiveCanonicalCreativeResultsUnavailable(
   rows: readonly CreativeRow[],
 ): CreativeRow[] {
@@ -1007,12 +967,9 @@ async function enrichLiveCreativeRowsForReport({
       context.currencyMode === "single" &&
       requestedAccountIds.length <=
         MAX_EXACT_CREATIVE_EVALUATION_ACCOUNTS;
-    const fatigueRange = needsBenchmark
-      ? splitFatigueComparisonRange(dateFrom, dateTo)
-      : null;
     // Confirm the exact current-period result contract before starting any
     // optional benchmark work. If it fails, the catch below can fail closed
-    // without leaving six unrelated reads occupying the database pool.
+    // without starting the remaining benchmark reads.
     const actualResults =
       await repository.getCanonicalCreativeFamilyResultTotals({
         ...baseFilters,
@@ -1024,20 +981,21 @@ async function enrichLiveCreativeRowsForReport({
       });
     let benchmarkResults = actualResults;
     let benchmarkPerformance: AccountCreativePerformance[] = [];
-    let fatigueComparison:
-      | CreativeFamilyFatigueComparison
-      | undefined;
     if (needsBenchmark) {
       const benchmarkFrom = benchmarkDateFrom(
         dateTo,
         settings.benchmarkWindowDays,
       );
+      const benchmarkResultsPromise =
+        benchmarkFrom === dateFrom && !exactCampaignMetaId
+          ? Promise.resolve(actualResults)
+          : repository.getCanonicalCreativeFamilyResultTotals({
+              ...baseFilters,
+              dateFrom: benchmarkFrom,
+              dateTo,
+            });
       [benchmarkResults, benchmarkPerformance] = await Promise.all([
-        repository.getCanonicalCreativeFamilyResultTotals({
-          ...baseFilters,
-          dateFrom: benchmarkFrom,
-          dateTo,
-        }),
+        benchmarkResultsPromise,
         loadPerformanceByAccount({
           repository,
           connectionId,
@@ -1054,53 +1012,10 @@ async function enrichLiveCreativeRowsForReport({
         }),
       ]);
     }
-    if (fatigueRange) {
-      const loadPeriod = async ({
-        dateFrom: periodFrom,
-        dateTo: periodTo,
-        days,
-      }: {
-        dateFrom: string;
-        dateTo: string;
-        days: number;
-      }) => {
-        const [results, performance] = await Promise.all([
-          repository.getCanonicalCreativeFamilyResultTotals({
-            ...baseFilters,
-            dateFrom: periodFrom,
-            dateTo: periodTo,
-            ...(exactCampaignMetaId
-              ? { campaignMetaIds: [exactCampaignMetaId] }
-              : {}),
-          }),
-          loadPerformanceByAccount({
-            repository,
-            connectionId,
-            accountMetaIds: requestedAccountIds,
-            dateFrom: periodFrom,
-            dateTo: periodTo,
-            currency: effectiveCurrency,
-            campaignMetaId: exactCampaignMetaId,
-            attributionWindow: context.attributionSettingKey,
-            actionReportTime: context.actionReportTime,
-            syncVersion: context.syncVersion,
-            objectiveRawKeys: objectiveDatabaseKeys(
-              context.objectiveKey,
-            ),
-          }),
-        ]);
-        return { results, performance, days };
-      };
-      // Keep each two-query period bounded. The later period begins only after
-      // the earlier pair settles, so a failure cannot strand four more reads.
-      const earlier = await loadPeriod(fatigueRange.earlier);
-      const later = await loadPeriod(fatigueRange.later);
-      fatigueComparison = {
-        earlier,
-        later,
-        windowDays: fatigueRange.windowDays,
-      };
-    }
+    // Exact-period Reach at Creative Family grain is not in the current read
+    // model. The fatigue engine therefore always receives Frequency=null and
+    // must return `insufficient`; skip the four period reads until exact Reach
+    // exists instead of computing an outcome that cannot become evaluable.
     const accountBusinessIds = Object.fromEntries(
       (
         snapshot.reportingScope?.available.adAccounts ?? []
@@ -1139,7 +1054,6 @@ async function enrichLiveCreativeRowsForReport({
       context,
       definitions: enabledDefinitions,
       benchmarkWindowDays: settings.benchmarkWindowDays,
-      fatigueComparison,
       labels: {
         accountNames,
         businessNames,
@@ -1472,7 +1386,10 @@ export async function getCreativeRowsForReport({
     coverageRatio,
     snapshot.freshness.syncStatus === "partial",
   );
-  const creatives = reportContext
+  const hasMappedPerformance = mappedCreatives.some(
+    (creative) => creative.performance !== null,
+  );
+  const creatives = reportContext && hasMappedPerformance
     ? await enrichLiveCreativeRowsForReport({
         snapshot,
         repository,
