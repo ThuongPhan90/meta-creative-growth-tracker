@@ -72,6 +72,7 @@ import type {
 type DatabaseRow = Record<string, unknown>;
 const MAX_CREATIVE_LIBRARY_ROWS = 5_001;
 const MAX_CREATIVE_PERFORMANCE_ROWS = 5_001;
+const MAX_DATA_HEALTH_CREATIVE_ROWS = 5_000;
 
 interface IdRow extends DatabaseRow {
   internal_id: unknown;
@@ -6007,6 +6008,87 @@ export class TrackerRepository {
       pageIds: asStringArray(row.page_ids),
       lastUsedAt: asNullableIso(row.last_used_at),
       lastSeenAt: asIso(row.last_seen_at),
+    }));
+  }
+
+  /**
+   * Compact Creative identity graph for Data Health coverage and navigation.
+   * It intentionally omits library presentation fields and current-Ad usage,
+   * which are expensive and do not participate in any coverage denominator.
+   */
+  async listDataHealthCreativeReferences(connectionId: DatabaseId) {
+    const rows = await this.query<DatabaseRow>(
+      `
+        select
+          asset.creative_asset_id::text as creative_asset_id,
+          asset.creative_family_id,
+          asset.asset_key,
+          asset.asset_type,
+          asset.name,
+          coalesce(
+            array_agg(
+              distinct creative.meta_creative_id
+              order by creative.meta_creative_id
+            ) filter (where creative.meta_creative_id is not null),
+            '{}'::text[]
+          ) as meta_creative_ids,
+          coalesce(
+            array_agg(distinct ad.meta_ad_id order by ad.meta_ad_id)
+              filter (
+                where ad.meta_ad_id is not null
+                  and account.ad_account_id is not null
+              ),
+            '{}'::text[]
+          ) as ad_ids,
+          coalesce(
+            array_agg(
+              distinct campaign.meta_campaign_id
+              order by campaign.meta_campaign_id
+            ) filter (
+              where campaign.meta_campaign_id is not null
+                and account.ad_account_id is not null
+            ),
+            '{}'::text[]
+          ) as campaign_ids
+        from tracker.creative_assets asset
+        left join tracker.creative_asset_links asset_link
+          on asset_link.creative_asset_id = asset.creative_asset_id
+        left join tracker.meta_creatives creative
+          on creative.creative_id = asset_link.creative_id
+          and creative.connection_id = asset.connection_id
+        left join tracker.ad_creative_links ad_link
+          on ad_link.creative_id = creative.creative_id
+        left join tracker.meta_ads ad
+          on ad.ad_id = ad_link.ad_id
+        left join tracker.meta_ad_accounts account
+          on account.ad_account_id = ad.ad_account_id
+          and account.connection_id = asset.connection_id
+        left join tracker.meta_campaigns campaign
+          on campaign.campaign_id = ad.campaign_id
+          and campaign.ad_account_id = account.ad_account_id
+        where asset.connection_id = $1
+          and asset.is_active
+        group by asset.creative_asset_id
+        order by
+          asset.last_seen_at desc,
+          asset.creative_asset_id desc
+        limit $2
+      `,
+      [connectionId, MAX_DATA_HEALTH_CREATIVE_ROWS],
+    );
+
+    return rows.map((row) => ({
+      creativeAssetId: asId(row.creative_asset_id),
+      creativeFamilyId:
+        row.creative_family_id === null
+          ? undefined
+          : asId(row.creative_family_id),
+      assetKey: String(row.asset_key),
+      assetType: row.asset_type as CreativeLibraryItem["assetType"],
+      name: row.name === null ? null : String(row.name),
+      metaCreativeIds: asStringArray(row.meta_creative_ids),
+      adIds: asStringArray(row.ad_ids),
+      campaignIds: asStringArray(row.campaign_ids),
     }));
   }
 

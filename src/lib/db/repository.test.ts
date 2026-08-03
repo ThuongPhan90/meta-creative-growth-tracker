@@ -2275,6 +2275,52 @@ describe("Ad account activity filters", () => {
     ]);
   });
 
+  it("loads only the compact Creative identity graph for Data Health", async () => {
+    const unsafe = vi.fn().mockResolvedValue([
+      {
+        creative_asset_id: "9007199254740993",
+        creative_family_id: "cf_family_1",
+        asset_key: "video:video_1",
+        asset_type: "video",
+        name: "Creative One",
+        meta_creative_ids: ["creative_1"],
+        ad_ids: ["ad_1"],
+        campaign_ids: ["campaign_1"],
+      },
+    ]);
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.listDataHealthCreativeReferences("connection-1"),
+    ).resolves.toEqual([
+      {
+        creativeAssetId: "9007199254740993",
+        creativeFamilyId: "cf_family_1",
+        assetKey: "video:video_1",
+        assetType: "video",
+        name: "Creative One",
+        metaCreativeIds: ["creative_1"],
+        adIds: ["ad_1"],
+        campaignIds: ["campaign_1"],
+      },
+    ]);
+    const [query, parameters] = unsafe.mock.calls[0];
+    expect(query).not.toContain("creative_asset_usage");
+    expect(query).not.toContain("current_ad_usage");
+    expect(query).toContain("where asset.connection_id = $1");
+    expect(query).toContain(
+      "creative.connection_id = asset.connection_id",
+    );
+    expect(query).toContain(
+      "account.connection_id = asset.connection_id",
+    );
+    expect(query).toContain("asset.creative_asset_id::text");
+    expect(query).toContain("asset.creative_asset_id desc");
+    expect(parameters).toEqual(["connection-1", 5_000]);
+  });
+
   it("filters exact linked Account and Campaign IDs before the creative-library limit", async () => {
     const unsafe = vi.fn(
       async (_query: string, _parameters?: unknown[]) => {

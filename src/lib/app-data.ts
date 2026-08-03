@@ -620,8 +620,18 @@ async function loadCreativeLibrary(
   };
 }
 
-function dataHealthReferenceFromLibrary(
-  item: CreativeLibraryItem,
+function dataHealthReferenceFromIdentity(
+  item: Pick<
+    CreativeLibraryItem,
+    | "creativeAssetId"
+    | "creativeFamilyId"
+    | "assetKey"
+    | "assetType"
+    | "name"
+    | "metaCreativeIds"
+    | "adIds"
+    | "campaignIds"
+  >,
 ): DataHealthCreativeReference {
   const creativeFamilyId =
     item.creativeFamilyId ??
@@ -688,11 +698,18 @@ export async function getDataHealthCreativeReferences(
   }
 
   const repository = await repositoryForSnapshot(snapshot);
-  const library = await loadCreativeLibrary(
-    repository,
-    snapshot.connection.connectionId,
-  );
-  return library.items.map(dataHealthReferenceFromLibrary);
+  const identities =
+    typeof repository.listDataHealthCreativeReferences === "function"
+      ? await repository.listDataHealthCreativeReferences(
+          snapshot.connection.connectionId,
+        )
+      : (
+          await loadCreativeLibrary(
+            repository,
+            snapshot.connection.connectionId,
+          )
+        ).items;
+  return identities.map(dataHealthReferenceFromIdentity);
 }
 
 async function loadPerformance(

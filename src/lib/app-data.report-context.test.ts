@@ -939,6 +939,19 @@ describe("application snapshot Result registry", () => {
     vi.mocked(repository.listCreativeLibrary).mockResolvedValue([
       libraryItem,
     ]);
+    const listDataHealthCreativeReferences = vi.fn().mockResolvedValue([
+      {
+        creativeAssetId: libraryItem.creativeAssetId,
+        creativeFamilyId: libraryItem.creativeFamilyId,
+        assetKey: libraryItem.assetKey,
+        assetType: libraryItem.assetType,
+        name: libraryItem.name,
+        metaCreativeIds: libraryItem.metaCreativeIds,
+        adIds: libraryItem.adIds,
+        campaignIds: libraryItem.campaignIds,
+      },
+    ]);
+    Object.assign(repository, { listDataHealthCreativeReferences });
     databaseMocks.createTrackerRepository.mockResolvedValue(repository);
 
     const contextSnapshot = await getApplicationContextSnapshot();
@@ -952,11 +965,10 @@ describe("application snapshot Result registry", () => {
 
     expect(databaseMocks.createTrackerRepository).toHaveBeenCalledTimes(1);
     expect(contextSnapshot.connection?.status).toBe("needs_reauth");
-    expect(repository.listCreativeLibrary).toHaveBeenCalledWith({
-      connectionId: liveConnection.connectionId,
-      limit: 5_001,
-      offset: 0,
-    });
+    expect(listDataHealthCreativeReferences).toHaveBeenCalledWith(
+      liveConnection.connectionId,
+    );
+    expect(repository.listCreativeLibrary).not.toHaveBeenCalled();
     expect(repository.listCreativePerformance).not.toHaveBeenCalled();
     expect(references).toEqual([
       {
