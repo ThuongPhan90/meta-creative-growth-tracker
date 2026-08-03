@@ -197,6 +197,22 @@ beforeEach(() => {
 });
 
 describe("Overview page canonical reporting context", () => {
+  it("renders implicit safe defaults without a second full context request", async () => {
+    process.env.UI_VERSION = "v3";
+
+    const element = (await OverviewPage({
+      searchParams: Promise.resolve({
+        from: context.dateFrom,
+        to: context.dateTo,
+        objective: context.objectiveKey,
+      }),
+    })) as OverviewPageElement;
+
+    expect(mocks.redirect).not.toHaveBeenCalled();
+    expect(mocks.getApplicationContextSnapshot).toHaveBeenCalledOnce();
+    expect(element.props.query).toEqual(canonicalQuery);
+  });
+
   it("redirects all-objective URLs without a Result while preserving drawer and tab state", async () => {
     mocks.resolveApplicationReportContext.mockReturnValue({
       ...context,

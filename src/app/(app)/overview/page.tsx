@@ -191,7 +191,10 @@ export default async function OverviewPage({
     delete redirectQuery.notice;
   }
   const canonicalHref = overviewHref(redirectQuery);
-  if (overviewHref(query) !== canonicalHref) {
+  // Missing optional/default fields are safe to resolve server-side. Redirect
+  // only when invalid input was actually normalized; otherwise the first
+  // owner visit would execute the full context twice before rendering.
+  if (normalizationNotice && overviewHref(query) !== canonicalHref) {
     redirect(canonicalHref);
   }
   const canonicalQuery = { ...redirectQuery };

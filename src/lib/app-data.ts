@@ -451,6 +451,17 @@ export function resolveApplicationReportContext(
     explicitCurrency || selectedCurrencies.size === 1
       ? "single"
       : "split";
+  const latestSyncVersion =
+    snapshot.freshness.syncVersion ??
+    snapshot.syncRuns.find(
+      (run) => run.status === "success" || run.status === "partial",
+    )?.id ??
+    "never";
+  const requestedSyncVersion = firstQueryValue(query.sync_version);
+  const exactSyncVersion =
+    requestedSyncVersion?.trim().toLowerCase() === "latest"
+      ? latestSyncVersion
+      : query.sync_version;
 
   const context = resolveReportContext({
     query: {
@@ -465,7 +476,9 @@ export function resolveApplicationReportContext(
       compareMode: query.compare,
       attributionSettingKey: query.attribution,
       actionReportTime: query.action_report_time,
-      syncVersion: query.sync_version,
+      // `latest` is a URL convenience alias, never a persisted sync ID. Pin it
+      // before any report loader builds an exact `metric.sync_version` filter.
+      syncVersion: exactSyncVersion,
     },
     timeZone: snapshot.settings.timezone,
     lookbackDays: snapshot.settings.lookbackDays,
@@ -482,7 +495,7 @@ export function resolveApplicationReportContext(
         : {}),
       attributionSettingKey: "account_default",
       actionReportTime: "mixed",
-      syncVersion: snapshot.freshness.syncVersion ?? "latest",
+      syncVersion: latestSyncVersion,
     },
   });
   return context;
@@ -3109,7 +3122,23 @@ async function loadApplicationContextSnapshot(): Promise<ApplicationSnapshot> {
       };
     }
 
-    const databaseHealth = await readDatabaseHealth();
+    const repositoryPromise = createTrackerRepository();
+    const [
+      healthResult,
+      repositoryResult,
+      connectionResult,
+      settingsResult,
+    ] =
+      await Promise.allSettled([
+        readDatabaseHealth(),
+        repositoryPromise,
+        repositoryPromise.then((repository) =>
+          repository.getConnection(),
+        ),
+        repositoryPromise.then((repository) => repository.getSettings()),
+      ]);
+    const databaseHealth =
+      healthResult.status === "fulfilled" ? healthResult.value : null;
     if (!databaseHealth?.ok) {
       return {
         demoMode: false,
@@ -3148,8 +3177,14 @@ async function loadApplicationContextSnapshot(): Promise<ApplicationSnapshot> {
       };
     }
 
-    const repository = await createTrackerRepository();
-    const connection = await repository.getConnection();
+    if (repositoryResult.status === "rejected") {
+      throw repositoryResult.reason;
+    }
+    const repository = repositoryResult.value;
+    if (connectionResult.status === "rejected") {
+      throw connectionResult.reason;
+    }
+    const connection = connectionResult.value;
     if (!connection || session?.sub !== connection.connectionId) {
       return {
         demoMode: false,
@@ -3188,7 +3223,10 @@ async function loadApplicationContextSnapshot(): Promise<ApplicationSnapshot> {
       };
     }
 
-    const settings = await repository.getSettings();
+    if (settingsResult.status === "rejected") {
+      throw settingsResult.reason;
+    }
+    const settings = settingsResult.value;
     const dateTo = localDate(settings.reportingTimezone);
     const dateFrom = addDays(dateTo, -(settings.syncLookbackDays - 1));
     const [

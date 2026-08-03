@@ -570,6 +570,151 @@ describe("application snapshot Result registry", () => {
     ]);
   });
 
+  it("starts schema health, owner connection and settings in one database wave", async () => {
+    serverMocks.getRuntimeConfiguration.mockReturnValue(
+      runtimeConfiguration(false),
+    );
+    serverMocks.readPageOwnerSession.mockResolvedValue({
+      sub: liveConnection.connectionId,
+    });
+    const repository = liveSnapshotRepository([liveLeadDefinition]);
+    const storedSettings = await repository.getSettings();
+    vi.mocked(repository.getSettings).mockClear();
+    let resolveHealth!: (value: { ok: boolean }) => void;
+    let resolveConnection!: (value: MetaConnectionRecord) => void;
+    let resolveSettings!: (value: typeof storedSettings) => void;
+    serverMocks.readDatabaseHealth.mockReturnValue(
+      new Promise((resolve) => {
+        resolveHealth = resolve;
+      }),
+    );
+    vi.mocked(repository.getConnection).mockReturnValue(
+      new Promise((resolve) => {
+        resolveConnection = resolve;
+      }),
+    );
+    vi.mocked(repository.getSettings).mockReturnValue(
+      new Promise((resolve) => {
+        resolveSettings = resolve;
+      }),
+    );
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    const loading = getApplicationContextSnapshot();
+    await vi.waitFor(() => {
+      expect(serverMocks.readDatabaseHealth).toHaveBeenCalledOnce();
+      expect(repository.getConnection).toHaveBeenCalledOnce();
+      expect(repository.getSettings).toHaveBeenCalledOnce();
+    });
+
+    resolveHealth({ ok: true });
+    resolveConnection(liveConnection);
+    resolveSettings(storedSettings);
+    await expect(loading).resolves.toMatchObject({
+      authenticated: true,
+      connection: liveConnection,
+    });
+  });
+
+  it("keeps the database-unavailable snapshot when parallel owner reads fail", async () => {
+    serverMocks.getRuntimeConfiguration.mockReturnValue(
+      runtimeConfiguration(false),
+    );
+    serverMocks.readPageOwnerSession.mockResolvedValue({
+      sub: liveConnection.connectionId,
+    });
+    serverMocks.readDatabaseHealth.mockResolvedValue(null);
+    const repository = liveSnapshotRepository([liveLeadDefinition]);
+    vi.mocked(repository.getConnection).mockRejectedValue(
+      new Error("database unavailable"),
+    );
+    vi.mocked(repository.getSettings).mockRejectedValue(
+      new Error("database unavailable"),
+    );
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    await expect(getApplicationContextSnapshot()).resolves.toMatchObject({
+      authenticated: true,
+      connection: null,
+      assets: [],
+    });
+  });
+
+  it("keeps the database-unavailable snapshot when repository creation also fails", async () => {
+    serverMocks.getRuntimeConfiguration.mockReturnValue(
+      runtimeConfiguration(false),
+    );
+    serverMocks.readPageOwnerSession.mockResolvedValue({
+      sub: liveConnection.connectionId,
+    });
+    serverMocks.readDatabaseHealth.mockResolvedValue(null);
+    databaseMocks.createTrackerRepository.mockRejectedValue(
+      new Error("invalid database client"),
+    );
+
+    await expect(getApplicationContextSnapshot()).resolves.toMatchObject({
+      authenticated: true,
+      connection: null,
+      assets: [],
+    });
+  });
+
+  it("rejects an owner mismatch before surfacing a discarded settings failure", async () => {
+    serverMocks.getRuntimeConfiguration.mockReturnValue(
+      runtimeConfiguration(false),
+    );
+    serverMocks.readPageOwnerSession.mockResolvedValue({ sub: "other-owner" });
+    serverMocks.readDatabaseHealth.mockResolvedValue({ ok: true });
+    const repository = liveSnapshotRepository([liveLeadDefinition]);
+    vi.mocked(repository.getSettings).mockRejectedValue(
+      new Error("settings should be discarded"),
+    );
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    await expect(getApplicationContextSnapshot()).resolves.toMatchObject({
+      authenticated: false,
+      connection: null,
+      assets: [],
+    });
+  });
+
+  it("surfaces connection and settings failures after healthy owner validation", async () => {
+    serverMocks.getRuntimeConfiguration.mockReturnValue(
+      runtimeConfiguration(false),
+    );
+    serverMocks.readPageOwnerSession.mockResolvedValue({
+      sub: liveConnection.connectionId,
+    });
+    serverMocks.readDatabaseHealth.mockResolvedValue({ ok: true });
+    const connectionFailureRepository = liveSnapshotRepository([
+      liveLeadDefinition,
+    ]);
+    vi.mocked(connectionFailureRepository.getConnection).mockRejectedValue(
+      new Error("connection read failed"),
+    );
+    databaseMocks.createTrackerRepository.mockResolvedValue(
+      connectionFailureRepository,
+    );
+
+    await expect(getApplicationContextSnapshot()).rejects.toThrow(
+      "connection read failed",
+    );
+
+    const settingsFailureRepository = liveSnapshotRepository([
+      liveLeadDefinition,
+    ]);
+    vi.mocked(settingsFailureRepository.getSettings).mockRejectedValue(
+      new Error("settings read failed"),
+    );
+    databaseMocks.createTrackerRepository.mockResolvedValue(
+      settingsFailureRepository,
+    );
+
+    await expect(getApplicationContextSnapshot()).rejects.toThrow(
+      "settings read failed",
+    );
+  });
+
   it("loads operational health without full assets or Creative rows", async () => {
     serverMocks.getRuntimeConfiguration.mockReturnValue(
       runtimeConfiguration(false),
@@ -952,6 +1097,39 @@ describe("application snapshot Result registry", () => {
 });
 
 describe("application report context Result registry", () => {
+  it("pins the latest URL alias to the exact published sync version", () => {
+    const snapshot = connectedApplicationSnapshot([
+      runtimeSalesValueDefinition,
+    ]);
+
+    const context = resolveApplicationReportContext(snapshot, {
+      sync_version: " latest ",
+    });
+
+    expect(context.syncVersion).toBe("run-1");
+  });
+
+  it("falls back to the latest completed run when freshness has no version", () => {
+    const context = resolveApplicationReportContext(
+      applicationSnapshot([runtimeSalesValueDefinition]),
+      { sync_version: "latest" },
+    );
+
+    expect(context.syncVersion).toBe("demo-sync-03");
+  });
+
+  it("preserves an explicit historical sync version", () => {
+    const snapshot = connectedApplicationSnapshot([
+      runtimeSalesValueDefinition,
+    ]);
+
+    const context = resolveApplicationReportContext(snapshot, {
+      sync_version: "historical-run",
+    });
+
+    expect(context.syncVersion).toBe("historical-run");
+  });
+
   it("uses the snapshot registry to select the Objective default", () => {
     const context = resolveApplicationReportContext(
       applicationSnapshot([runtimeSalesValueDefinition]),
