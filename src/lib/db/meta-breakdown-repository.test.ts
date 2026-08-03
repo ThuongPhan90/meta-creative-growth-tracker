@@ -29,6 +29,7 @@ function compactSql(query: string) {
 
 type DynamicCreativeFixtureRow = {
   id: string;
+  campaignId: string;
   metricScope: "ad" | "asset" | "creative";
   allocationMethod: "exact" | "single_asset" | "unallocated";
   creativeAssetId: string | null;
@@ -134,16 +135,21 @@ describe("Meta breakdown repository", () => {
     expect(sql).toContain("left join objective_mapping objective");
     expect(sql).toContain("scoped_metrics as");
     expect(sql).toContain("metric.metric_scope in ('ad', 'asset')");
-    expect(sql).toContain("partition_totals as");
+    expect(sql).toContain("partition_facts as");
     expect(sql).toContain("partition_policy as");
     expect(sql).toContain("selected_metrics as");
+    expect(sql).toContain("over source_partition");
+    expect(sql).toContain("window source_partition as");
     expect(sql).toContain("partition.has_ad_scope and partition.has_asset_scope");
     expect(sql).toContain("partition.all_asset_rows_exact");
     expect(sql).toContain("then 'reconciled_asset'");
     expect(sql).toContain("when partition.has_ad_scope then 'primary_ad'");
-    expect(sql).toContain("partition.selected_scope = 'reconciled_asset'");
-    expect(sql).toContain("partition.selected_scope = 'primary_ad'");
-    expect(sql).toContain("partition.sync_version = metric.sync_version");
+    expect(sql).toContain("metric.selected_scope = 'reconciled_asset'");
+    expect(sql).toContain("metric.selected_scope = 'primary_ad'");
+    expect(sql).toContain("from partition_policy metric");
+    expect(sql).not.toContain("join partition_policy partition");
+    expect(sql.match(/from scoped_metrics metric/g)).toHaveLength(1);
+    expect(sql).toContain("metric.campaign_id");
     expect(sql).toContain("sum(metric.spend) as spend");
     expect(sql).toContain("metric.publisher_platform");
     expect(sql).toContain("metric.platform_position");
@@ -179,6 +185,7 @@ describe("Meta breakdown repository", () => {
     const dynamicCreativeRows: DynamicCreativeFixtureRow[] = [
       {
         id: "primary-ad",
+        campaignId: "campaign-a",
         metricScope: "ad",
         allocationMethod: "unallocated",
         creativeAssetId: null,
@@ -188,6 +195,7 @@ describe("Meta breakdown repository", () => {
       },
       {
         id: "legacy-creative",
+        campaignId: "campaign-a",
         metricScope: "creative",
         allocationMethod: "unallocated",
         creativeAssetId: null,
@@ -197,6 +205,7 @@ describe("Meta breakdown repository", () => {
       },
       {
         id: "asset-a",
+        campaignId: "campaign-a",
         metricScope: "asset",
         allocationMethod: "exact",
         creativeAssetId: "asset-a",
@@ -206,6 +215,7 @@ describe("Meta breakdown repository", () => {
       },
       {
         id: "asset-b",
+        campaignId: "campaign-a",
         metricScope: "asset",
         allocationMethod: "exact",
         creativeAssetId: "asset-b",
@@ -248,6 +258,26 @@ describe("Meta breakdown repository", () => {
       "primary-ad",
     ]);
 
+    const inconsistentCampaignRows = dynamicCreativeRows.map((row) =>
+      row.metricScope === "asset"
+        ? { ...row, campaignId: "campaign-b" }
+        : row,
+    );
+    expect(
+      selectFixturePartition(inconsistentCampaignRows).map((row) => ({
+        id: row.id,
+        campaignId: row.campaignId,
+      })),
+    ).toEqual([
+      { id: "asset-a", campaignId: "campaign-b" },
+      { id: "asset-b", campaignId: "campaign-b" },
+    ]);
+    expect(deliveryTotals(selectFixturePartition(inconsistentCampaignRows))).toEqual({
+      spend: 100,
+      impressions: 10_000,
+      linkClicks: 120,
+    });
+
     const unsafe = vi.fn(async () => []);
     const repository = new TrackerRepository({
       unsafe,
@@ -257,13 +287,16 @@ describe("Meta breakdown repository", () => {
     const [query] = unsafe.mock.calls[0] as unknown as [string, unknown[]];
     const sql = compactSql(query);
     expect(sql).toContain("metric.metric_scope in ('ad', 'asset')");
-    expect(sql).toContain("and metric.allocation_method = 'exact'");
-    expect(sql).toContain("and metric.creative_asset_id is not null");
+    expect(sql).toContain("metric.allocation_method = 'exact'");
+    expect(sql).toContain("metric.creative_asset_id is not null");
     expect(sql).toContain("abs(partition.asset_spend - partition.ad_spend)");
     expect(sql).toContain("abs(partition.asset_impressions - partition.ad_impressions)");
     expect(sql).toContain("abs(partition.asset_link_clicks - partition.ad_link_clicks)");
     expect(sql).toContain("then 'reconciled_asset'");
     expect(sql).toContain("when partition.has_ad_scope then 'primary_ad'");
+    expect(sql).toContain(
+      "window source_partition as ( partition by metric.ad_account_id, metric.ad_id",
+    );
   });
 
   it("rejects an invalid date range before querying", async () => {

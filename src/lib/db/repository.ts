@@ -6947,6 +6947,9 @@ export class TrackerRepository {
       throw new TypeError("Meta breakdown currency is invalid.");
     }
 
+    // `campaign_id` stays on each selected row but is deliberately not part of
+    // the source partition. A stale campaign ID must not make reconciled ad and
+    // asset delivery additive; output grouping happens only after scope choice.
     const rows = await this.query<DatabaseRow>(
       `
         with objective_mapping as (
@@ -6959,7 +6962,25 @@ export class TrackerRepository {
           )
         ),
         scoped_metrics as (
-          select metric.*
+          select
+            metric.ad_account_id,
+            metric.campaign_id,
+            metric.ad_id,
+            metric.metric_date,
+            metric.country,
+            metric.publisher_platform,
+            metric.platform_position,
+            metric.impression_device,
+            metric.attribution_window,
+            metric.action_report_time,
+            metric.sync_version,
+            upper(metric.currency) as currency,
+            metric.metric_scope,
+            metric.allocation_method,
+            metric.creative_asset_id,
+            metric.spend,
+            metric.impressions,
+            metric.link_clicks
           from tracker.daily_metrics metric
           join tracker.meta_ad_accounts account
             on account.ad_account_id = metric.ad_account_id
@@ -6992,52 +7013,51 @@ export class TrackerRepository {
               or upper(coalesce(campaign.objective, '')) = any($10::text[])
             )
         ),
-        partition_totals as (
+        partition_facts as (
           select
-            metric.ad_account_id,
-            metric.ad_id,
-            metric.metric_date,
-            metric.country,
-            metric.publisher_platform,
-            metric.platform_position,
-            metric.impression_device,
-            metric.attribution_window,
-            metric.action_report_time,
-            metric.sync_version,
-            upper(metric.currency) as currency,
-            bool_or(metric.metric_scope = 'ad') as has_ad_scope,
-            bool_or(metric.metric_scope = 'asset') as has_asset_scope,
+            metric.*,
+            bool_or(metric.metric_scope = 'ad')
+              over source_partition as has_ad_scope,
+            bool_or(metric.metric_scope = 'asset')
+              over source_partition as has_asset_scope,
             bool_and(
               metric.allocation_method = 'exact'
               and metric.creative_asset_id is not null
             ) filter (where metric.metric_scope = 'asset')
-              as all_asset_rows_exact,
+              over source_partition as all_asset_rows_exact,
             coalesce(
-              sum(metric.spend) filter (where metric.metric_scope = 'ad'),
+              sum(metric.spend) filter (where metric.metric_scope = 'ad')
+                over source_partition,
               0
             ) as ad_spend,
             coalesce(
-              sum(metric.impressions) filter (where metric.metric_scope = 'ad'),
+              sum(metric.impressions) filter (where metric.metric_scope = 'ad')
+                over source_partition,
               0
             ) as ad_impressions,
             coalesce(
-              sum(metric.link_clicks) filter (where metric.metric_scope = 'ad'),
+              sum(metric.link_clicks) filter (where metric.metric_scope = 'ad')
+                over source_partition,
               0
             ) as ad_link_clicks,
             coalesce(
-              sum(metric.spend) filter (where metric.metric_scope = 'asset'),
+              sum(metric.spend) filter (where metric.metric_scope = 'asset')
+                over source_partition,
               0
             ) as asset_spend,
             coalesce(
-              sum(metric.impressions) filter (where metric.metric_scope = 'asset'),
+              sum(metric.impressions) filter (where metric.metric_scope = 'asset')
+                over source_partition,
               0
             ) as asset_impressions,
             coalesce(
-              sum(metric.link_clicks) filter (where metric.metric_scope = 'asset'),
+              sum(metric.link_clicks) filter (where metric.metric_scope = 'asset')
+                over source_partition,
               0
             ) as asset_link_clicks
           from scoped_metrics metric
-          group by
+          window source_partition as (
+            partition by
             metric.ad_account_id,
             metric.ad_id,
             metric.metric_date,
@@ -7048,7 +7068,8 @@ export class TrackerRepository {
             metric.attribution_window,
             metric.action_report_time,
             metric.sync_version,
-            upper(metric.currency)
+            metric.currency
+          )
         ),
         partition_policy as (
           select
@@ -7066,33 +7087,21 @@ export class TrackerRepository {
               when partition.has_ad_scope then 'primary_ad'
               else 'asset_only'
             end as selected_scope
-          from partition_totals partition
+          from partition_facts partition
         ),
         selected_metrics as (
           select metric.*
-          from scoped_metrics metric
-          join partition_policy partition
-            on partition.ad_account_id = metric.ad_account_id
-            and partition.ad_id = metric.ad_id
-            and partition.metric_date = metric.metric_date
-            and partition.country = metric.country
-            and partition.publisher_platform = metric.publisher_platform
-            and partition.platform_position = metric.platform_position
-            and partition.impression_device = metric.impression_device
-            and partition.attribution_window = metric.attribution_window
-            and partition.action_report_time = metric.action_report_time
-            and partition.sync_version = metric.sync_version
-            and partition.currency = upper(metric.currency)
+          from partition_policy metric
           where (
-            partition.selected_scope = 'reconciled_asset'
+            metric.selected_scope = 'reconciled_asset'
             and metric.metric_scope = 'asset'
             and metric.allocation_method = 'exact'
             and metric.creative_asset_id is not null
           ) or (
-            partition.selected_scope = 'primary_ad'
+            metric.selected_scope = 'primary_ad'
             and metric.metric_scope = 'ad'
           ) or (
-            partition.selected_scope = 'asset_only'
+            metric.selected_scope = 'asset_only'
             and metric.metric_scope = 'asset'
           )
         )
@@ -7104,7 +7113,7 @@ export class TrackerRepository {
           objective.objective_key,
           metric.publisher_platform,
           metric.platform_position,
-          upper(metric.currency) as currency,
+          metric.currency,
           sum(metric.spend) as spend,
           sum(metric.impressions) as impressions,
           sum(metric.link_clicks) as link_clicks
@@ -7125,8 +7134,8 @@ export class TrackerRepository {
           objective.objective_key,
           metric.publisher_platform,
           metric.platform_position,
-          upper(metric.currency)
-        order by upper(metric.currency), account.meta_ad_account_id,
+          metric.currency
+        order by metric.currency, account.meta_ad_account_id,
           campaign.meta_campaign_id, metric.publisher_platform,
           metric.platform_position
       `,
