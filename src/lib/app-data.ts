@@ -2858,13 +2858,56 @@ function emptyDashboard(
   configuredForLive: boolean,
 ): DashboardViewModel {
   return {
-    ...demoDashboard,
     mode: "setup",
     ownerName,
     connectionLabel: "Chưa kết nối Meta",
     connectionDetail: configuredForLive
       ? "Nhập mã owner để mở Meta OAuth read-only."
       : "Hoàn tất Setup Wizard trước khi kết nối Meta.",
+    lastSyncAt: null,
+    hasDelivery: false,
+    counts: {
+      businesses: 0,
+      adAccounts: 0,
+      pages: 0,
+      creatives: 0,
+    },
+    events: [
+      {
+        name: "Install",
+        android: "locked",
+        ios: "locked",
+        total: null,
+      },
+      {
+        name: "CompleteRegistration",
+        android: "locked",
+        ios: "locked",
+        total: null,
+      },
+    ],
+    checklist: [
+      {
+        label: "App events trong Insights",
+        status: "locked",
+        detail: "Kết nối Meta để kiểm tra Install/Registration",
+      },
+      {
+        label: "Quyền truy cập",
+        status: "locked",
+        detail: "Chưa xác thực Meta",
+      },
+      {
+        label: "Event mapping",
+        status: "locked",
+        detail: "Chưa có dữ liệu Insights để xác minh",
+      },
+      {
+        label: "Lần đồng bộ cuối",
+        status: "locked",
+        detail: "Chưa có",
+      },
+    ],
   };
 }
 

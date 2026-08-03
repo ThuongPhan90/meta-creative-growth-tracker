@@ -243,6 +243,7 @@ function CoverageDrawer({
   creatives: DataHealthCreativeReference[];
   events: EventHealth[];
 }) {
+  const unavailable = dimension.state === "unavailable";
   const missing = dimension.missingFamilyIds.flatMap((familyId) => {
     const creative = creatives.find(
       (item) => (item.creativeFamilyId?.trim() || item.id) === familyId,
@@ -250,7 +251,7 @@ function CoverageDrawer({
     return creative ? [creative] : [];
   });
   const missingEvents =
-    dimension.key === "event"
+    dimension.key === "event" && !unavailable
       ? events.flatMap((event) =>
           (["android", "ios"] as const).flatMap((platform) =>
             event[platform] === "ready"
@@ -273,7 +274,7 @@ function CoverageDrawer({
 
   return (
     <EntityDrawer
-      title={`${dimension.label} · danh sách thiếu`}
+      title={`${dimension.label} · ${unavailable ? "chưa khả dụng" : "danh sách thiếu"}`}
       closeHref={href(query, { coverage: null })}
       restoreFocusId={`coverage-${dimension.key}`}
     >
@@ -284,7 +285,7 @@ function CoverageDrawer({
           <dl className="v2-detail-list">
             <div>
               <dt>Đã đủ</dt>
-              <dd>{formatNumber(dimension.covered)}</dd>
+              <dd>{unavailable ? "—" : formatNumber(dimension.covered)}</dd>
             </div>
             <div>
               <dt>
@@ -292,7 +293,7 @@ function CoverageDrawer({
                   ? "Số Family đã kiểm tra"
                   : "Tổng đã đồng bộ"}
               </dt>
-              <dd>{formatNumber(dimension.total)}</dd>
+              <dd>{unavailable ? "—" : formatNumber(dimension.total)}</dd>
             </div>
             <div>
               <dt>
@@ -300,19 +301,34 @@ function CoverageDrawer({
                   ? "Thiếu trong phần đã kiểm tra"
                   : "Còn thiếu"}
               </dt>
-              <dd>{formatNumber(Math.max(0, dimension.total - dimension.covered))}</dd>
+              <dd>
+                {unavailable
+                  ? "—"
+                  : formatNumber(
+                      Math.max(0, dimension.total - dimension.covered),
+                    )}
+              </dd>
             </div>
           </dl>
         </section>
         <section className="v2-drawer__section">
           <h3>
-            {dimension.key === "event"
+            {unavailable
+              ? "Chưa có mẫu số"
+              : dimension.key === "event"
               ? "Mapping cần kiểm tra"
               : isDeliveryCoverage
                 ? "Ad Account cần kiểm tra"
               : "Creative Family cần kiểm tra"}
           </h3>
-          {missing.length ? (
+          {unavailable ? (
+            <div className="v2-compact-empty">
+              <Clock3 aria-hidden="true" size={22} />
+              <p>
+                {dimension.detail} Hệ thống chưa thể đánh giá thiếu hoặc đủ.
+              </p>
+            </div>
+          ) : missing.length ? (
             <ul className="v2-affected-entities">
               {missing.map((creative) => (
                 <li key={creative.id}>
@@ -434,6 +450,18 @@ export function DataHealthV2({
     liveDelivery,
     { creativeReferencesTruncated },
   );
+  const visibleCoverage = connected
+    ? coverage
+    : coverage.map((dimension) => ({
+        ...dimension,
+        covered: 0,
+        total: 0,
+        ratio: null,
+        state: "unavailable" as const,
+        detail: "Kết nối Meta để xác định mẫu số coverage.",
+        missingFamilyIds: [],
+        missingAccountMetaIds: [],
+      }));
   const overall = overallStatus(latest, connected);
   const issues = buildDataHealthIssuesFromRuns(syncRuns);
   const selectedId = first(query.selected);
@@ -441,7 +469,7 @@ export function DataHealthV2({
     ? issues.find((issue) => issue.issueId === selectedId)
     : undefined;
   const selectedCoverageKey = first(query.coverage);
-  const selectedCoverage = coverage.find(
+  const selectedCoverage = visibleCoverage.find(
     (dimension) => dimension.key === selectedCoverageKey,
   );
   const permission = dashboard.checklist.find(
@@ -493,14 +521,20 @@ export function DataHealthV2({
           <ShieldCheck aria-hidden="true" size={19} />
           <span>Quyền truy cập</span>
           <strong>
-            {permission?.status === "ready" ? "Đầy đủ" : "Cần kiểm tra"}
+            {!connected
+              ? "Chưa khả dụng"
+              : permission?.status === "ready"
+                ? "Đầy đủ"
+                : "Cần kiểm tra"}
           </strong>
           <small>{permission?.detail ?? "Chưa có đánh giá"}</small>
         </article>
         <article>
           <Gauge aria-hidden="true" size={19} />
           <span>Coverage Kết quả &amp; Mapping</span>
-          <strong>{formatPercent(eventCoverage * 100, 0)}</strong>
+          <strong>
+            {connected ? formatPercent(eventCoverage * 100, 0) : "—"}
+          </strong>
           <small>{eventMapping?.detail ?? "Chưa có Kết quả & Mapping"}</small>
         </article>
         <article>
@@ -518,10 +552,13 @@ export function DataHealthV2({
         <article>
           <Database aria-hidden="true" size={19} />
           <span>Phạm vi nguồn</span>
-          <strong>{dashboard.counts.adAccounts} tài khoản</strong>
+          <strong>
+            {connected ? `${dashboard.counts.adAccounts} tài khoản` : "—"}
+          </strong>
           <small>
-            {dashboard.counts.creatives} Creative assets ·{" "}
-            {dashboard.counts.pages} Pages
+            {connected
+              ? `${dashboard.counts.creatives} Creative assets · ${dashboard.counts.pages} Pages`
+              : "Kết nối Meta để tải phạm vi nguồn"}
           </small>
         </article>
       </section>
@@ -538,7 +575,7 @@ export function DataHealthV2({
           <Gauge aria-hidden="true" size={18} />
         </div>
         <div className="v2-coverage-grid">
-          {coverage.map((dimension) => (
+          {visibleCoverage.map((dimension) => (
             <Link
               className={`v2-coverage-card${
                 dimension.ratio === null ||
