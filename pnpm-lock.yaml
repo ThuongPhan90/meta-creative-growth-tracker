@@ -14,7 +14,9 @@ overrides:
   vite: 7.3.6
 
 patchedDependencies:
-  minimatch@3.1.5: 954de456e446b5c709b4a9c0bf61296a7e529bfa91d5be50c82e4cb108fd3f52
+  minimatch@3.1.5:
+    hash: 954de456e446b5c709b4a9c0bf61296a7e529bfa91d5be50c82e4cb108fd3f52
+    path: patches/minimatch@3.1.5.patch
 
 importers:
 
