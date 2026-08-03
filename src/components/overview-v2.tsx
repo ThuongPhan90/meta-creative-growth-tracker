@@ -518,7 +518,11 @@ function kpiDirection(
   if (card.key === "spend" || card.key === "frequency") {
     return "neutral";
   }
-  if (card.key === "cpm" || card.label.toLowerCase().startsWith("cost/")) {
+  if (
+    card.key === "cpm" ||
+    card.key === "link_cpc" ||
+    card.label.toLowerCase().startsWith("cost/")
+  ) {
     return "lower";
   }
   return "higher";
@@ -532,9 +536,12 @@ function kpiMetric(card: ResultKpiCard): CreativeDrilldownMetric {
     card.key === "impressions" ||
     card.key === "reach" ||
     card.key === "frequency" ||
-    card.key === "cpm"
+    card.key === "cpm" ||
+    card.key === "link_clicks" ||
+    card.key === "link_ctr" ||
+    card.key === "link_cpc"
   ) {
-    return card.key;
+    return card.key === "link_cpc" ? "cpc_link" : card.key;
   }
   return "primary_result";
 }

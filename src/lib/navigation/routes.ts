@@ -9,7 +9,7 @@ export const PRIMARY_NAVIGATION = [
     id: "creatives",
     href: "/creatives",
     matchPath: "/creatives",
-    label: "Hiệu quả Creative",
+    label: "Creative Tracker",
   },
   {
     id: "library",
@@ -21,7 +21,7 @@ export const PRIMARY_NAVIGATION = [
     id: "campaigns",
     href: "/campaigns",
     matchPath: "/campaigns",
-    label: "Chiến dịch",
+    label: "Phân phối",
   },
   {
     id: "sources",

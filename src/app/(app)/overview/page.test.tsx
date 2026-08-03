@@ -8,11 +8,13 @@ const mocks = vi.hoisted(() => ({
   getOverviewTrendForReport: vi.fn(),
   getDeliveryForReport: vi.fn(),
   getLiveDeliveryForReport: vi.fn(),
+  getMetaBreakdownForReport: vi.fn(),
   getCanonicalResultsForReport: vi.fn(),
   buildApplicationResultMetrics: vi.fn(),
   buildReportingBarModel: vi.fn(),
   formatFreshnessFields: vi.fn(),
   redirect: vi.fn(),
+  overviewV3: vi.fn(() => null),
 }));
 
 vi.mock("@/lib/app-data", () => ({
@@ -23,6 +25,7 @@ vi.mock("@/lib/app-data", () => ({
   getOverviewTrendForReport: mocks.getOverviewTrendForReport,
   getDeliveryForReport: mocks.getDeliveryForReport,
   getLiveDeliveryForReport: mocks.getLiveDeliveryForReport,
+  getMetaBreakdownForReport: mocks.getMetaBreakdownForReport,
   getCanonicalResultsForReport:
     mocks.getCanonicalResultsForReport,
   buildApplicationResultMetrics:
@@ -36,6 +39,10 @@ vi.mock("@/components/creative-performance-v2", () => ({
 
 vi.mock("@/components/overview-v2", () => ({
   OverviewV2: vi.fn(() => null),
+}));
+
+vi.mock("@/features/overview-v3/overview-page", () => ({
+  OverviewV3: mocks.overviewV3,
 }));
 
 vi.mock("@/components/ui/entity-drawer", () => ({
@@ -126,6 +133,7 @@ const canonicalQuery = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  delete process.env.UI_VERSION;
   mocks.redirect.mockImplementation((href: string) => {
     throw new Error(`NEXT_REDIRECT:${href}`);
   });
@@ -140,6 +148,10 @@ beforeEach(() => {
   mocks.getLiveDeliveryForReport.mockResolvedValue({
     state: "unavailable",
     selectedAccountCount: 1,
+  });
+  mocks.getMetaBreakdownForReport.mockResolvedValue({
+    currency: null,
+    dimensions: {},
   });
   mocks.getCanonicalResultsForReport.mockResolvedValue({
     definitions: [],
@@ -367,5 +379,33 @@ describe("Overview page canonical reporting context", () => {
     expect(mocks.getDeliveryForReport).toHaveBeenCalledWith(
       expect.objectContaining({ campaignMetaId: "campaign_42" }),
     );
+    expect(mocks.getMetaBreakdownForReport).toHaveBeenCalledWith({
+      snapshot,
+      context: previousPeriodContext,
+      campaignMetaId: "campaign_42",
+    });
+  });
+
+  it("renders V3 only behind the server feature flag and keeps reset scope", async () => {
+    process.env.UI_VERSION = "v3";
+
+    const element = (await OverviewPage({
+      searchParams: Promise.resolve(canonicalQuery),
+    })) as ReactElement<{
+      resetHref: string;
+      resultDefinitions: unknown[];
+    }>;
+
+    expect(element.type).toBe(mocks.overviewV3);
+    expect(element.props.resultDefinitions).toEqual([]);
+    const reset = new URL(element.props.resetHref, "https://tracker.test");
+    expect(reset.pathname).toBe("/overview");
+    expect(reset.searchParams.get("business_ids")).toBe("business_1");
+    expect(reset.searchParams.get("account_ids")).toBe("act_1");
+    expect(reset.searchParams.get("attribution")).toBe("account_default");
+    expect(reset.searchParams.get("action_report_time")).toBe("mixed");
+    expect(reset.searchParams.get("sync_version")).toBe("20");
+    expect(reset.searchParams.has("objective")).toBe(false);
+    expect(reset.searchParams.has("currency")).toBe(false);
   });
 });

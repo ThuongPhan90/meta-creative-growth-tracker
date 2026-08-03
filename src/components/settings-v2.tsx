@@ -19,6 +19,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { SyncButton } from "@/components/sync-button";
+import { MetricDisplayPresetManager } from "@/components/metric-display-preset-manager";
 import type { TrackerSettings } from "@/lib/db";
 import { validateActionTypeMapping } from "@/lib/reporting/action-type-mapping";
 import {
@@ -55,7 +56,7 @@ type SettingsResultRegistry = {
 
 const TABS: { value: SettingsTab; label: string }[] = [
   { value: "reporting", label: "Báo cáo" },
-  { value: "results", label: "Kết quả & Mapping" },
+  { value: "results", label: "Chỉ số hiển thị" },
   { value: "benchmark", label: "Benchmark & Đánh giá" },
   { value: "sync", label: "Đồng bộ & Bảo mật" },
 ];
@@ -725,10 +726,11 @@ export function SettingsV2({
                 <ListChecks size={19} />
               </span>
               <div>
-                <h2>Kết quả &amp; Mapping</h2>
+                <h2>Chỉ số hiển thị</h2>
                 <p>
-                  Result Registry theo Objective; Install chỉ là một Result,
-                  không phải mặc định bắt buộc cho mọi buyer.
+                  Metric preset được lưu theo Objective + Primary Result; Result
+                  Mapping bên dưới quyết định dữ liệu Meta đủ điều kiện cho từng chỉ số.
+                  Install chỉ là một Result, không phải mặc định bắt buộc cho mọi buyer.
                 </p>
               </div>
             </div>
@@ -742,6 +744,30 @@ export function SettingsV2({
                 </div>
               </div>
             ) : null}
+
+            <div className="v2-source-note">
+              <SlidersHorizontal aria-hidden="true" size={18} />
+              <div>
+                <strong>Metric preset theo Objective + Primary Result</strong>
+                <p>
+                  Spend, Primary Result và Efficiency luôn được khóa. Bạn có thể
+                  thêm tối đa hai chỉ số phụ, khôi phục mặc định hoặc lưu preset
+                  từ nút “Tùy chỉnh chỉ số” trên Tổng quan.
+                </p>
+              </div>
+              <Link className="v2-link" href="/overview">
+                Mở Tổng quan
+              </Link>
+            </div>
+
+            <MetricDisplayPresetManager
+              key={initial.updatedAt}
+              initialPresets={initial.metricDisplayPresets}
+              initialUpdatedAt={initial.updatedAt}
+              resultDefinitions={resultRegistry.definitions}
+              currencyMode={reportingContract.currencyMode}
+              canSave={canSave}
+            />
 
             <div className="v2-security-grid">
               <article>

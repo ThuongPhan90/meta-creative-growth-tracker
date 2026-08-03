@@ -1,5 +1,11 @@
 import type { ReportingContext } from "./report-context";
 import { resolveObjective } from "./objective-registry";
+import {
+  getMetricDefinition,
+  type MetricCoverage,
+  type MetricDirection,
+  type MetricState,
+} from "./metric-registry";
 import type {
   ResultDefinition,
   ResultEfficiencyMetric,
@@ -42,6 +48,15 @@ export type ResultKpiCard = {
   formula: string;
   canonicalResultKey?: string;
   unavailableReason?: DynamicResultUnavailableReason;
+  /**
+   * Optional while V2 consumers migrate. New V6 consumers must prefer these
+   * per-metric semantics instead of inferring state from a page-level flag.
+   */
+  state?: MetricState;
+  reasonCode?: string;
+  direction?: MetricDirection;
+  coverage?: MetricCoverage;
+  dataThrough?: string | null;
 };
 
 export type DynamicResultTableColumn = {
@@ -64,6 +79,7 @@ export type DynamicResultUnavailableReason =
   | "all_objectives"
   | "result_not_selected"
   | "result_unavailable"
+  | "result_mapping_unavailable"
   | "split_currency"
   | "zero_result"
   | "zero_denominator";
@@ -102,6 +118,14 @@ export type CostSortMode =
 
 export type DynamicResultMetricsModel = {
   kpiCards: ResultKpiCard[];
+  /**
+   * Complete, deterministic candidate catalog for V6 Priority Metrics. It
+   * deliberately includes unavailable supporting Results so a customizer can
+   * show a precise disabled reason instead of silently omitting an option.
+   * Older V2 callers may not provide it, so consumers must fall back to
+   * `kpiCards` during the staged migration.
+   */
+  metricCandidates?: ResultKpiCard[];
   dynamicTableColumns: DynamicResultTableColumn[];
   scatter: DynamicResultScatter;
   crossObjectiveSections: CrossObjectiveSection[];
@@ -310,6 +334,48 @@ function efficiencyFormula(definition: ResultDefinition) {
   }
 }
 
+function directionForResult(definition: ResultDefinition): MetricDirection {
+  return definition.direction;
+}
+
+function directionForEfficiency(
+  definition: ResultDefinition,
+): MetricDirection {
+  return definition.efficiencyMetric === "cost_per_result"
+    ? "lower_is_better"
+    : definition.efficiencyMetric === "rate" ||
+        definition.efficiencyMetric === "roas"
+      ? "higher_is_better"
+      : "neutral";
+}
+
+/**
+ * V2 cards historically exposed only an optional `unavailableReason`. Keep
+ * that shape for compatibility, but attach a safe per-card state/direction so
+ * V3 never has to infer it from a shared report-level boolean.
+ */
+function withMetricSemantics(
+  card: ResultKpiCard,
+  direction: MetricDirection,
+): ResultKpiCard {
+  const state: MetricState =
+    card.value === null
+      ? "unavailable"
+      : card.value === 0
+        ? "zero"
+        : "ready";
+  return {
+    ...card,
+    state,
+    ...(card.unavailableReason
+      ? { reasonCode: card.unavailableReason }
+      : card.value === null
+        ? { reasonCode: "DATA_UNAVAILABLE" }
+        : {}),
+    direction,
+  };
+}
+
 function unavailabilityForEfficiency({
   definition,
   currencyMode,
@@ -348,14 +414,22 @@ function deliveryCards({
   spend,
   impressions,
   reach,
+  clicks,
 }: {
   context: ReportingContext;
   spend: number | null;
   impressions: number | null;
   reach: number | null;
+  clicks: number | null;
 }): ResultKpiCard[] {
   const monetaryAvailable = context.currencyMode === "single";
-  return [
+  const cpm = monetaryAvailable
+    ? ratio(spend === null ? null : spend * 1_000, impressions)
+    : null;
+  const linkCtr = ratio(clicks, impressions, true);
+  const linkCpc = monetaryAvailable ? ratio(spend, clicks) : null;
+  const frequency = ratio(impressions, reach);
+  return ([
     {
       key: "spend",
       label: "Spend",
@@ -376,6 +450,38 @@ function deliveryCards({
       formula: "Meta-reported Impressions",
     },
     {
+      key: "link_clicks",
+      label: "Link Clicks",
+      value: clicks,
+      valueType: "count",
+      attribution: "delivery",
+      formula: "Meta-reported Link Clicks",
+    },
+    {
+      key: "link_ctr",
+      label: "CTR (Link)",
+      value: linkCtr,
+      valueType: "percent",
+      attribution: "delivery",
+      formula: "Link Clicks / Impressions × 100",
+      ...(impressions === 0
+        ? { unavailableReason: "zero_denominator" as const }
+        : {}),
+    },
+    {
+      key: "link_cpc",
+      label: "CPC (Link)",
+      value: linkCpc,
+      valueType: "currency",
+      attribution: "delivery",
+      formula: "Spend / Link Clicks",
+      ...(monetaryAvailable
+        ? clicks === 0
+          ? { unavailableReason: "zero_denominator" as const }
+          : {}
+        : { unavailableReason: "split_currency" as const }),
+    },
+    {
       key: "reach",
       label: "Reach",
       value: reach,
@@ -386,28 +492,152 @@ function deliveryCards({
     {
       key: "frequency",
       label: "Frequency",
-      value: ratio(impressions, reach),
+      value: frequency,
       valueType: "ratio",
       attribution: "delivery",
       formula: "Impressions / period Reach",
+      ...(reach === 0
+        ? { unavailableReason: "zero_denominator" as const }
+        : {}),
     },
     {
       key: "cpm",
       label: "CPM",
-      value: monetaryAvailable
-        ? ratio(
-            spend === null ? null : spend * 1_000,
-            impressions,
-          )
-        : null,
+      value: cpm,
       valueType: "currency",
       attribution: "delivery",
       formula: "Spend / Impressions × 1,000",
       ...(monetaryAvailable
-        ? {}
+        ? impressions === 0
+          ? { unavailableReason: "zero_denominator" as const }
+          : {}
         : { unavailableReason: "split_currency" as const }),
     },
-  ];
+  ] satisfies ResultKpiCard[]).map((card) =>
+    withMetricSemantics(
+      card,
+      getMetricDefinition(card.key)?.direction ?? "neutral",
+    ),
+  );
+}
+
+function displayResultLabel(definition: ResultDefinition) {
+  return definition.canonicalKey === "purchase_value"
+    ? "Purchase Value (Meta)"
+    : definition.label;
+}
+
+function displayEfficiencyLabel(definition: ResultDefinition) {
+  return definition.efficiencyMetric === "roas"
+    ? "ROAS (Meta)"
+    : efficiencyLabel(definition);
+}
+
+/**
+ * Builds the V6 candidate catalog independently of the current primary
+ * result. This is what makes Purchase Value/ROAS and Registration available
+ * as supporting metrics without changing the report's Primary Result.
+ */
+function buildResultMetricCandidates({
+  context,
+  definitions,
+  canonicalResults,
+  spend,
+  clicks,
+  value,
+}: {
+  context: ReportingContext;
+  definitions: readonly ResultDefinition[];
+  canonicalResults: readonly CanonicalResultValue[];
+  spend: number | null;
+  clicks: number | null;
+  value: number | null;
+}): ResultKpiCard[] {
+  if (context.objectiveKey === "all") return [];
+
+  const candidates = definitions
+    .filter(
+      (definition) =>
+        definition.enabled &&
+        definition.objectiveKeys.includes(context.objectiveKey),
+    )
+    .sort((left, right) => {
+      if (left.canonicalKey === context.primaryResultKey) return -1;
+      if (right.canonicalKey === context.primaryResultKey) return 1;
+      return left.label.localeCompare(right.label);
+    });
+
+  return candidates.flatMap((definition) => {
+    const result = canonicalResults.find(
+      (item) =>
+        item.objectiveKey === context.objectiveKey &&
+        item.canonicalKey === definition.canonicalKey,
+    );
+    const mappingConfigured =
+      result?.configured === true ||
+      result?.hasData === true ||
+      result?.value !== null;
+    const resultValue = finiteNonNegative(result?.value);
+    const resultUnavailableReason: DynamicResultUnavailableReason | undefined =
+      !mappingConfigured
+        ? "result_mapping_unavailable"
+        : resultValue === null
+          ? "result_unavailable"
+          : undefined;
+    const resultCard = withMetricSemantics(
+      {
+        key: `result:${definition.canonicalKey}`,
+        label: displayResultLabel(definition),
+        value: resultUnavailableReason ? null : resultValue,
+        valueType: definition.unit,
+        attribution: resultAttribution(definition),
+        formula: resultFormula(definition),
+        canonicalResultKey: definition.canonicalKey,
+        ...(resultUnavailableReason
+          ? { unavailableReason: resultUnavailableReason }
+          : {}),
+      },
+      directionForResult(definition),
+    );
+
+    if (definition.efficiencyMetric === "none") {
+      return [resultCard];
+    }
+
+    const efficiencyUnavailableReason = resultUnavailableReason ??
+      unavailabilityForEfficiency({
+        definition,
+        currencyMode: context.currencyMode,
+        resultValue,
+        clicks,
+      });
+    const label = displayEfficiencyLabel(definition);
+    const efficiencyCard = withMetricSemantics(
+      {
+        key: `efficiency:${definition.canonicalKey}`,
+        label: label ?? definition.label,
+        value: efficiencyUnavailableReason
+          ? null
+          : efficiencyValue({
+              definition,
+              resultValue,
+              spend,
+              clicks,
+              value,
+              currencyMode: context.currencyMode,
+            }),
+        valueType: efficiencyType(definition.efficiencyMetric),
+        attribution: resultAttribution(definition),
+        formula: efficiencyFormula(definition),
+        canonicalResultKey: definition.canonicalKey,
+        ...(efficiencyUnavailableReason
+          ? { unavailableReason: efficiencyUnavailableReason }
+          : {}),
+      },
+      directionForEfficiency(definition),
+    );
+    return [resultCard, efficiencyCard];
+  });
 }
 
 export function buildDynamicResultMetrics({
@@ -471,6 +701,7 @@ export function buildDynamicResultMetrics({
     spend: safeSpend,
     impressions: safeImpressions,
     reach: safeReach,
+    clicks: safeClicks,
   });
 
   if (primaryDefinition && primaryAvailable) {
@@ -483,15 +714,20 @@ export function buildDynamicResultMetrics({
       existingDeliveryCard.canonicalResultKey =
         primaryDefinition.canonicalKey;
     } else {
-      kpiCards.push({
-        key: `result:${primaryDefinition.canonicalKey}`,
-        label: primaryDefinition.label,
-        value: finiteNonNegative(primaryValue.value),
-        valueType: primaryDefinition.unit,
-        attribution: resultAttribution(primaryDefinition),
-        formula: resultFormula(primaryDefinition),
-        canonicalResultKey: primaryDefinition.canonicalKey,
-      });
+      kpiCards.push(
+        withMetricSemantics(
+          {
+            key: `result:${primaryDefinition.canonicalKey}`,
+            label: primaryDefinition.label,
+            value: finiteNonNegative(primaryValue.value),
+            valueType: primaryDefinition.unit,
+            attribution: resultAttribution(primaryDefinition),
+            formula: resultFormula(primaryDefinition),
+            canonicalResultKey: primaryDefinition.canonicalKey,
+          },
+          directionForResult(primaryDefinition),
+        ),
+      );
     }
     const label = efficiencyLabel(primaryDefinition);
     if (label) {
@@ -501,25 +737,30 @@ export function buildDynamicResultMetrics({
         resultValue: finiteNonNegative(primaryValue.value),
         clicks: safeClicks,
       });
-      kpiCards.push({
-        key: `efficiency:${primaryDefinition.canonicalKey}`,
-        label,
-        value: efficiencyValue({
-          definition: primaryDefinition,
-          resultValue: finiteNonNegative(primaryValue.value),
-          spend: safeSpend,
-          clicks: safeClicks,
-          value: safeValue,
-          currencyMode: context.currencyMode,
-        }),
-        valueType: efficiencyType(
-          primaryDefinition.efficiencyMetric,
+      kpiCards.push(
+        withMetricSemantics(
+          {
+            key: `efficiency:${primaryDefinition.canonicalKey}`,
+            label,
+            value: efficiencyValue({
+              definition: primaryDefinition,
+              resultValue: finiteNonNegative(primaryValue.value),
+              spend: safeSpend,
+              clicks: safeClicks,
+              value: safeValue,
+              currencyMode: context.currencyMode,
+            }),
+            valueType: efficiencyType(
+              primaryDefinition.efficiencyMetric,
+            ),
+            attribution: resultAttribution(primaryDefinition),
+            formula: efficiencyFormula(primaryDefinition),
+            canonicalResultKey: primaryDefinition.canonicalKey,
+            ...(unavailableReason ? { unavailableReason } : {}),
+          },
+          directionForEfficiency(primaryDefinition),
         ),
-        attribution: resultAttribution(primaryDefinition),
-        formula: efficiencyFormula(primaryDefinition),
-        canonicalResultKey: primaryDefinition.canonicalKey,
-        ...(unavailableReason ? { unavailableReason } : {}),
-      });
+      );
     }
   }
 
@@ -709,11 +950,26 @@ export function buildDynamicResultMetrics({
       : context.currencyMode === "split"
         ? "disabled_split_currency"
         : primaryAvailable && availableDefinitions.length === 1
-          ? "single_result"
+        ? "single_result"
           : "disabled_no_result";
+
+  const metricCandidateMap = new Map<string, ResultKpiCard>(
+    kpiCards.map((card) => [card.key, card]),
+  );
+  for (const candidate of buildResultMetricCandidates({
+    context,
+    definitions,
+    canonicalResults,
+    spend: safeSpend,
+    clicks: safeClicks,
+    value: safeValue,
+  })) {
+    metricCandidateMap.set(candidate.key, candidate);
+  }
 
   return {
     kpiCards,
+    metricCandidates: [...metricCandidateMap.values()],
     dynamicTableColumns,
     scatter,
     crossObjectiveSections,

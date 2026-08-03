@@ -1,4 +1,5 @@
 import { CreativeLibraryV2 } from "@/components/creative-library-v2";
+import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import {
   buildApplicationResultMetrics,
   getApplicationSnapshot,
@@ -8,6 +9,7 @@ import {
 } from "@/lib/app-data";
 import { formatFreshnessFields } from "@/lib/presentation/freshness-presentation";
 import { buildReportingBarModel } from "@/lib/presentation/reporting-bar";
+import { isUiV3 } from "@/lib/presentation/ui-version";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +46,7 @@ export default async function LibraryPage({
     getCanonicalResultsForReport({ snapshot, context }),
   ]);
 
-  return (
+  const content = (
     <CreativeLibraryV2
       creatives={report.creatives}
       truncated={report.truncated}
@@ -94,5 +96,11 @@ export default async function LibraryPage({
           : { canonicalResults: canonicalResults.values }),
       })}
     />
+  );
+
+  return isUiV3() ? (
+    <V3SurfacePage surface="library">{content}</V3SurfacePage>
+  ) : (
+    content
   );
 }

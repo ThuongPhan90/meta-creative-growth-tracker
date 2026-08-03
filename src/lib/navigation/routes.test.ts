@@ -10,9 +10,9 @@ describe("primary navigation", () => {
       PRIMARY_NAVIGATION.map(({ href, label }) => ({ href, label })),
     ).toEqual([
       { href: "/overview", label: "Tổng quan" },
-      { href: "/creatives", label: "Hiệu quả Creative" },
+      { href: "/creatives", label: "Creative Tracker" },
       { href: "/library", label: "Thư viện Creative" },
-      { href: "/campaigns", label: "Chiến dịch" },
+      { href: "/campaigns", label: "Phân phối" },
       { href: "/sources?tab=connection", label: "Nguồn dữ liệu" },
       { href: "/data-health", label: "Chất lượng dữ liệu" },
       { href: "/settings?tab=reporting", label: "Cài đặt" },

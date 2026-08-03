@@ -2,6 +2,7 @@ import {
   CreativeDrawerContent,
   groupCreativeFamiliesForView,
 } from "@/components/creative-performance-v2";
+import { OverviewV3 } from "@/features/overview-v3/overview-page";
 import { OverviewV2 } from "@/components/overview-v2";
 import { EntityDrawer } from "@/components/ui/entity-drawer";
 import {
@@ -11,12 +12,14 @@ import {
   getCreativeRowsForReport,
   getDeliveryForReport,
   getLiveDeliveryForReport,
+  getMetaBreakdownForReport,
   getOverviewTrendForReport,
   resolveApplicationReportContext,
 } from "@/lib/app-data";
 import { addReportDays } from "@/lib/reporting";
 import { formatFreshnessFields } from "@/lib/presentation/freshness-presentation";
 import { buildReportingBarModel } from "@/lib/presentation/reporting-bar";
+import { isUiV3 } from "@/lib/presentation/ui-version";
 import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
@@ -140,6 +143,27 @@ function withoutDrawer(
   return `/overview${params.size ? `?${params.toString()}` : ""}`;
 }
 
+/** Reset preserves scope and immutable reporting context, never a stale drawer. */
+function resetOverviewHref(
+  query: Record<string, string | string[] | undefined>,
+) {
+  const keep = new Set([
+    "business_ids",
+    "account_ids",
+    "account",
+    "attribution",
+    "action_report_time",
+    "sync_version",
+  ]);
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (!keep.has(key)) continue;
+    const selected = first(value);
+    if (selected) params.set(key, selected);
+  }
+  return `/overview${params.size ? `?${params.toString()}` : ""}`;
+}
+
 export default async function OverviewPage({
   searchParams,
 }: {
@@ -191,29 +215,16 @@ export default async function OverviewPage({
     previousDateTo,
     -(periodDays - 1),
   );
-  const [report, trend, previousDelivery, canonicalResults, liveDelivery] =
-    await Promise.all([
-    getCreativeRowsForReport(reportFilters),
-    getOverviewTrendForReport(reportFilters),
+  const canonicalResultsPromise = getCanonicalResultsForReport({
+    snapshot,
+    context,
+    ...(campaignMetaId
+      ? { campaignMetaIds: [campaignMetaId] }
+      : {}),
+  });
+  const previousCanonicalResultsPromise =
     context.compare === "previous_period"
-      ? getDeliveryForReport({
-          ...reportFilters,
-          dateFrom: previousDateFrom,
-          dateTo: previousDateTo,
-        })
-      : Promise.resolve([]),
-    getCanonicalResultsForReport({
-      snapshot,
-      context,
-      ...(campaignMetaId
-        ? { campaignMetaIds: [campaignMetaId] }
-        : {}),
-    }),
-    getLiveDeliveryForReport({ snapshot, context }),
-  ]);
-  const previousCanonicalResults =
-    context.compare === "previous_period"
-      ? await getCanonicalResultsForReport({
+      ? getCanonicalResultsForReport({
           snapshot,
           context: {
             ...context,
@@ -224,7 +235,35 @@ export default async function OverviewPage({
             ? { campaignMetaIds: [campaignMetaId] }
             : {}),
         })
-      : null;
+      : Promise.resolve(null);
+  const metaBreakdownPromise = getMetaBreakdownForReport({
+    snapshot,
+    context,
+    ...(campaignMetaId ? { campaignMetaId } : {}),
+  });
+  const [
+    report,
+    trend,
+    previousDelivery,
+    canonicalResults,
+    liveDelivery,
+    previousCanonicalResults,
+    metaBreakdown,
+  ] = await Promise.all([
+    getCreativeRowsForReport(reportFilters),
+    getOverviewTrendForReport(reportFilters),
+    context.compare === "previous_period"
+      ? getDeliveryForReport({
+          ...reportFilters,
+          dateFrom: previousDateFrom,
+          dateTo: previousDateTo,
+        })
+      : Promise.resolve([]),
+    canonicalResultsPromise,
+    getLiveDeliveryForReport({ snapshot, context }),
+    previousCanonicalResultsPromise,
+    metaBreakdownPromise,
+  ]);
   const families = groupCreativeFamiliesForView(report.creatives);
   const selectedId = first(canonicalQuery.selected);
   const selected = selectedId
@@ -266,77 +305,92 @@ export default async function OverviewPage({
       })
     : undefined;
 
-  return (
-    <OverviewV2
-      dashboard={snapshot.dashboard}
-      creatives={report.creatives}
-      delivery={report.delivery}
-      liveDelivery={liveDelivery}
-      trend={trend}
-      connected={connected}
-      query={canonicalQuery}
-      dateFrom={context.dateFrom}
-      dateTo={context.dateTo}
-      account={context.account}
-      reportingCurrency={context.currency}
-      currencyOptions={[
-        ...new Set(
-          snapshot.assets.flatMap((asset) =>
-            asset.kind === "Ad Account" && asset.currency
-              ? [asset.currency]
-              : [],
-          ),
-        ),
-      ]}
-      compare={context.compareMode}
-      accounts={snapshot.assets
-        .filter((asset) => asset.kind === "Ad Account")
-        .map((asset) => ({ id: asset.id, name: asset.name }))}
-      freshness={formatFreshnessFields(
-        snapshot.freshness,
-        snapshot.settings.timezone,
-      )}
-      reportingBar={buildReportingBarModel(
-        snapshot.reportingScope,
-        context,
-        {
-          persistScope:
-            !snapshot.demoMode &&
-            snapshot.authenticated &&
-            Boolean(snapshot.connection),
-        },
-        canonicalResults.definitions,
-      )}
-      resultMetrics={resultMetrics}
-      previousResultMetrics={previousResultMetrics}
-      reportWarnings={[
-        ...new Set([
-          ...(requestedNotice
-            ? [OVERVIEW_FLASH_NOTICE_MESSAGES[requestedNotice]]
-            : []),
-          ...context.warnings.map(contextWarningMessage),
-          ...(canonicalResults.warning
-            ? [canonicalResults.warning]
-            : []),
-        ]),
-      ]}
-      selectedDrawer={
-        selected ? (
-          <EntityDrawer
-            title={`Chi tiết ${selected.name}`}
-            closeHref={withoutDrawer(canonicalQuery)}
-            restoreFocusId={selected.id}
-            width="wide"
-          >
-            <CreativeDrawerContent
-              family={selected}
-              query={canonicalQuery}
-              resultMetrics={resultMetrics}
-              originPathname="/overview"
-            />
-          </EntityDrawer>
-        ) : null
-      }
-    />
+  const reportingBar = buildReportingBarModel(
+    snapshot.reportingScope,
+    context,
+    {
+      persistScope:
+        !snapshot.demoMode &&
+        snapshot.authenticated &&
+        Boolean(snapshot.connection),
+    },
+    canonicalResults.definitions,
   );
+  const reportWarnings = [
+    ...new Set([
+      ...(requestedNotice
+        ? [OVERVIEW_FLASH_NOTICE_MESSAGES[requestedNotice]]
+        : []),
+      ...context.warnings.map(contextWarningMessage),
+      ...(canonicalResults.warning ? [canonicalResults.warning] : []),
+    ]),
+  ];
+  const selectedDrawer = selected ? (
+    <EntityDrawer
+      title={`Chi tiết ${selected.name}`}
+      closeHref={withoutDrawer(canonicalQuery)}
+      restoreFocusId={selected.id}
+      width="wide"
+    >
+      <CreativeDrawerContent
+        family={selected}
+        query={canonicalQuery}
+        resultMetrics={resultMetrics}
+        originPathname="/overview"
+      />
+    </EntityDrawer>
+  ) : null;
+  const overviewProps = {
+    dashboard: snapshot.dashboard,
+    creatives: report.creatives,
+    delivery: report.delivery,
+    liveDelivery,
+    trend,
+    connected,
+    query: canonicalQuery,
+    dateFrom: context.dateFrom,
+    dateTo: context.dateTo,
+    account: context.account,
+    reportingCurrency: context.currency,
+    currencyOptions: [
+      ...new Set(
+        snapshot.assets.flatMap((asset) =>
+          asset.kind === "Ad Account" && asset.currency
+            ? [asset.currency]
+            : [],
+        ),
+      ),
+    ],
+    compare: context.compareMode,
+    attribution: context.attributionSettingKey,
+    actionReportTime: context.actionReportTime,
+    syncVersion: context.syncVersion,
+    accounts: snapshot.assets
+      .filter((asset) => asset.kind === "Ad Account")
+      .map((asset) => ({ id: asset.id, name: asset.name })),
+    freshness: formatFreshnessFields(
+      snapshot.freshness,
+      snapshot.settings.timezone,
+    ),
+    reportingBar,
+    resultMetrics,
+    previousResultMetrics,
+    metricDisplayPresets: snapshot.settings.metricDisplayPresets,
+    settingsUpdatedAt: snapshot.settings.updatedAt,
+    metaBreakdown,
+    reportWarnings,
+    selectedDrawer,
+  };
+
+  if (isUiV3()) {
+    return (
+      <OverviewV3
+        {...overviewProps}
+        resultDefinitions={canonicalResults.definitions}
+        resetHref={resetOverviewHref(canonicalQuery)}
+      />
+    );
+  }
+
+  return <OverviewV2 {...overviewProps} />;
 }

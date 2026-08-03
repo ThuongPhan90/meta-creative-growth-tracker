@@ -203,6 +203,13 @@ describe("read-only Data Health collection APIs", () => {
           missing: 1,
           ratio: 0.5,
         },
+        {
+          key: "delivery_ready_account",
+          covered: 0,
+          total: 0,
+          missing: 0,
+          ratio: null,
+        },
       ],
       latestRun: {
         syncRunId: "run_2",
@@ -247,6 +254,12 @@ describe("read-only Data Health collection APIs", () => {
           total: 2,
           ratio: 0.5,
           basis: "objective_result_mapping_cells",
+        },
+        delivery_ready_account: {
+          covered: 0,
+          total: 0,
+          ratio: null,
+          basis: "delivery_eligible_ad_accounts",
         },
       },
       warnings: [

@@ -9,6 +9,7 @@ export {
 export {
   DatabaseNotConfiguredError,
   MigrationDriftError,
+  SettingsUpdateConflictError,
   SyncAlreadyRunningError,
 } from "./errors";
 export { checkDatabaseHealth, type DatabaseHealth } from "./health";

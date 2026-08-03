@@ -64,6 +64,7 @@ function settings(): TrackerSettings {
       "app_install",
     ],
     registrationActionTypes: ["complete_registration"],
+    metricDisplayPresets: { version: 1, presets: {} },
     lastInitialSyncAt: null,
     updatedAt: "2026-07-23T00:00:00.000Z",
   };

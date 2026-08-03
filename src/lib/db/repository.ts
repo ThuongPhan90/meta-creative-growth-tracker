@@ -2,7 +2,9 @@ import type postgres from "postgres";
 
 import type { DatabaseClient } from "./client";
 import { getDatabase, getOptionalDatabase } from "./client";
+import { SettingsUpdateConflictError } from "./errors";
 import { computeResultMappingVersion } from "./result-mapping-version";
+import { sanitizeMetricDisplayPresets } from "@/lib/reporting/metric-preset";
 import type {
   ActionMetricDailyInput,
   ActionValueDailyInput,
@@ -52,6 +54,8 @@ import type {
   LiveDeliverySummaryFilters,
   MetaAppInput,
   MetaAssetInventory,
+  MetaBreakdownFilters,
+  MetaBreakdownMetricRow,
   MetaConnectionInput,
   MetaConnectionRecord,
   MetaConnectionSecretRecord,
@@ -128,6 +132,42 @@ function asJsonObject(value: unknown): JsonObject {
   return {};
 }
 
+function trackerSettingsFromRow(row: DatabaseRow): TrackerSettings {
+  return {
+    ownerId: asNumber(row.owner_id),
+    reportingTimezone: String(row.reporting_timezone),
+    reportingCurrency:
+      row.reporting_currency === null ? null : String(row.reporting_currency),
+    syncLookbackDays: asNumber(row.sync_lookback_days),
+    minimumInstallThreshold: asNumber(row.minimum_install_threshold),
+    minimumRegistrationThreshold: asNumber(
+      row.minimum_registration_threshold,
+    ),
+    benchmarkMode: row.benchmark_mode as TrackerSettings["benchmarkMode"],
+    benchmarkWindowDays: asNumber(row.benchmark_window_days),
+    benchmarkByOs: Boolean(row.benchmark_by_os),
+    benchmarkByFormat: Boolean(row.benchmark_by_format),
+    numberFormat: row.number_format as TrackerSettings["numberFormat"],
+    compareDefault:
+      row.compare_default as TrackerSettings["compareDefault"],
+    scoringWeights: {
+      cpi: asNumber(row.scoring_weight_cpi),
+      cpa: asNumber(row.scoring_weight_cpa),
+      hook: asNumber(row.scoring_weight_hook),
+      hold: asNumber(row.scoring_weight_hold),
+    },
+    syncCadence: row.sync_cadence as TrackerSettings["syncCadence"],
+    alertChannel: row.alert_channel as TrackerSettings["alertChannel"],
+    installActionTypes: asStringArray(row.install_action_types),
+    registrationActionTypes: asStringArray(row.registration_action_types),
+    metricDisplayPresets: sanitizeMetricDisplayPresets(
+      asJsonObject(row.metric_display_presets),
+    ),
+    lastInitialSyncAt: asNullableIso(row.last_initial_sync_at),
+    updatedAt: asIso(row.updated_at),
+  };
+}
+
 function asJsonArray(value: unknown): unknown[] {
   if (Array.isArray(value)) return value;
   if (typeof value !== "string") return [];
@@ -165,6 +205,7 @@ function mapLiveDeliveryAccounts(
             ? row.accountTimezone
             : null,
         isOperational: Boolean(row.isOperational),
+        deliveryEligible: Boolean(row.deliveryEligible),
         inventoryObservedAt:
           typeof row.inventoryObservedAt === "string"
             ? row.inventoryObservedAt
@@ -817,6 +858,7 @@ export class TrackerRepository {
           scoring_weight_hold = 10,
           sync_cadence = 'deployment',
           alert_channel = 'none',
+          metric_display_presets = '{"version":1,"presets":{}}'::jsonb,
           install_action_types = array[
             'mobile_app_install',
             'omni_app_install',
@@ -840,39 +882,7 @@ export class TrackerRepository {
       "select * from tracker.app_settings where owner_id = 1",
     );
     const row = rows[0];
-
-    return {
-      ownerId: asNumber(row.owner_id),
-      reportingTimezone: String(row.reporting_timezone),
-      reportingCurrency:
-        row.reporting_currency === null ? null : String(row.reporting_currency),
-      syncLookbackDays: asNumber(row.sync_lookback_days),
-      minimumInstallThreshold: asNumber(row.minimum_install_threshold),
-      minimumRegistrationThreshold: asNumber(
-        row.minimum_registration_threshold,
-      ),
-      benchmarkMode: row.benchmark_mode as TrackerSettings["benchmarkMode"],
-      benchmarkWindowDays: asNumber(row.benchmark_window_days),
-      benchmarkByOs: Boolean(row.benchmark_by_os),
-      benchmarkByFormat: Boolean(row.benchmark_by_format),
-      numberFormat: row.number_format as TrackerSettings["numberFormat"],
-      compareDefault:
-        row.compare_default as TrackerSettings["compareDefault"],
-      scoringWeights: {
-        cpi: asNumber(row.scoring_weight_cpi),
-        cpa: asNumber(row.scoring_weight_cpa),
-        hook: asNumber(row.scoring_weight_hook),
-        hold: asNumber(row.scoring_weight_hold),
-      },
-      syncCadence:
-        row.sync_cadence as TrackerSettings["syncCadence"],
-      alertChannel:
-        row.alert_channel as TrackerSettings["alertChannel"],
-      installActionTypes: asStringArray(row.install_action_types),
-      registrationActionTypes: asStringArray(row.registration_action_types),
-      lastInitialSyncAt: asNullableIso(row.last_initial_sync_at),
-      updatedAt: asIso(row.updated_at),
-    };
+    return trackerSettingsFromRow(row);
   }
 
   async listSettingsAuditLog(): Promise<SettingsAuditRecord[]> {
@@ -902,10 +912,45 @@ export class TrackerRepository {
   async updateSettings(
     update: TrackerSettingsUpdate,
   ): Promise<TrackerSettings> {
-    const current = await this.getSettings();
-    const next = { ...current, ...update };
-
-    const rows = await this.database.begin(async (transaction) => {
+    const {
+      expectedUpdatedAt,
+      installActionTypes,
+      registrationActionTypes,
+      ...settingsUpdate
+    } = update;
+    const row = await this.database.begin(async (transaction) => {
+      const lockedRows = (await transaction.unsafe(
+        "select * from tracker.app_settings where owner_id = 1 for update",
+      )) as unknown as DatabaseRow[];
+      const lockedRow = lockedRows[0];
+      if (!lockedRow) {
+        throw new Error("Owner settings row was not found.");
+      }
+      const current = trackerSettingsFromRow(lockedRow);
+      if (expectedUpdatedAt && current.updatedAt !== expectedUpdatedAt) {
+        throw new SettingsUpdateConflictError();
+      }
+      const next: TrackerSettings = {
+        ...current,
+        ...settingsUpdate,
+        ...(installActionTypes
+          ? { installActionTypes: [...installActionTypes] }
+          : {}),
+        ...(registrationActionTypes
+          ? {
+              registrationActionTypes: [
+                ...registrationActionTypes,
+              ],
+            }
+          : {}),
+        ...(settingsUpdate.metricDisplayPresets
+          ? {
+              metricDisplayPresets: sanitizeMetricDisplayPresets(
+                settingsUpdate.metricDisplayPresets,
+              ),
+            }
+          : {}),
+      };
       const updated = (await transaction.unsafe(
         `
           update tracker.app_settings
@@ -929,7 +974,8 @@ export class TrackerRepository {
             alert_channel = $17,
             install_action_types = $18::text[],
             registration_action_types = $19::text[],
-            last_initial_sync_at = $20::timestamptz
+            last_initial_sync_at = $20::timestamptz,
+            metric_display_presets = $21::jsonb
           where owner_id = 1
           returning *
         `,
@@ -954,6 +1000,7 @@ export class TrackerRepository {
           next.installActionTypes,
           next.registrationActionTypes,
           next.lastInitialSyncAt,
+          jsonPayload(next.metricDisplayPresets),
         ],
       )) as unknown as DatabaseRow[];
       await transaction.unsafe(
@@ -967,42 +1014,13 @@ export class TrackerRepository {
         `,
         [jsonPayload(current), jsonPayload(next)],
       );
-      return updated;
+      const updatedRow = updated[0];
+      if (!updatedRow) {
+        throw new Error("Owner settings update did not return a row.");
+      }
+      return updatedRow;
     });
-
-    const row = rows[0];
-    return {
-      ownerId: asNumber(row.owner_id),
-      reportingTimezone: String(row.reporting_timezone),
-      reportingCurrency:
-        row.reporting_currency === null ? null : String(row.reporting_currency),
-      syncLookbackDays: asNumber(row.sync_lookback_days),
-      minimumInstallThreshold: asNumber(row.minimum_install_threshold),
-      minimumRegistrationThreshold: asNumber(
-        row.minimum_registration_threshold,
-      ),
-      benchmarkMode: row.benchmark_mode as TrackerSettings["benchmarkMode"],
-      benchmarkWindowDays: asNumber(row.benchmark_window_days),
-      benchmarkByOs: Boolean(row.benchmark_by_os),
-      benchmarkByFormat: Boolean(row.benchmark_by_format),
-      numberFormat: row.number_format as TrackerSettings["numberFormat"],
-      compareDefault:
-        row.compare_default as TrackerSettings["compareDefault"],
-      scoringWeights: {
-        cpi: asNumber(row.scoring_weight_cpi),
-        cpa: asNumber(row.scoring_weight_cpa),
-        hook: asNumber(row.scoring_weight_hook),
-        hold: asNumber(row.scoring_weight_hold),
-      },
-      syncCadence:
-        row.sync_cadence as TrackerSettings["syncCadence"],
-      alertChannel:
-        row.alert_channel as TrackerSettings["alertChannel"],
-      installActionTypes: asStringArray(row.install_action_types),
-      registrationActionTypes: asStringArray(row.registration_action_types),
-      lastInitialSyncAt: asNullableIso(row.last_initial_sync_at),
-      updatedAt: asIso(row.updated_at),
-    };
+    return trackerSettingsFromRow(row);
   }
 
   async upsertBusinesses(
@@ -3417,6 +3435,9 @@ export class TrackerRepository {
                   'metaAdAccountId', account.meta_ad_account_id,
                   'accountTimezone', nullif(account.timezone_name, ''),
                   'isOperational', account.is_operational,
+                  'deliveryEligible', (
+                    account.is_operational and account.active_ad_count > 0
+                  ),
                   'inventoryObservedAt', account.inventory_observed_at,
                   'latestMetricDate', account.latest_metric_date,
                   'inventoryState', account.inventory_state,
@@ -6312,12 +6333,317 @@ export class TrackerRepository {
   }
 
   /**
+   * Compact, additive delivery rows for the Overview Meta Breakdown.
+   *
+   * `daily_metrics` is normally an account-window replacement table, but this
+   * read still enforces the source partition invariant. A legacy `creative`
+   * row is never additive delivery. If an original Meta ad/day/delivery
+   * partition contains both a primary ad row and exact asset rows, only the
+   * reconciled asset rows are included; otherwise the primary ad row wins.
+   * This keeps a stale mixed-scope partition from doubling Dynamic Creative
+   * delivery while preserving the original Meta entity/delivery dimensions.
+   */
+  async getMetaBreakdownMetrics(
+    filters: MetaBreakdownFilters,
+  ): Promise<MetaBreakdownMetricRow[]> {
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(filters.dateFrom) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(filters.dateTo) ||
+      filters.dateFrom > filters.dateTo
+    ) {
+      throw new TypeError("Meta breakdown filters contain an invalid date range.");
+    }
+
+    const adAccountMetaIds = filters.adAccountMetaIds
+      ? normalizeSelectedAdAccountMetaIds(filters.adAccountMetaIds)
+      : [];
+    const campaignMetaIds = [
+      ...new Set(
+        (filters.campaignMetaIds ?? [])
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    ];
+    const objectiveRawKeys = [
+      ...new Set(
+        (filters.objectiveRawKeys ?? [])
+          .map((value) => value.trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    ];
+    const objectiveOwners = new Map<string, string>();
+    for (const mapping of filters.objectiveMappings ?? []) {
+      const objectiveKey = mapping.objectiveKey.trim().toLowerCase();
+      if (!objectiveKey) continue;
+      for (const rawKey of [
+        mapping.objectiveKey,
+        ...mapping.rawObjectiveKeys,
+      ]) {
+        const normalizedRawKey = rawKey.trim().toUpperCase();
+        if (!normalizedRawKey) continue;
+        const owner = objectiveOwners.get(normalizedRawKey);
+        if (owner && owner !== objectiveKey) {
+          throw new TypeError(
+            "One raw Objective cannot map to multiple canonical Objectives.",
+          );
+        }
+        objectiveOwners.set(normalizedRawKey, objectiveKey);
+      }
+    }
+    const objectiveMappingPayload = [...objectiveOwners].map(
+      ([rawObjectiveKey, objectiveKey]) => ({
+        raw_objective_key: rawObjectiveKey,
+        objective_key: objectiveKey,
+      }),
+    );
+    const currency = filters.currency?.trim().toUpperCase() || null;
+    if (currency && !/^[A-Z]{3}$/.test(currency)) {
+      throw new TypeError("Meta breakdown currency is invalid.");
+    }
+
+    const rows = await this.query<DatabaseRow>(
+      `
+        with objective_mapping as (
+          select distinct
+            item.raw_objective_key,
+            item.objective_key
+          from jsonb_to_recordset($11::jsonb) as item(
+            raw_objective_key text,
+            objective_key text
+          )
+        ),
+        scoped_metrics as (
+          select metric.*
+          from tracker.daily_metrics metric
+          join tracker.meta_ad_accounts account
+            on account.ad_account_id = metric.ad_account_id
+          join tracker.meta_campaigns campaign
+            on campaign.campaign_id = metric.campaign_id
+            and campaign.ad_account_id = metric.ad_account_id
+          where metric.metric_date between $2::date and $3::date
+            and account.connection_id = $1
+            and account.is_active
+            and account.account_status = 1
+            and metric.metric_scope in ('ad', 'asset')
+            and (
+              $4::text[] is null
+              or account.meta_ad_account_id = any($4::text[])
+            )
+            and (
+              $5::text[] is null
+              or campaign.meta_campaign_id = any($5::text[])
+            )
+            and ($6::text is null or upper(metric.currency) = $6)
+            and (
+              $7::text is null
+              or $7 = 'account_default'
+              or metric.attribution_window = $7
+            )
+            and ($8::text is null or metric.action_report_time = $8)
+            and ($9::text is null or metric.sync_version = $9)
+            and (
+              $10::text[] is null
+              or upper(coalesce(campaign.objective, '')) = any($10::text[])
+            )
+        ),
+        partition_totals as (
+          select
+            metric.ad_account_id,
+            metric.ad_id,
+            metric.metric_date,
+            metric.country,
+            metric.publisher_platform,
+            metric.platform_position,
+            metric.impression_device,
+            metric.attribution_window,
+            metric.action_report_time,
+            metric.sync_version,
+            upper(metric.currency) as currency,
+            bool_or(metric.metric_scope = 'ad') as has_ad_scope,
+            bool_or(metric.metric_scope = 'asset') as has_asset_scope,
+            bool_and(
+              metric.allocation_method = 'exact'
+              and metric.creative_asset_id is not null
+            ) filter (where metric.metric_scope = 'asset')
+              as all_asset_rows_exact,
+            coalesce(
+              sum(metric.spend) filter (where metric.metric_scope = 'ad'),
+              0
+            ) as ad_spend,
+            coalesce(
+              sum(metric.impressions) filter (where metric.metric_scope = 'ad'),
+              0
+            ) as ad_impressions,
+            coalesce(
+              sum(metric.link_clicks) filter (where metric.metric_scope = 'ad'),
+              0
+            ) as ad_link_clicks,
+            coalesce(
+              sum(metric.spend) filter (where metric.metric_scope = 'asset'),
+              0
+            ) as asset_spend,
+            coalesce(
+              sum(metric.impressions) filter (where metric.metric_scope = 'asset'),
+              0
+            ) as asset_impressions,
+            coalesce(
+              sum(metric.link_clicks) filter (where metric.metric_scope = 'asset'),
+              0
+            ) as asset_link_clicks
+          from scoped_metrics metric
+          group by
+            metric.ad_account_id,
+            metric.ad_id,
+            metric.metric_date,
+            metric.country,
+            metric.publisher_platform,
+            metric.platform_position,
+            metric.impression_device,
+            metric.attribution_window,
+            metric.action_report_time,
+            metric.sync_version,
+            upper(metric.currency)
+        ),
+        partition_policy as (
+          select
+            partition.*,
+            case
+              when partition.has_ad_scope and partition.has_asset_scope
+                and partition.all_asset_rows_exact
+                and abs(partition.asset_spend - partition.ad_spend)
+                  <= greatest(0.01::numeric, abs(partition.ad_spend) * 0.001)
+                and abs(partition.asset_impressions - partition.ad_impressions)
+                  <= greatest(1::numeric, abs(partition.ad_impressions) * 0.001)
+                and abs(partition.asset_link_clicks - partition.ad_link_clicks)
+                  <= greatest(0.01::numeric, abs(partition.ad_link_clicks) * 0.001)
+                then 'reconciled_asset'
+              when partition.has_ad_scope then 'primary_ad'
+              else 'asset_only'
+            end as selected_scope
+          from partition_totals partition
+        ),
+        selected_metrics as (
+          select metric.*
+          from scoped_metrics metric
+          join partition_policy partition
+            on partition.ad_account_id = metric.ad_account_id
+            and partition.ad_id = metric.ad_id
+            and partition.metric_date = metric.metric_date
+            and partition.country = metric.country
+            and partition.publisher_platform = metric.publisher_platform
+            and partition.platform_position = metric.platform_position
+            and partition.impression_device = metric.impression_device
+            and partition.attribution_window = metric.attribution_window
+            and partition.action_report_time = metric.action_report_time
+            and partition.sync_version = metric.sync_version
+            and partition.currency = upper(metric.currency)
+          where (
+            partition.selected_scope = 'reconciled_asset'
+            and metric.metric_scope = 'asset'
+            and metric.allocation_method = 'exact'
+            and metric.creative_asset_id is not null
+          ) or (
+            partition.selected_scope = 'primary_ad'
+            and metric.metric_scope = 'ad'
+          ) or (
+            partition.selected_scope = 'asset_only'
+            and metric.metric_scope = 'asset'
+          )
+        )
+        select
+          account.meta_ad_account_id,
+          nullif(trim(account.name), '') as ad_account_name,
+          campaign.meta_campaign_id,
+          nullif(trim(campaign.name), '') as campaign_name,
+          objective.objective_key,
+          metric.publisher_platform,
+          metric.platform_position,
+          upper(metric.currency) as currency,
+          sum(metric.spend) as spend,
+          sum(metric.impressions) as impressions,
+          sum(metric.link_clicks) as link_clicks
+        from selected_metrics metric
+        join tracker.meta_ad_accounts account
+          on account.ad_account_id = metric.ad_account_id
+        join tracker.meta_campaigns campaign
+          on campaign.campaign_id = metric.campaign_id
+          and campaign.ad_account_id = metric.ad_account_id
+        left join objective_mapping objective
+          on objective.raw_objective_key =
+            upper(coalesce(campaign.objective, ''))
+        group by
+          account.meta_ad_account_id,
+          account.name,
+          campaign.meta_campaign_id,
+          campaign.name,
+          objective.objective_key,
+          metric.publisher_platform,
+          metric.platform_position,
+          upper(metric.currency)
+        order by upper(metric.currency), account.meta_ad_account_id,
+          campaign.meta_campaign_id, metric.publisher_platform,
+          metric.platform_position
+      `,
+      [
+        filters.connectionId,
+        filters.dateFrom,
+        filters.dateTo,
+        filters.adAccountMetaIds === undefined
+          ? null
+          : adAccountMetaIds,
+        filters.campaignMetaIds === undefined ? null : campaignMetaIds,
+        currency,
+        filters.attributionWindow?.trim() || null,
+        filters.actionReportTime ?? null,
+        filters.syncVersion?.trim() || null,
+        filters.objectiveRawKeys === undefined ? null : objectiveRawKeys,
+        jsonPayload(objectiveMappingPayload),
+      ],
+    );
+
+    return rows.map((row) => ({
+      adAccountMetaId: String(row.meta_ad_account_id),
+      adAccountName:
+        row.ad_account_name === null || row.ad_account_name === undefined
+          ? null
+          : String(row.ad_account_name),
+      campaignMetaId: String(row.meta_campaign_id),
+      campaignName:
+        row.campaign_name === null || row.campaign_name === undefined
+          ? null
+          : String(row.campaign_name),
+      objectiveKey:
+        row.objective_key === null || row.objective_key === undefined
+          ? null
+          : String(row.objective_key),
+      publisherPlatform: String(row.publisher_platform),
+      platformPosition: String(row.platform_position),
+      currency: String(row.currency),
+      spend: asNumber(row.spend),
+      impressions: asNumber(row.impressions),
+      linkClicks: asNumber(row.link_clicks),
+    }));
+  }
+
+  /**
    * Daily Overview trend grouped by currency. Keeping currency in both the
    * grouping key and the returned DTO prevents mixed-currency CPI/CPA.
    */
   async getDeliveryTrend(
     filters: DeliveryTrendFilters,
   ): Promise<DeliveryTrendItem[]> {
+    const accountMetaIds =
+      filters.adAccountMetaIds === undefined
+        ? filters.accountMetaId?.trim()
+          ? [filters.accountMetaId.trim()]
+          : null
+        : [
+            ...new Set(
+              filters.adAccountMetaIds
+                .map((value) => value.trim())
+                .filter(Boolean),
+            ),
+          ];
     const rows = await this.query<DatabaseRow>(
       `
         select
@@ -6335,13 +6661,15 @@ export class TrackerRepository {
           on account.ad_account_id = metric.ad_account_id
         where metric.metric_date between $2::date and $3::date
           and account.connection_id = $1
-          and account.is_active
-          and account.account_status = 1
+          and (
+            $11::boolean
+            or (account.is_active and account.account_status = 1)
+          )
           and ($4::bigint is null or metric.ad_account_id = $4)
           and ($5::text is null or metric.currency = $5)
           and (
-            $6::text is null
-            or account.meta_ad_account_id = $6
+            $6::text[] is null
+            or account.meta_ad_account_id = any($6::text[])
           )
           and (
             $7::text is null
@@ -6366,13 +6694,13 @@ export class TrackerRepository {
             or metric.sync_version = $10
           )
           and (
-            $11::text[] is null
+            $12::text[] is null
             or exists (
               select 1
               from tracker.meta_campaigns objective_campaign
               where objective_campaign.campaign_id = metric.campaign_id
                 and upper(coalesce(objective_campaign.objective, ''))
-                  = any($11::text[])
+                  = any($12::text[])
             )
           )
         group by metric.metric_date, metric.currency
@@ -6384,11 +6712,12 @@ export class TrackerRepository {
         filters.dateTo,
         filters.adAccountId ?? null,
         filters.currency?.trim() || null,
-        filters.accountMetaId?.trim() || null,
+        accountMetaIds,
         filters.campaignMetaId?.trim() || null,
         filters.attributionWindow?.trim() || null,
         filters.actionReportTime ?? null,
         filters.syncVersion?.trim() || null,
+        filters.includeInactiveAccounts === true,
         filters.objectiveRawKeys?.length
           ? filters.objectiveRawKeys.map((key) =>
               key.trim().toUpperCase(),

@@ -22,3 +22,15 @@ export class SyncAlreadyRunningError extends Error {
     this.name = "SyncAlreadyRunningError";
   }
 }
+
+/**
+ * Optimistic concurrency guard for owner preferences. A stale browser tab may
+ * never overwrite a newer metric preset silently; callers reload the current
+ * settings snapshot and let the owner decide what to keep.
+ */
+export class SettingsUpdateConflictError extends Error {
+  constructor() {
+    super("Settings were changed by a newer request.");
+    this.name = "SettingsUpdateConflictError";
+  }
+}

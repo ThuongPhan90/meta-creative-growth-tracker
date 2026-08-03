@@ -10,6 +10,7 @@ import {
   type CanonicalResultTrendPoint as DatabaseCanonicalResultTrendPoint,
   type DeliveryPerformanceItem,
   type LiveDeliverySummary,
+  type MetaBreakdownMetricRow,
   type MetaConnectionRecord,
   type SyncRunRecord,
   type TrackerRepository,
@@ -40,12 +41,16 @@ import {
   resolveReportContext,
   scopedBaselineKey,
   summarizeDelivery,
+  buildMetaBreakdown,
+  unavailableMetaBreakdown,
   withDeliveryBackedResultValues,
   type CanonicalReportingScope,
   type CanonicalResultValue,
   type AccountCreativePerformance,
   type CreativeFamilyFatigueComparison,
   type DynamicResultMetricsModel,
+  type MetaBreakdownModel,
+  type MetricDisplayPresets,
   type ReportingContext,
   type ResultDefinition,
   type ResolvedReportContext,
@@ -156,6 +161,8 @@ export type ApplicationSnapshot = {
     minimumInstallThreshold: number;
     installActionTypes: string[];
     registrationActionTypes: string[];
+    metricDisplayPresets: MetricDisplayPresets;
+    updatedAt: string | null;
   };
 };
 
@@ -591,32 +598,32 @@ function splitFatigueComparisonRange(
   const windowDays =
     Math.floor((end.getTime() - start.getTime()) / 86_400_000) +
     1;
-  if (
-    !Number.isFinite(start.getTime()) ||
-    !Number.isFinite(end.getTime()) ||
-    windowDays < 3
-  ) {
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
     return null;
   }
 
-  const earlierDays = Math.floor(windowDays / 2);
-  const earlierEnd = new Date(start);
-  earlierEnd.setUTCDate(
-    earlierEnd.getUTCDate() + earlierDays - 1,
-  );
-  const laterStart = new Date(earlierEnd);
-  laterStart.setUTCDate(laterStart.getUTCDate() + 1);
+  // V5 uses two equal, auditable windows. A selected report needs at least
+  // 14 days for 7D-vs-7D, or 56 days for the optional 28D-vs-28D mode.
+  // Never split an arbitrary range into unequal halves just to show fatigue.
+  const comparisonDays = windowDays >= 56 ? 28 : windowDays >= 14 ? 7 : null;
+  if (!comparisonDays) return null;
+  const laterStart = new Date(end);
+  laterStart.setUTCDate(laterStart.getUTCDate() - comparisonDays + 1);
+  const earlierEnd = new Date(laterStart);
+  earlierEnd.setUTCDate(earlierEnd.getUTCDate() - 1);
+  const earlierStart = new Date(earlierEnd);
+  earlierStart.setUTCDate(earlierStart.getUTCDate() - comparisonDays + 1);
   return {
-    windowDays,
+    windowDays: comparisonDays,
     earlier: {
-      dateFrom,
+      dateFrom: earlierStart.toISOString().slice(0, 10),
       dateTo: earlierEnd.toISOString().slice(0, 10),
-      days: earlierDays,
+      days: comparisonDays,
     },
     later: {
       dateFrom: laterStart.toISOString().slice(0, 10),
       dateTo,
-      days: windowDays - earlierDays,
+      days: comparisonDays,
     },
   };
 }
@@ -941,7 +948,9 @@ function mapCanonicalOverviewTrend({
       date: string;
       currency: string;
       spend: number;
+      impressions: number;
       linkClicks: number;
+      hasDelivery: boolean;
       resultValues: Record<string, number>;
     }
   >();
@@ -953,15 +962,20 @@ function mapCanonicalOverviewTrend({
       date: row.metricDate,
       currency: row.currency,
       spend: 0,
+      impressions: 0,
       linkClicks: 0,
+      hasDelivery: false,
       resultValues: {},
     };
     group.spend = Math.max(group.spend, row.dailySpend);
-    if (
-      row.metricSource === "delivery" &&
-      row.canonicalResultKey === "link_click"
-    ) {
-      group.linkClicks += row.value;
+    if (row.metricSource === "delivery") {
+      group.hasDelivery = true;
+      if (row.canonicalResultKey === "impressions") {
+        group.impressions += row.value;
+      }
+      if (row.canonicalResultKey === "link_click") {
+        group.linkClicks += row.value;
+      }
     }
 
     const definition = definitionsByKey.get(
@@ -980,11 +994,16 @@ function mapCanonicalOverviewTrend({
   }
 
   return [...grouped.values()]
-    .filter((group) => Object.keys(group.resultValues).length > 0)
+    .filter(
+      (group) =>
+        group.hasDelivery || Object.keys(group.resultValues).length > 0,
+    )
     .map((group) => ({
       date: group.date,
       currency: group.currency,
       spend: group.spend,
+      impressions: group.impressions,
+      linkClicks: group.linkClicks,
       resultValues: group.resultValues,
       efficiencyValues: Object.fromEntries(
         Object.entries(group.resultValues).map(
@@ -1410,6 +1429,68 @@ export async function getDeliveryForReport({
         }),
       ];
   return mergeDeliveryPerformance(groups);
+}
+
+/**
+ * Returns the exact entity-level delivery rows needed by the compact Overview
+ * Meta Breakdown. Unlike the legacy demo summary, it never derives an Ad
+ * Account, Campaign, Placement or Meta Platform allocation from Creative
+ * aggregates. Missing detail therefore remains explicitly unavailable.
+ */
+export async function getMetaBreakdownForReport({
+  snapshot,
+  context,
+  campaignMetaId,
+  repository: suppliedRepository,
+}: {
+  snapshot: ApplicationSnapshot;
+  context: ReportingContext;
+  campaignMetaId?: string;
+  repository?: Pick<TrackerRepository, "getMetaBreakdownMetrics">;
+}): Promise<MetaBreakdownModel> {
+  if (context.currencyMode !== "single" || !context.currency) {
+    return unavailableMetaBreakdown("split_currency");
+  }
+  if (
+    snapshot.demoMode ||
+    !snapshot.authenticated ||
+    !snapshot.connection ||
+    snapshot.connection.status !== "connected" ||
+    context.adAccountIds.length === 0 ||
+    !context.syncVersion ||
+    context.syncVersion === "latest"
+  ) {
+    return unavailableMetaBreakdown("detail_unavailable");
+  }
+
+  const exactCampaignMetaId = campaignMetaId?.trim();
+  try {
+    const repository =
+      suppliedRepository ?? (await createTrackerRepository());
+    const rows: MetaBreakdownMetricRow[] =
+      await repository.getMetaBreakdownMetrics({
+        connectionId: snapshot.connection.connectionId,
+        dateFrom: context.dateFrom,
+        dateTo: context.dateTo,
+        adAccountMetaIds: context.adAccountIds,
+        ...(exactCampaignMetaId
+          ? { campaignMetaIds: [exactCampaignMetaId] }
+          : {}),
+        currency: context.currency,
+        attributionWindow: context.attributionSettingKey,
+        actionReportTime: context.actionReportTime,
+        syncVersion: context.syncVersion,
+        objectiveRawKeys: objectiveDatabaseKeys(context.objectiveKey),
+        objectiveMappings: DEFAULT_OBJECTIVE_REGISTRY.map((objective) => ({
+          objectiveKey: objective.key,
+          rawObjectiveKeys: objective.rawObjectiveKeys,
+        })),
+      });
+    return buildMetaBreakdown(rows);
+  } catch {
+    // A failed detail read is not a zero-delivery distribution.
+    return unavailableMetaBreakdown("detail_unavailable");
+  }
 }
 
 function unavailableLiveDeliverySummary(
@@ -2126,8 +2207,7 @@ export async function getOverviewTrendForReport({
     !snapshot.authenticated ||
     !snapshot.connection ||
     snapshot.connection.status !== "connected" ||
-    !reportContext ||
-    reportContext.objectiveKey === "all"
+    !reportContext
   ) {
     return [];
   }
@@ -2149,8 +2229,6 @@ export async function getOverviewTrendForReport({
     return [];
   }
 
-  const repository = await createTrackerRepository();
-  const mappings = await repository.listResultMappings();
   const exactCurrency =
     currency === undefined
       ? reportContext.currencyMode === "single"
@@ -2158,6 +2236,38 @@ export async function getOverviewTrendForReport({
         : undefined
       : currency?.trim() || undefined;
   const exactCampaignMetaId = campaignMetaId?.trim();
+  const repository = await createTrackerRepository();
+  if (reportContext.objectiveKey === "all") {
+    const deliveryTrend = await repository.getDeliveryTrend({
+      connectionId: snapshot.connection.connectionId,
+      dateFrom,
+      dateTo,
+      adAccountMetaIds: exactAccountIds,
+      includeInactiveAccounts: true,
+      ...(exactCampaignMetaId ? { campaignMetaId: exactCampaignMetaId } : {}),
+      ...(exactCurrency ? { currency: exactCurrency } : {}),
+      attributionWindow:
+        attributionWindow?.trim() ||
+        reportContext.attributionSettingKey,
+      actionReportTime:
+        actionReportTime ?? reportContext.actionReportTime,
+      syncVersion: exactSyncVersion,
+    });
+
+    // Result and Reach remain intentionally unavailable for the cross-objective
+    // scope. Delivery facts share a single canonical meaning, so they can be
+    // grouped by date and currency without fabricating a Result series.
+    return deliveryTrend.map((point) => ({
+      date: point.metricDate,
+      currency: point.currency,
+      spend: point.spend,
+      impressions: point.impressions,
+      linkClicks: point.linkClicks,
+      resultValues: {},
+      efficiencyValues: {},
+    }));
+  }
+  const mappings = await repository.listResultMappings();
   const batch = await repository.getCanonicalResultTrend({
     connectionId: snapshot.connection.connectionId,
     dateFrom,
@@ -2738,6 +2848,8 @@ export const getApplicationSnapshot = cache(
           minimumInstallThreshold: 20,
           installActionTypes: DEFAULT_INSTALL_ACTION_TYPES,
           registrationActionTypes: DEFAULT_REGISTRATION_ACTION_TYPES,
+          metricDisplayPresets: { version: 1, presets: {} },
+          updatedAt: null,
         },
       };
     }
@@ -2774,6 +2886,8 @@ export const getApplicationSnapshot = cache(
           minimumInstallThreshold: 20,
           installActionTypes: DEFAULT_INSTALL_ACTION_TYPES,
           registrationActionTypes: DEFAULT_REGISTRATION_ACTION_TYPES,
+          metricDisplayPresets: { version: 1, presets: {} },
+          updatedAt: null,
         },
       };
     }
@@ -2811,6 +2925,8 @@ export const getApplicationSnapshot = cache(
           minimumInstallThreshold: 20,
           installActionTypes: DEFAULT_INSTALL_ACTION_TYPES,
           registrationActionTypes: DEFAULT_REGISTRATION_ACTION_TYPES,
+          metricDisplayPresets: { version: 1, presets: {} },
+          updatedAt: null,
         },
       };
     }
@@ -2849,6 +2965,8 @@ export const getApplicationSnapshot = cache(
           minimumInstallThreshold: 20,
           installActionTypes: DEFAULT_INSTALL_ACTION_TYPES,
           registrationActionTypes: DEFAULT_REGISTRATION_ACTION_TYPES,
+          metricDisplayPresets: { version: 1, presets: {} },
+          updatedAt: null,
         },
       };
     }
@@ -3155,6 +3273,8 @@ export const getApplicationSnapshot = cache(
         minimumInstallThreshold: settings.minimumInstallThreshold,
         installActionTypes: settings.installActionTypes,
         registrationActionTypes: settings.registrationActionTypes,
+        metricDisplayPresets: settings.metricDisplayPresets,
+        updatedAt: settings.updatedAt,
       },
     };
   },

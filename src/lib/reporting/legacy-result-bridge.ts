@@ -20,6 +20,9 @@ export type CanonicalResultTrendPoint = {
   date: string;
   currency: string;
   spend: number;
+  /** Exact daily delivery fields, carried separately from canonical Results. */
+  impressions?: number;
+  linkClicks?: number;
   resultValues: Record<string, number | null>;
   efficiencyValues: Record<string, number | null>;
 };
@@ -275,6 +278,8 @@ export function bridgeLegacyTrendPoints({
       date: point.date,
       currency: point.currency,
       spend: point.spend,
+      impressions: point.impressions,
+      linkClicks: point.linkClicks,
       resultValues,
       efficiencyValues,
     };

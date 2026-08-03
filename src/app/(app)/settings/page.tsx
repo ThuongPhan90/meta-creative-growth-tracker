@@ -3,6 +3,7 @@ import {
   type SettingsResultRegistry,
   type SettingsTab,
 } from "@/components/settings-v2";
+import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import { getApplicationSnapshot } from "@/lib/app-data";
 import {
   createTrackerRepository,
@@ -19,6 +20,7 @@ import {
   type PersistedResultMapping,
   type ResultDefinition,
 } from "@/lib/reporting/result-definition";
+import { isUiV3 } from "@/lib/presentation/ui-version";
 
 export const dynamic = "force-dynamic";
 
@@ -135,6 +137,7 @@ export default async function SettingsPage({
     alertChannel: "none",
     installActionTypes: snapshot.settings.installActionTypes,
     registrationActionTypes: snapshot.settings.registrationActionTypes,
+    metricDisplayPresets: { version: 1, presets: {} },
     lastInitialSyncAt: null,
     updatedAt: new Date(0).toISOString(),
   };
@@ -200,7 +203,7 @@ export default async function SettingsPage({
     syncVersion: snapshot.freshness.syncVersion ?? "latest",
   };
 
-  return (
+  const content = (
     <SettingsV2
       initial={settings}
       activeTab={activeTab}
@@ -221,5 +224,11 @@ export default async function SettingsPage({
       )}
       grantedScopes={snapshot.connection?.grantedScopes ?? []}
     />
+  );
+
+  return isUiV3() ? (
+    <V3SurfacePage surface="settings">{content}</V3SurfacePage>
+  ) : (
+    content
   );
 }

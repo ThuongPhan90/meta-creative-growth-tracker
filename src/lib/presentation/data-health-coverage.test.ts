@@ -81,4 +81,54 @@ describe("Data Health coverage", () => {
       ratio: 0.75,
     });
   });
+
+  it("uses delivery-eligible Ad Accounts as the denominator when a live snapshot is available", () => {
+    const coverage = buildDataHealthCoverage([], [], {
+      selectedAccountCount: 9,
+      deliveryEligibleAccountCount: 7,
+      deliveryReadyAccountCount: 5,
+      state: "partial",
+      accounts: [
+        {
+          metaAdAccountId: "act_1",
+          deliveryEligible: true,
+          deliveryState: "ready",
+        },
+        {
+          metaAdAccountId: "act_2",
+          deliveryEligible: true,
+          deliveryState: "stale",
+        },
+      ],
+    });
+
+    expect(
+      coverage.find((item) => item.key === "delivery_ready_account"),
+    ).toMatchObject({
+      covered: 5,
+      total: 7,
+      ratio: 5 / 7,
+      detail:
+        "5/7 Ad Account đủ điều kiện delivery có snapshot mới và cùng ngày dữ liệu",
+      missingAccountMetaIds: ["act_2"],
+    });
+  });
+
+  it("keeps an unavailable delivery snapshot distinct from an actual 0% coverage", () => {
+    const coverage = buildDataHealthCoverage([], [], {
+      selectedAccountCount: 2,
+      deliveryEligibleAccountCount: 0,
+      deliveryReadyAccountCount: 0,
+      state: "unavailable",
+    });
+
+    expect(
+      coverage.find((item) => item.key === "delivery_ready_account"),
+    ).toMatchObject({
+      covered: 0,
+      total: 0,
+      ratio: null,
+      state: "unavailable",
+    });
+  });
 });

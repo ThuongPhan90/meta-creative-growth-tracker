@@ -57,6 +57,7 @@ const AUDITED_FIELDS: readonly AuditedField[] = [
     path: ["registrationActionTypes"],
     label: "Registration action types",
   },
+  { path: ["metricDisplayPresets"], label: "Metric display presets" },
   { path: ["lastInitialSyncAt"], label: "Đồng bộ ban đầu gần nhất" },
 ];
 
@@ -118,6 +119,13 @@ function formatValue(
   }
   if (Array.isArray(value)) {
     return value.length ? value.map(String).join(" · ") : "Không có";
+  }
+  if (key === "metricDisplayPresets" && value && typeof value === "object") {
+    const presets = value.presets;
+    if (presets && typeof presets === "object" && !Array.isArray(presets)) {
+      return `${Object.keys(presets).length} bộ preset`;
+    }
+    return "Preset chỉ số không hợp lệ";
   }
   if (typeof value === "boolean") return value ? "Bật" : "Tắt";
 

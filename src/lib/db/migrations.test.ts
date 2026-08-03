@@ -16,6 +16,7 @@ describe("database migrations", () => {
       "0007_result_definitions",
       "0008_normalized_result_facts",
       "0009_period_reach_snapshots",
+      "0010_metric_display_presets",
     ]);
     expect(migrations.every((migration) => migration.checksum.length === 64)).toBe(
       true,
@@ -101,5 +102,17 @@ describe("database migrations", () => {
     expect(facts?.sql).toContain("action_value_daily");
     expect(facts?.sql).toContain("selected_action_types");
     expect(facts?.sql).toContain("sync_version");
+  });
+
+  it("adds versioned owner-scoped display metric presets", async () => {
+    const migrations = await loadMigrations();
+    const presets = migrations.find(
+      (migration) => migration.id === "0010_metric_display_presets",
+    );
+
+    expect(presets?.sql).toContain("metric_display_presets");
+    expect(presets?.sql).toContain('"version":1');
+    expect(presets?.sql).toContain("app_settings_metric_display_presets_shape_check");
+    expect(presets?.sql).not.toContain("update tracker.app_settings");
   });
 });

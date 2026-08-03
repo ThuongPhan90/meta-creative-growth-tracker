@@ -1,0 +1,266 @@
+.toolbar {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--ui-v3-border);
+  border-radius: var(--ui-v3-radius-card);
+  background: var(--ui-v3-surface);
+}
+
+.form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.control,
+.scopeControl,
+.objectiveControl {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--ui-v3-border);
+  border-radius: var(--ui-v3-radius-control);
+  background: var(--ui-v3-surface);
+  color: var(--ui-v3-text-secondary);
+}
+
+.control {
+  padding: 0 10px;
+}
+
+.control select,
+.control input {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ui-v3-text-primary);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.control:focus-within,
+.scopeControl :global(.v2-context-scope:focus-within > summary),
+.objectiveControl :global(.v2-context-control:focus-within) {
+  border-color: var(--ui-v3-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ui-v3-accent) 14%, transparent);
+}
+
+.dateControl input {
+  width: 126px;
+}
+
+.scopeControl,
+.objectiveControl {
+  border: 0;
+}
+
+.scopeControl :global(.v2-context-scope),
+.objectiveControl :global(.v2-context-control) {
+  margin: 0;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.apply,
+.reset {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-radius: var(--ui-v3-radius-control);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.apply {
+  padding: 0 13px;
+  border: 1px solid var(--ui-v3-accent);
+  background: var(--ui-v3-accent);
+  color: #fff;
+}
+
+.reset {
+  padding: 0 6px;
+  color: var(--ui-v3-text-secondary);
+}
+
+.status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  color: var(--ui-v3-text-secondary);
+  font-size: 12px;
+}
+
+.warning {
+  color: var(--ui-v3-warning);
+}
+
+.moreFilters {
+  position: relative;
+  display: block;
+}
+
+.moreFilters summary {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid var(--ui-v3-border);
+  border-radius: var(--ui-v3-radius-control);
+  background: var(--ui-v3-surface);
+  color: var(--ui-v3-text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  list-style: none;
+  white-space: nowrap;
+}
+
+.moreFilters summary::-webkit-details-marker {
+  display: none;
+}
+
+.moreFilters[open] summary {
+  border-color: var(--ui-v3-accent);
+  color: var(--ui-v3-accent);
+}
+
+.moreFiltersPanel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 8px);
+  right: 0;
+  display: grid;
+  width: min(520px, calc(100vw - 32px));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--ui-v3-border);
+  border-radius: var(--ui-v3-radius-card);
+  background: var(--ui-v3-surface);
+  box-shadow: 0 16px 34px color-mix(in srgb, #17213d 16%, transparent);
+}
+
+.advancedControl {
+  display: grid;
+  gap: 5px;
+  color: var(--ui-v3-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.advancedControl input,
+.advancedControl select {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--ui-v3-border);
+  border-radius: var(--ui-v3-radius-control);
+  background: var(--ui-v3-surface-muted);
+  color: var(--ui-v3-text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  outline: none;
+  padding: 0 9px;
+}
+
+.advancedControl input:focus,
+.advancedControl select:focus {
+  border-color: var(--ui-v3-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ui-v3-accent) 14%, transparent);
+}
+
+.advancedControl small {
+  color: var(--ui-v3-text-tertiary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.advancedSelect {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.advancedSelect svg {
+  position: absolute;
+  left: 10px;
+  pointer-events: none;
+}
+
+.advancedSelect select {
+  padding-left: 33px;
+}
+
+@media (max-width: 820px) {
+  .form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .dateControl,
+  .scopeControl,
+  .objectiveControl,
+  .actions,
+  .moreFilters {
+    grid-column: 1 / -1;
+  }
+
+  .dateControl input {
+    width: 0;
+    flex: 1 1 0;
+  }
+
+  .scopeControl,
+  .objectiveControl {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .objectiveControl {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .objectiveControl :global(.v2-context-control) {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .objectiveControl :global(.v2-context-control select) {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .actions {
+    justify-content: space-between;
+    margin-left: 0;
+  }
+
+  .moreFilters summary {
+    width: 100%;
+  }
+
+  .moreFiltersPanel {
+    position: static;
+    width: 100%;
+    margin-top: 8px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

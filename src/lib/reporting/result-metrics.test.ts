@@ -32,6 +32,84 @@ function context(
 }
 
 describe("dynamic result metrics", () => {
+  it("builds delivery KPIs from the same scoped totals in a stable order", () => {
+    const model = buildDynamicResultMetrics({
+      context: context({
+        objectiveKey: "all",
+        primaryResultKey: undefined,
+      }),
+      definitions: [],
+      canonicalResults: [],
+      spend: 100,
+      impressions: 1_000,
+      reach: 800,
+      clicks: 100,
+      value: null,
+    });
+
+    expect(model.kpiCards.map((card) => card.key)).toEqual([
+      "spend",
+      "impressions",
+      "link_clicks",
+      "link_ctr",
+      "link_cpc",
+      "reach",
+      "frequency",
+      "cpm",
+    ]);
+    expect(
+      model.kpiCards.filter((card) => card.key.startsWith("link_")),
+    ).toEqual([
+      expect.objectContaining({
+        key: "link_clicks",
+        value: 100,
+        valueType: "count",
+        formula: "Meta-reported Link Clicks",
+      }),
+      expect.objectContaining({
+        key: "link_ctr",
+        value: 10,
+        valueType: "percent",
+        formula: "Link Clicks / Impressions × 100",
+      }),
+      expect.objectContaining({
+        key: "link_cpc",
+        value: 1,
+        valueType: "currency",
+        formula: "Spend / Link Clicks",
+      }),
+    ]);
+  });
+
+  it("keeps verified zero delivery values while marking zero denominators unavailable", () => {
+    const model = buildDynamicResultMetrics({
+      context: context({
+        objectiveKey: "all",
+        primaryResultKey: undefined,
+      }),
+      definitions: [],
+      canonicalResults: [],
+      spend: 0,
+      impressions: 0,
+      reach: 0,
+      clicks: 0,
+      value: null,
+    });
+
+    expect(
+      model.kpiCards.find((card) => card.key === "spend"),
+    ).toMatchObject({ value: 0 });
+    expect(
+      model.kpiCards.find((card) => card.key === "link_clicks"),
+    ).toMatchObject({ value: 0 });
+    for (const key of ["link_ctr", "link_cpc", "frequency", "cpm"]) {
+      expect(model.kpiCards.find((card) => card.key === key)).toMatchObject({
+        value: null,
+        unavailableReason: "zero_denominator",
+      });
+    }
+  });
+
   it("builds correctly labelled Result, Cost, columns and scatter for one result", () => {
     const model = buildDynamicResultMetrics({
       context: context(),
@@ -346,6 +424,17 @@ describe("dynamic result metrics", () => {
     ).toMatchObject({
       value: null,
       unavailableReason: "split_currency",
+    });
+    expect(
+      model.kpiCards.find((card) => card.key === "link_cpc"),
+    ).toMatchObject({
+      value: null,
+      unavailableReason: "split_currency",
+    });
+    expect(
+      model.kpiCards.find((card) => card.key === "link_ctr"),
+    ).toMatchObject({
+      value: 2,
     });
     expect(
       model.kpiCards.find(

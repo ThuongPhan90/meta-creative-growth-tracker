@@ -345,6 +345,24 @@ describe("Overview KPI drill-down", () => {
         hash: "#creative-results",
       },
       {
+        metric: "link_clicks",
+        sort: "desc",
+        view: "table",
+        hash: "#creative-results",
+      },
+      {
+        metric: "link_ctr",
+        sort: "desc",
+        view: "table",
+        hash: "#creative-results",
+      },
+      {
+        metric: "cpc_link",
+        sort: "asc",
+        view: "table",
+        hash: "#creative-results",
+      },
+      {
         metric: "reach",
         sort: "desc",
         view: "table",

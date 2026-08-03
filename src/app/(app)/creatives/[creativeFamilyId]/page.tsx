@@ -9,6 +9,7 @@ import {
   groupCreativeFamiliesForView,
 } from "@/components/creative-performance-v2";
 import { CopyIdButton } from "@/components/ui/copy-id-button";
+import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import {
   buildApplicationResultMetrics,
   getApplicationSnapshot,
@@ -18,6 +19,7 @@ import {
   resolveApplicationReportContext,
 } from "@/lib/app-data";
 import { canonicalDetailId } from "@/lib/detail-api/contracts";
+import { isUiV3 } from "@/lib/presentation/ui-version";
 
 export const dynamic = "force-dynamic";
 
@@ -96,7 +98,7 @@ export default async function CreativeFamilyPage({
       : { canonicalResults: canonicalResults.values }),
   });
 
-  return (
+  const content = (
     <div className="v2-page v2-full-detail">
       <Link className="v2-back-link" href={backHref}>
         <ArrowLeft aria-hidden="true" size={17} />
@@ -122,5 +124,26 @@ export default async function CreativeFamilyPage({
         />
       </section>
     </div>
+  );
+
+  return isUiV3() ? (
+    <V3SurfacePage
+      surface="creatives"
+      eyebrow="Creative Family"
+      title={family.name}
+      description="Chi tiết Creative Family theo Reporting Context và dữ liệu Meta đã đồng bộ."
+      backHref={backHref}
+      backLabel={creativeDetailBackLabel(query)}
+      meta={
+        <>
+          <code>{family.id}</code>
+          <CopyIdButton value={family.id} />
+        </>
+      }
+    >
+      {content}
+    </V3SurfacePage>
+  ) : (
+    content
   );
 }

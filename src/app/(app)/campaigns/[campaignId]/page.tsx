@@ -12,6 +12,7 @@ import {
   campaignStatusPresentation,
 } from "@/components/campaigns-v2";
 import { CopyIdButton } from "@/components/ui/copy-id-button";
+import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import {
   buildApplicationResultMetrics,
   getCanonicalResultsForReport,
@@ -33,6 +34,7 @@ import {
   formatPercent,
 } from "@/lib/presentation/formatters";
 import { campaignInventoryBackHref } from "@/lib/presentation/campaign-navigation";
+import { isUiV3 } from "@/lib/presentation/ui-version";
 import type { ResultKpiCard } from "@/lib/reporting";
 
 export const dynamic = "force-dynamic";
@@ -187,7 +189,7 @@ export default async function CampaignDetailPage({
   ];
   const backHref = campaignInventoryBackHref(query);
 
-  return (
+  const content = (
     <div className="v2-page">
       <Link
         className="v2-back-link"
@@ -400,5 +402,33 @@ export default async function CampaignDetailPage({
         </section>
       ) : null}
     </div>
+  );
+
+  return isUiV3() ? (
+    <V3SurfacePage
+      surface="campaigns"
+      eyebrow="Campaign"
+      title={campaign.name}
+      description="Chi tiết Campaign và cấu trúc phân phối từ snapshot Meta gần nhất trong Reporting Context hiện tại."
+      backHref={backHref}
+      backLabel="Quay lại Phân phối"
+      meta={
+        <>
+          <code>{campaign.metaCampaignId}</code>
+          <CopyIdButton value={campaign.metaCampaignId} />
+        </>
+      }
+      actions={
+        <span
+          className={`inventory-status inventory-status--${presentation.tone}`}
+        >
+          {presentation.label}
+        </span>
+      }
+    >
+      {content}
+    </V3SurfacePage>
+  ) : (
+    content
   );
 }

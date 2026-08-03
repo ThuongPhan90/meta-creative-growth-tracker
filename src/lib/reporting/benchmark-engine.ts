@@ -32,6 +32,10 @@ export type BenchmarkMetricDefinition = {
   metricKey: string;
   direction: BenchmarkDirection;
   aggregation: BenchmarkAggregationMethod;
+  /** V5 eligibility threshold for one comparable Creative. */
+  minimumResults?: number;
+  /** V5 eligibility threshold for one comparable Creative. */
+  minimumImpressions?: number;
 };
 
 /**
@@ -48,6 +52,13 @@ export type BenchmarkObservation = {
   currency: string;
   spend?: number | null;
   results?: number | null;
+  impressions?: number | null;
+  /**
+   * Optional until the repository projects per-Creative reporting state. A
+   * known non-ready value is excluded; a missing value is intentionally not
+   * relabelled as ready by this generic aggregation layer.
+   */
+  dataState?: "ready" | "partial" | "unavailable" | null;
   value?: number | null;
   weight?: number | null;
 };
@@ -102,8 +113,6 @@ const BENCHMARK_METHOD_ORDER: readonly ComparableBenchmarkMethod[] = [
   "exact",
   "account_objective_result_format",
   "account_objective_result",
-  "selected_business_objective_result_format",
-  "selected_scope_objective_result",
 ];
 
 const SUCCESS_REASONS: Record<
@@ -211,27 +220,93 @@ function methodMatches(
   );
 }
 
+function integerThreshold(
+  value: number | undefined,
+  fallback: number,
+) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.floor(value!));
+}
+
+function median(values: readonly number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? sorted[middle]!
+    : (sorted[middle - 1]! + sorted[middle]!) / 2;
+}
+
 function aggregate(
   observations: readonly BenchmarkObservation[],
-  method: BenchmarkAggregationMethod,
+  metric: BenchmarkMetricDefinition,
 ): { sampleSize: number; value: number | null } {
   const sampleKeys = new Set<string>();
 
-  if (method === "cost_per_result") {
-    let totalSpend = 0;
-    let totalResults = 0;
+  if (metric.aggregation === "cost_per_result") {
+    const peers = new Map<
+      string,
+      {
+        spend: number;
+        results: number;
+        impressions: number;
+        hasMissingImpressions: boolean;
+        hasKnownNonReadyDataState: boolean;
+      }
+    >();
     for (const observation of observations) {
       const spend = finiteNonNegative(observation.spend);
       const results = finiteNonNegative(observation.results);
+      const impressions = finiteNonNegative(observation.impressions);
       const sampleKey = normalized(observation.sampleKey);
       if (!sampleKey || spend === null || results === null) continue;
-      sampleKeys.add(sampleKey);
-      totalSpend += spend;
-      totalResults += results;
+      const current = peers.get(sampleKey) ?? {
+        spend: 0,
+        results: 0,
+        impressions: 0,
+        hasMissingImpressions: false,
+        hasKnownNonReadyDataState: false,
+      };
+      current.spend += spend;
+      current.results += results;
+      if (impressions === null) {
+        current.hasMissingImpressions = true;
+      } else {
+        current.impressions += impressions;
+      }
+      if (
+        observation.dataState !== undefined &&
+        observation.dataState !== null &&
+        observation.dataState !== "ready"
+      ) {
+        current.hasKnownNonReadyDataState = true;
+      }
+      peers.set(sampleKey, current);
     }
+
+    const minimumResults = integerThreshold(metric.minimumResults, 0);
+    const minimumImpressions = integerThreshold(
+      metric.minimumImpressions,
+      0,
+    );
+    const costs = [...peers.values()].flatMap((peer) => {
+      if (
+        peer.hasKnownNonReadyDataState ||
+        peer.results < minimumResults ||
+        (minimumImpressions > 0 &&
+          (peer.hasMissingImpressions ||
+            peer.impressions < minimumImpressions)) ||
+        peer.results <= 0
+      ) {
+        return [];
+      }
+      return [peer.spend / peer.results];
+    });
     return {
-      sampleSize: sampleKeys.size,
-      value: totalResults > 0 ? totalSpend / totalResults : null,
+      // V5 compares the median Cost/Result of eligible Creative peers, not
+      // a weighted total across the peer set.
+      sampleSize: costs.length,
+      value: median(costs),
     };
   }
 
@@ -329,7 +404,7 @@ export function selectBenchmark({
     const observations = (candidatePools[method] ?? []).filter(
       (observation) => methodMatches(observation, target, method),
     );
-    const aggregated = aggregate(observations, metric.aggregation);
+    const aggregated = aggregate(observations, metric);
     largestSampleSize = Math.max(
       largestSampleSize,
       aggregated.sampleSize,

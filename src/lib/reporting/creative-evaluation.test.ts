@@ -14,11 +14,10 @@ const base = {
   primaryResults: 10,
   spend: 800,
   dataConfidence: "high" as const,
-  windowDays: 14,
 };
 
 describe("evaluateCreative", () => {
-  it("marks a lower cost at least 15% better than benchmark", () => {
+  it("marks a lower cost at least 20% better than benchmark", () => {
     const result = evaluateCreative(base);
 
     expect(result).toMatchObject({
@@ -27,6 +26,27 @@ describe("evaluateCreative", () => {
       deltaPercent: -20,
       recommendationKey: "scale_controlled",
     });
+  });
+
+  it("keeps the 1.2x cost boundary within benchmark", () => {
+    const result = evaluateCreative({
+      ...base,
+      actualValue: 120,
+    });
+
+    expect(result).toMatchObject({
+      deltaPercent: 20,
+      performanceStatus: "within_benchmark",
+    });
+  });
+
+  it("marks cost above 1.2x benchmark as needs review", () => {
+    const result = evaluateCreative({
+      ...base,
+      actualValue: 120.01,
+    });
+
+    expect(result.performanceStatus).toBe("needs_review");
   });
 
   it("keeps insufficient delivery out of good and poor statuses", () => {
@@ -88,29 +108,20 @@ describe("evaluateCreative", () => {
     expect(result.eligibility).toBe("not_eligible");
   });
 
-  it("does not fabricate fatigue for a date range under three days", () => {
+  it("keeps fatigue insufficient when the dedicated fatigue engine has no result", () => {
     const result = evaluateCreative({
       ...base,
-      windowDays: 2,
-      fatigueTrend: {
-        frequencyDeltaPercent: 40,
-        ctrDeltaPercent: -30,
-        costPerResultDeltaPercent: 50,
-        resultVolumeDeltaPercent: -40,
-      },
     });
 
     expect(result.fatigueStatus).toBe("insufficient");
   });
 
-  it("detects fatigue only from multiple adverse trend signals", () => {
+  it("uses the dedicated fatigue decision for a valid frequency-led warning", () => {
     const result = evaluateCreative({
       ...base,
-      fatigueTrend: {
-        frequencyDeltaPercent: 20,
-        ctrDeltaPercent: -25,
-        costPerResultDeltaPercent: 30,
-        resultVolumeDeltaPercent: -20,
+      fatigue: {
+        status: "fatigue_risk",
+        adverseSignalCount: 2,
       },
     });
 

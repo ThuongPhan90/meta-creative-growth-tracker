@@ -52,7 +52,7 @@ function observation(
 }
 
 describe("selectBenchmark", () => {
-  it("uses the exact peer group and aggregates cost per result from additive totals", () => {
+  it("uses the exact peer group and takes the median per-Creative cost per result", () => {
     const result = selectBenchmark({
       target,
       metric: costPerResultMetric,
@@ -69,7 +69,7 @@ describe("selectBenchmark", () => {
     expect(result).toEqual({
       label: "Account One · Leads · Lead · Video · USD",
       sampleSize: 2,
-      value: 14,
+      value: 15,
       method: "exact",
       reason: "exact_peer_group_sufficient",
       metricKey: "cost_per_result",
@@ -79,7 +79,11 @@ describe("selectBenchmark", () => {
   });
 
   it.each<{
-    method: Exclude<BenchmarkPeerGroupMethod, "exact" | "none">;
+    method: Extract<
+      BenchmarkPeerGroupMethod,
+      | "account_objective_result_format"
+      | "account_objective_result"
+    >;
     reason: BenchmarkReason;
     label: string;
     peers: BenchmarkObservation[];
@@ -97,32 +101,6 @@ describe("selectBenchmark", () => {
       peers: [
         observation("peer-a", { format: "image" }),
         observation("peer-b", { format: "carousel" }),
-      ],
-    },
-    {
-      method: "selected_business_objective_result_format",
-      reason: "account_result_peer_group_insufficient",
-      label: "Business One · Leads · Lead · Video · USD",
-      peers: [
-        observation("peer-a", { adAccountId: "account-2" }),
-        observation("peer-b", { adAccountId: "account-3" }),
-      ],
-    },
-    {
-      method: "selected_scope_objective_result",
-      reason: "business_format_peer_group_insufficient",
-      label: "Selected Accounts · Leads · Lead · USD",
-      peers: [
-        observation("peer-a", {
-          adAccountId: "account-2",
-          businessId: "business-2",
-          format: "image",
-        }),
-        observation("peer-b", {
-          adAccountId: "account-3",
-          businessId: "business-3",
-          format: "carousel",
-        }),
       ],
     },
   ])(
@@ -181,6 +159,107 @@ describe("selectBenchmark", () => {
       sampleSize: 2,
       value: 15,
       direction: "lower_is_better",
+    });
+  });
+
+  it("does not fall back across Ad Accounts, Businesses or selected scope", () => {
+    const crossAccountPeers = [
+      observation("peer-a", { adAccountId: "account-2" }),
+      observation("peer-b", { adAccountId: "account-3" }),
+      observation("peer-c", { adAccountId: "account-2" }),
+      observation("peer-d", { adAccountId: "account-3" }),
+      observation("peer-e", { adAccountId: "account-2" }),
+    ];
+
+    const result = selectBenchmark({
+      target,
+      metric: costPerResultMetric,
+      minimumSampleSize: 5,
+      candidatePools: {
+        account_objective_result_format: [observation("only-peer")],
+        account_objective_result: [
+          observation("only-peer", { format: "image" }),
+        ],
+        selected_business_objective_result_format: crossAccountPeers,
+        selected_scope_objective_result: crossAccountPeers,
+      },
+    });
+
+    expect(result).toMatchObject({
+      method: "none",
+      value: null,
+      sampleSize: 1,
+      reason: "insufficient_comparable_sample",
+    });
+  });
+
+  it("uses a median of V5-eligible peers, never a weighted total", () => {
+    const result = selectBenchmark({
+      target,
+      metric: {
+        ...costPerResultMetric,
+        minimumResults: 5,
+        minimumImpressions: 1_000,
+      },
+      minimumSampleSize: 5,
+      candidatePools: {
+        exact: [
+          observation("peer-a", {
+            spend: 50,
+            results: 5,
+            impressions: 1_000,
+            dataState: "ready",
+          }),
+          observation("peer-b", {
+            spend: 100,
+            results: 10,
+            impressions: 1_000,
+            dataState: "ready",
+          }),
+          observation("peer-c", {
+            spend: 200,
+            results: 20,
+            impressions: 1_000,
+            dataState: "ready",
+          }),
+          observation("peer-d", {
+            spend: 500,
+            results: 50,
+            impressions: 1_000,
+            dataState: "ready",
+          }),
+          observation("peer-e", {
+            spend: 1_000,
+            results: 10,
+            impressions: 1_000,
+            dataState: "ready",
+          }),
+          observation("too-few-results", {
+            spend: 100,
+            results: 4,
+            impressions: 5_000,
+            dataState: "ready",
+          }),
+          observation("too-few-impressions", {
+            spend: 100,
+            results: 10,
+            impressions: 999,
+            dataState: "ready",
+          }),
+          observation("partial-peer", {
+            spend: 100,
+            results: 10,
+            impressions: 5_000,
+            dataState: "partial",
+          }),
+        ],
+      },
+    });
+
+    expect(result).toMatchObject({
+      method: "exact",
+      sampleSize: 5,
+      value: 10,
     });
   });
 
@@ -244,7 +323,7 @@ describe("selectBenchmark", () => {
     });
   });
 
-  it("does not fabricate cost per result when every comparable peer has zero results", () => {
+  it("excludes zero-result peers from the eligible cost-per-result sample", () => {
     const zeroResultPeers = [
       observation("peer-a", { spend: 100, results: 0 }),
       observation("peer-b", { spend: 200, results: 0 }),
@@ -261,9 +340,9 @@ describe("selectBenchmark", () => {
 
     expect(result).toMatchObject({
       method: "none",
-      sampleSize: 2,
+      sampleSize: 0,
       value: null,
-      reason: "no_aggregatable_value",
+      reason: "insufficient_comparable_sample",
     });
   });
 });

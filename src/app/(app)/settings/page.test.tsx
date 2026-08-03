@@ -41,6 +41,7 @@ const settings: TrackerSettings = {
   alertChannel: "none",
   installActionTypes: ["mobile_app_install"],
   registrationActionTypes: ["complete_registration"],
+  metricDisplayPresets: { version: 1, presets: {} },
   lastInitialSyncAt: null,
   updatedAt: "2026-07-31T00:00:00.000Z",
 };

@@ -39,6 +39,7 @@ const initial: TrackerSettings = {
   alertChannel: "none",
   installActionTypes: ["mobile_app_install"],
   registrationActionTypes: ["complete_registration"],
+  metricDisplayPresets: { version: 1, presets: {} },
   lastInitialSyncAt: null,
   updatedAt: "2026-07-29T09:42:00.000Z",
 };
@@ -167,7 +168,7 @@ describe("Settings V2 reporting contract and tabs", () => {
       ),
     ).toEqual([
       "Báo cáo",
-      "Kết quả & Mapping",
+      "Chỉ số hiển thị",
       "Benchmark & Đánh giá",
       "Đồng bộ & Bảo mật",
     ]);
@@ -246,6 +247,7 @@ describe("Settings V2 result, benchmark and sync behavior", () => {
     expect(container.textContent).toContain("1 override · chỉ đọc");
     expect(container.textContent).toContain("Secondary Result");
     expect(container.textContent).toContain("Chưa có API lưu");
+    expect(container.textContent).toContain("Chưa có preset đã lưu");
 
     const coverageLink = container.querySelector<HTMLAnchorElement>(
       'a[aria-label="Mở chi tiết Mapping coverage"]',

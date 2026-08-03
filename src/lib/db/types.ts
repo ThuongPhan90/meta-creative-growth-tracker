@@ -1,3 +1,5 @@
+import type { MetricDisplayPresets } from "@/lib/reporting/metric-preset";
+
 export type DatabaseId = string;
 
 export type JsonValue =
@@ -72,6 +74,7 @@ export interface TrackerSettings {
   alertChannel: "none" | "email";
   installActionTypes: string[];
   registrationActionTypes: string[];
+  metricDisplayPresets: MetricDisplayPresets;
   lastInitialSyncAt: string | null;
   updatedAt: string;
 }
@@ -93,6 +96,9 @@ export interface TrackerSettingsUpdate {
   alertChannel?: TrackerSettings["alertChannel"];
   installActionTypes?: readonly string[];
   registrationActionTypes?: readonly string[];
+  metricDisplayPresets?: MetricDisplayPresets;
+  /** Required by the focused metric-preset endpoint to prevent lost updates. */
+  expectedUpdatedAt?: string;
   lastInitialSyncAt?: string | null;
 }
 
@@ -596,6 +602,8 @@ export interface LiveDeliveryAccountFreshness {
   metaAdAccountId: string;
   accountTimezone: string | null;
   isOperational: boolean;
+  /** True only when the account belongs to the delivery-ready denominator. */
+  deliveryEligible: boolean;
   /** Last time the account record was observed; not a persisted inventory-complete snapshot. */
   inventoryObservedAt: string | null;
   latestMetricDate: string | null;
@@ -704,6 +712,17 @@ export interface DeliveryPerformanceFilters {
   dateFrom: string;
   dateTo: string;
   adAccountId?: DatabaseId;
+  /**
+   * Exact Meta ad-account scope for aggregate delivery reads. An explicitly
+   * empty array intentionally matches no account, rather than falling back to
+   * every operational account on the connection.
+   */
+  adAccountMetaIds?: readonly string[];
+  /**
+   * Reporting a selected historical account must not discard its verified
+   * past delivery merely because it is no longer operational today.
+   */
+  includeInactiveAccounts?: boolean;
   accountMetaId?: string;
   campaignMetaId?: string;
   attributionWindow?: string;
@@ -724,6 +743,40 @@ export interface DeliveryPerformanceItem {
   video3sViews: number;
   video100Views: number;
   metricDays: number;
+}
+
+/**
+ * Additive delivery facts for the Overview Meta Breakdown. These values are
+ * grouped only after filtering to the exact Reporting Context; consumers must
+ * still reject a mixed-currency result before presenting Spend.
+ */
+export interface MetaBreakdownFilters {
+  connectionId: DatabaseId;
+  dateFrom: string;
+  dateTo: string;
+  adAccountMetaIds?: readonly string[];
+  campaignMetaIds?: readonly string[];
+  attributionWindow?: string;
+  actionReportTime?: "impression" | "conversion" | "mixed";
+  syncVersion?: string;
+  objectiveRawKeys?: readonly string[];
+  objectiveMappings?: readonly CanonicalResultObjectiveMapping[];
+  currency?: string;
+}
+
+export interface MetaBreakdownMetricRow {
+  adAccountMetaId: string;
+  adAccountName: string | null;
+  campaignMetaId: string;
+  campaignName: string | null;
+  /** Canonical registry key; null means the raw Meta Objective has no mapping. */
+  objectiveKey: string | null;
+  publisherPlatform: string;
+  platformPosition: string;
+  currency: string;
+  spend: number;
+  impressions: number;
+  linkClicks: number;
 }
 
 export type DeliveryTrendFilters = DeliveryPerformanceFilters;

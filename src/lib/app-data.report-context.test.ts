@@ -129,6 +129,8 @@ function applicationSnapshot(
       minimumInstallThreshold: 20,
       installActionTypes: ["mobile_app_install"],
       registrationActionTypes: ["complete_registration"],
+      metricDisplayPresets: { version: 1, presets: {} },
+      updatedAt: null,
     },
   };
 }
@@ -633,9 +635,9 @@ describe("application report context Result registry", () => {
 });
 
 describe("live Creative fatigue integration", () => {
-  it("uses two exact non-overlapping half-windows to surface fatigue risk", async () => {
+  it("uses two exact non-overlapping 7D windows and fails closed without Family Reach", async () => {
     const dateFrom = "2026-07-01";
-    const dateTo = "2026-07-07";
+    const dateTo = "2026-07-14";
     const snapshot = connectedApplicationSnapshot([
       liveLeadDefinition,
     ]);
@@ -674,8 +676,8 @@ describe("live Creative fatigue integration", () => {
       report.creatives[0]?.performance?.evaluation,
     ).toMatchObject({
       resultKey: "lead",
-      fatigueStatus: "fatigue_risk",
-      recommendationKey: "refresh_creative",
+      fatigueStatus: "insufficient",
+      recommendationKey: "continue_test",
     });
 
     const canonicalCampaignCalls =
@@ -687,11 +689,11 @@ describe("live Creative fatigue integration", () => {
       expect.arrayContaining([
         expect.objectContaining({
           dateFrom: "2026-07-01",
-          dateTo: "2026-07-03",
+          dateTo: "2026-07-07",
         }),
         expect.objectContaining({
-          dateFrom: "2026-07-04",
-          dateTo: "2026-07-07",
+          dateFrom: "2026-07-08",
+          dateTo: "2026-07-14",
         }),
       ]),
     );
@@ -718,19 +720,19 @@ describe("live Creative fatigue integration", () => {
       expect.arrayContaining([
         expect.objectContaining({
           dateFrom: "2026-07-01",
-          dateTo: "2026-07-03",
+          dateTo: "2026-07-07",
         }),
         expect.objectContaining({
-          dateFrom: "2026-07-04",
-          dateTo: "2026-07-07",
+          dateFrom: "2026-07-08",
+          dateTo: "2026-07-14",
         }),
       ]),
     );
   });
 
-  it("keeps a sub-three-day window insufficient without split queries", async () => {
+  it("keeps one 7D report insufficient until a previous 7D window is available", async () => {
     const dateFrom = "2026-07-01";
-    const dateTo = "2026-07-02";
+    const dateTo = "2026-07-07";
     const snapshot = connectedApplicationSnapshot([
       liveLeadDefinition,
     ]);
@@ -1143,6 +1145,8 @@ describe("live canonical overview trend", () => {
         date: "2026-07-01",
         currency: "VND",
         spend: 700,
+        impressions: 5_000,
+        linkClicks: 0,
         resultValues: { install: 7 },
         efficiencyValues: { install: 100 },
       },
@@ -1437,6 +1441,8 @@ describe("live canonical overview trend", () => {
         date: "2026-07-01",
         currency: "VND",
         spend: 200,
+        impressions: 1_000,
+        linkClicks: 100,
         resultValues: { quality_view: 20 },
         efficiencyValues: { quality_view: 20 },
       },
@@ -1520,14 +1526,40 @@ describe("live canonical overview trend", () => {
     expect(trend).toEqual([]);
   });
 
-  it("does not request a cross-Objective Result trend", async () => {
+  it("returns only exact-scope delivery trend for all Objectives", async () => {
     const snapshot = connectedApplicationSnapshot([
       ...DEFAULT_RESULT_DEFINITIONS,
     ]);
     const context = {
       ...resolveApplicationReportContext(snapshot, { objective: "all" }),
-      adAccountIds: ["act_1"],
+      adAccountIds: ["act_1", "act_2"],
+      currency: "VND",
+      currencyMode: "single" as const,
+      syncVersion: "run-1",
     };
+    const getDeliveryTrend = vi.fn().mockResolvedValue([
+      {
+        metricDate: "2026-07-01",
+        currency: "VND",
+        spend: 500,
+        impressions: 10_000,
+        linkClicks: 250,
+        installs: 90,
+        registrations: 30,
+        video3sViews: 0,
+        video100Views: 0,
+        linkCtr: 2.5,
+        cpi: 5.56,
+        costPerRegistration: 16.67,
+        hookRate: null,
+        holdRate: null,
+      },
+    ]);
+    const getCanonicalResultTrend = vi.fn();
+    databaseMocks.createTrackerRepository.mockResolvedValue({
+      getDeliveryTrend,
+      getCanonicalResultTrend,
+    } as unknown as TrackerRepository);
 
     const trend = await getOverviewTrendForReport({
       snapshot,
@@ -1537,8 +1569,95 @@ describe("live canonical overview trend", () => {
       reportContext: context,
     });
 
-    expect(trend).toEqual([]);
-    expect(databaseMocks.createTrackerRepository).not.toHaveBeenCalled();
+    expect(getDeliveryTrend).toHaveBeenCalledWith({
+      connectionId: liveConnection.connectionId,
+      dateFrom: context.dateFrom,
+      dateTo: context.dateTo,
+      adAccountMetaIds: ["act_1", "act_2"],
+      includeInactiveAccounts: true,
+      currency: "VND",
+      attributionWindow: context.attributionSettingKey,
+      actionReportTime: context.actionReportTime,
+      syncVersion: "run-1",
+    });
+    expect(getCanonicalResultTrend).not.toHaveBeenCalled();
+    expect(trend).toEqual([
+      {
+        date: "2026-07-01",
+        currency: "VND",
+        spend: 500,
+        impressions: 10_000,
+        linkClicks: 250,
+        resultValues: {},
+        efficiencyValues: {},
+      },
+    ]);
+  });
+
+  it("keeps verified delivery points when no selected Result row exists", async () => {
+    const definitions = DEFAULT_RESULT_DEFINITIONS.map((definition) =>
+      definition.canonicalKey === "impressions" ||
+      definition.canonicalKey === "link_click"
+        ? { ...definition, enabled: false }
+        : definition,
+    );
+    const snapshot = connectedApplicationSnapshot(definitions);
+    const context = {
+      ...resolveApplicationReportContext(snapshot, { objective: "traffic" }),
+      adAccountIds: ["act_1"],
+      currency: "VND",
+      currencyMode: "single" as const,
+      syncVersion: "run-1",
+    };
+    databaseMocks.createTrackerRepository.mockResolvedValue({
+      listResultMappings: vi.fn().mockResolvedValue([]),
+      getCanonicalResultTrend: vi.fn().mockResolvedValue({
+        available: true,
+        syncVersion: "run-1",
+        resultMappingVersion: computeResultMappingVersion([]),
+        results: [
+          {
+            metricDate: "2026-07-01",
+            canonicalResultKey: "impressions",
+            objectiveKey: "traffic",
+            metricSource: "delivery",
+            currency: "VND",
+            value: 1_000,
+            dailySpend: 250,
+          },
+          {
+            metricDate: "2026-07-01",
+            canonicalResultKey: "link_click",
+            objectiveKey: "traffic",
+            metricSource: "delivery",
+            currency: "VND",
+            value: 50,
+            dailySpend: 250,
+          },
+        ],
+      }),
+    } as unknown as TrackerRepository);
+
+    const trend = await getOverviewTrendForReport({
+      snapshot,
+      dateFrom: context.dateFrom,
+      dateTo: context.dateTo,
+      accountMetaIds: context.adAccountIds,
+      currency: context.currency,
+      reportContext: context,
+    });
+
+    expect(trend).toEqual([
+      {
+        date: "2026-07-01",
+        currency: "VND",
+        spend: 250,
+        impressions: 1_000,
+        linkClicks: 50,
+        resultValues: {},
+        efficiencyValues: {},
+      },
+    ]);
   });
 });
 

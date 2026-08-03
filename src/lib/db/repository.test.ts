@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { DatabaseClient } from "./client";
+import { SettingsUpdateConflictError } from "./errors";
 import { TrackerRepository } from "./repository";
 import { computeResultMappingVersion } from "./result-mapping-version";
+import type { MetricDisplayPresets } from "@/lib/reporting/metric-preset";
 import type {
   DailyMetricInput,
   DatabaseId,
@@ -61,7 +63,8 @@ function expectAccountDefaultAwareAttributionFilter(input: {
 
 describe("Meta connection owner claim", () => {
   it("uses one atomic statement and returns null for a different owner", async () => {
-    const unsafe = vi.fn(async (query: string) => {
+    const unsafe = vi.fn(async (query: string, parameters?: unknown[]) => {
+      void parameters;
       void query;
       return [];
     });
@@ -120,6 +123,122 @@ describe("Settings audit log", () => {
       "order by changed_at desc, settings_audit_id desc",
     );
     expect(unsafe.mock.calls[0]?.[0]).not.toContain("limit");
+  });
+});
+
+describe("Metric display preset settings persistence", () => {
+  const currentUpdatedAt = new Date("2026-08-01T10:00:00.000Z");
+  const baseSettingsRow = {
+    owner_id: 1,
+    reporting_timezone: "Asia/Ho_Chi_Minh",
+    reporting_currency: "VND",
+    sync_lookback_days: 30,
+    minimum_install_threshold: 20,
+    minimum_registration_threshold: 10,
+    benchmark_mode: "os",
+    benchmark_window_days: 30,
+    benchmark_by_os: true,
+    benchmark_by_format: true,
+    number_format: "vi-VN",
+    compare_default: "previous_period",
+    scoring_weight_cpi: 40,
+    scoring_weight_cpa: 40,
+    scoring_weight_hook: 10,
+    scoring_weight_hold: 10,
+    sync_cadence: "manual",
+    alert_channel: "none",
+    install_action_types: ["mobile_app_install"],
+    registration_action_types: ["complete_registration"],
+    metric_display_presets: { version: 1, presets: {} },
+    last_initial_sync_at: null,
+    updated_at: currentUpdatedAt,
+  };
+
+  it("locks current settings, stores versioned JSONB and writes the full audit trail", async () => {
+    const unsafe = vi.fn(async (query: string, parameters?: unknown[]) => {
+      void parameters;
+      if (query.includes("select * from tracker.app_settings")) {
+        return [baseSettingsRow];
+      }
+      if (query.includes("update tracker.app_settings")) {
+        return [
+          {
+            ...baseSettingsRow,
+            metric_display_presets: {
+              version: 1,
+              presets: { "sales:purchase": ["spend"] },
+            },
+            updated_at: new Date("2026-08-01T10:01:00.000Z"),
+          },
+        ];
+      }
+      return [];
+    });
+    const repository = new TrackerRepository({
+      begin: async (
+        callback: (transaction: { unsafe: typeof unsafe }) => Promise<unknown>,
+      ) => callback({ unsafe }),
+    } as unknown as DatabaseClient);
+
+    const next: MetricDisplayPresets = {
+      version: 1,
+      presets: { "sales:purchase": ["spend"] },
+    };
+    const normalizedNext: MetricDisplayPresets = {
+      version: 1,
+      presets: {
+        "sales:purchase": [
+          "spend",
+          "result:purchase",
+          "efficiency:purchase",
+        ],
+      },
+    };
+    await expect(
+      repository.updateSettings({
+        metricDisplayPresets: next,
+        expectedUpdatedAt: currentUpdatedAt.toISOString(),
+      }),
+    ).resolves.toMatchObject({
+      metricDisplayPresets: normalizedNext,
+      updatedAt: "2026-08-01T10:01:00.000Z",
+    });
+
+    const updateCall = unsafe.mock.calls.find(([query]) =>
+      query.includes("update tracker.app_settings"),
+    );
+    expect(updateCall?.[0]).toContain("metric_display_presets = $21::jsonb");
+    expect(updateCall?.[1]?.[20]).toEqual(normalizedNext);
+    const auditCall = unsafe.mock.calls.find(([query]) =>
+      query.includes("insert into tracker.settings_audit_log"),
+    );
+    expect(auditCall?.[1]?.[0]).toMatchObject({
+      metricDisplayPresets: { version: 1, presets: {} },
+    });
+    expect(auditCall?.[1]?.[1]).toMatchObject({
+      metricDisplayPresets: normalizedNext,
+    });
+  });
+
+  it("fails closed when the caller carries an older settings revision", async () => {
+    const unsafe = vi.fn(async (query: string, parameters?: unknown[]) => {
+      void query;
+      void parameters;
+      return [baseSettingsRow];
+    });
+    const repository = new TrackerRepository({
+      begin: async (
+        callback: (transaction: { unsafe: typeof unsafe }) => Promise<unknown>,
+      ) => callback({ unsafe }),
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.updateSettings({
+        metricDisplayPresets: { version: 1, presets: {} },
+        expectedUpdatedAt: "2026-08-01T09:59:00.000Z",
+      }),
+    ).rejects.toBeInstanceOf(SettingsUpdateConflictError);
+    expect(unsafe).toHaveBeenCalledOnce();
   });
 });
 
@@ -1805,7 +1924,7 @@ describe("Ad account activity filters", () => {
     expect(query).toContain(
       "group by metric.metric_date, metric.currency",
     );
-    expect(query).toContain("account.meta_ad_account_id = $6");
+    expect(query).toContain("account.meta_ad_account_id = any($6::text[])");
     expect(query).toContain("selected_campaign.meta_campaign_id = $7");
     expectAccountDefaultAwareAttributionFilter({
       query,
@@ -1821,11 +1940,12 @@ describe("Ad account activity filters", () => {
       "2026-07-24",
       "42",
       null,
-      "act_123",
+      ["act_123"],
       "campaign_456",
       "7d_click_1d_view",
       "conversion",
       "sync_42",
+      false,
       null,
     ]);
     expect(result).toHaveLength(2);
@@ -1863,6 +1983,36 @@ describe("Ad account activity filters", () => {
     });
 
     expect(unsafe.mock.calls[0]?.[1]?.[4]).toBe("USD");
+  });
+
+  it("keeps an exact, normalized multi-account scope for daily delivery trend", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await repository.getDeliveryTrend({
+      connectionId: "connection-1",
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-24",
+      adAccountMetaIds: [" act_123 ", "act_456", "act_123", ""],
+      includeInactiveAccounts: true,
+    });
+
+    expect(unsafe.mock.calls[0]?.[0]).toContain(
+      "account.meta_ad_account_id = any($6::text[])",
+    );
+    expect(unsafe.mock.calls[0]?.[1]?.[5]).toEqual([
+      "act_123",
+      "act_456",
+    ]);
+    expect(unsafe.mock.calls[0]?.[1]?.[10]).toBe(true);
   });
 
   it("filters campaign inventory by active account by default and bypasses it explicitly", async () => {
@@ -2339,6 +2489,7 @@ describe("Live Delivery summary", () => {
     metaAdAccountId: "act_1",
     accountTimezone: "Asia/Ho_Chi_Minh",
     isOperational: true,
+    deliveryEligible: true,
     inventoryObservedAt: "2026-08-01T08:00:00.000Z",
     latestMetricDate: "2026-08-01",
     inventoryState: "ready",

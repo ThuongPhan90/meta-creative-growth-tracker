@@ -4,13 +4,37 @@ import type {
 } from "@/types/view-models";
 
 export type CoverageDimension = {
-  key: "campaign" | "ad" | "creative" | "event";
+  key:
+    | "campaign"
+    | "ad"
+    | "creative"
+    | "event"
+    | "delivery_ready_account";
   label: string;
   covered: number;
   total: number;
-  ratio: number;
+  ratio: number | null;
   detail: string;
   missingFamilyIds: string[];
+  missingAccountMetaIds?: string[];
+  state?: "ready" | "partial" | "unavailable";
+};
+
+/**
+ * The delivery denominator is the number of operational accounts with active
+ * Ads, as resolved by the current live-delivery snapshot. It is intentionally
+ * separate from the Creative Family denominator used by link coverage.
+ */
+export type DeliveryReadyAccountCoverage = {
+  selectedAccountCount: number;
+  deliveryEligibleAccountCount: number;
+  deliveryReadyAccountCount: number;
+  state: "ready" | "partial" | "unavailable";
+  accounts?: readonly {
+    metaAdAccountId: string;
+    deliveryEligible: boolean;
+    deliveryState: "ready" | "stale" | "unavailable";
+  }[];
 };
 
 function ratio(covered: number, total: number) {
@@ -25,6 +49,7 @@ function ratio(covered: number, total: number) {
 export function buildDataHealthCoverage(
   creatives: readonly CreativeRow[],
   events: readonly EventHealth[],
+  delivery?: DeliveryReadyAccountCoverage,
 ): CoverageDimension[] {
   const families = new Map<
     string,
@@ -69,7 +94,7 @@ export function buildDataHealthCoverage(
     0,
   );
 
-  return [
+  const dimensions: CoverageDimension[] = [
     {
       key: "campaign",
       label: "Campaign coverage",
@@ -113,4 +138,40 @@ export function buildDataHealthCoverage(
       missingFamilyIds: [],
     },
   ];
+
+  if (delivery) {
+    const eligible = Math.max(0, delivery.deliveryEligibleAccountCount);
+    const ready = Math.min(
+      eligible,
+      Math.max(0, delivery.deliveryReadyAccountCount),
+    );
+    const unavailable = delivery.state === "unavailable";
+    const missingAccountMetaIds = (delivery.accounts ?? [])
+      .filter(
+        (account) =>
+          account.deliveryEligible && account.deliveryState !== "ready",
+      )
+      .map((account) => account.metaAdAccountId)
+      .filter(Boolean);
+    dimensions.push({
+      key: "delivery_ready_account",
+      label: "Delivery-ready account coverage",
+      covered: ready,
+      total: eligible,
+      ratio: unavailable || eligible === 0 ? null : ratio(ready, eligible),
+      detail:
+        unavailable
+          ? "Snapshot delivery chưa khả dụng cho scope hiện tại; hệ thống không suy diễn coverage 0% hoặc 100%."
+          : eligible > 0
+          ? `${ready}/${eligible} Ad Account đủ điều kiện delivery có snapshot mới và cùng ngày dữ liệu`
+          : delivery.selectedAccountCount > 0
+            ? "Không có Ad Account đủ điều kiện delivery trong scope hiện tại"
+            : "Scope hiện tại chưa có Ad Account để đánh giá delivery",
+      missingFamilyIds: [],
+      missingAccountMetaIds,
+      state: delivery.state,
+    });
+  }
+
+  return dimensions;
 }

@@ -22,7 +22,10 @@ import {
   formatNumber,
   formatPercent,
 } from "@/lib/presentation/formatters";
-import { buildDataHealthCoverage } from "@/lib/presentation/data-health-coverage";
+import {
+  buildDataHealthCoverage,
+  type DeliveryReadyAccountCoverage,
+} from "@/lib/presentation/data-health-coverage";
 import { formatDataHealthEntityType } from "@/lib/presentation/data-health-entity-label";
 import { dataHealthEntityHref } from "@/lib/presentation/data-health-links";
 import { buildContextHref } from "@/lib/navigation/query";
@@ -263,6 +266,10 @@ function CoverageDrawer({
           ),
         )
       : [];
+  const isDeliveryCoverage = dimension.key === "delivery_ready_account";
+  const missingDeliveryAccounts = isDeliveryCoverage
+    ? (dimension.missingAccountMetaIds ?? [])
+    : [];
 
   return (
     <EntityDrawer
@@ -293,6 +300,8 @@ function CoverageDrawer({
           <h3>
             {dimension.key === "event"
               ? "Mapping cần kiểm tra"
+              : isDeliveryCoverage
+                ? "Ad Account cần kiểm tra"
               : "Creative Family cần kiểm tra"}
           </h3>
           {missing.length ? (
@@ -338,6 +347,39 @@ function CoverageDrawer({
                 </li>
               ))}
             </ul>
+          ) : isDeliveryCoverage ? (
+            missingDeliveryAccounts.length ? (
+              <ul className="v2-affected-entities">
+                {missingDeliveryAccounts.map((accountId) => (
+                  <li key={accountId}>
+                    <span className="v2-chip">Ad Account</span>
+                    <strong>{accountId}</strong>
+                    <Link
+                      className="v2-link"
+                      href={buildContextHref("/sources", query, {
+                        account_ids: accountId,
+                      })}
+                    >
+                      Mở Nguồn dữ liệu
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="v2-compact-empty">
+                <Clock3 aria-hidden="true" size={22} />
+                <p>
+                  {dimension.state === "partial"
+                    ? "Các account delivery-ready không cùng ngày dữ liệu; hệ thống giữ trạng thái một phần thay vì đánh dấu đạt."
+                    : dimension.total > 0
+                      ? "Không có Ad Account thiếu riêng lẻ; mở Nguồn dữ liệu để đối chiếu scope delivery."
+                      : "Không có mẫu số delivery-ready trong scope hiện tại; hệ thống không suy diễn coverage 100%."}
+                </p>
+                <Link className="v2-link" href={buildContextHref("/sources", query)}>
+                  Mở Nguồn dữ liệu
+                </Link>
+              </div>
+            )
           ) : (
             <div className="v2-compact-empty">
               <CheckCircle2 aria-hidden="true" size={22} />
@@ -358,15 +400,21 @@ export function DataHealthV2({
   syncRuns,
   connected,
   query,
+  liveDelivery,
 }: {
   dashboard: DashboardViewModel;
   creatives: CreativeRow[];
   syncRuns: SyncRunView[];
   connected: boolean;
   query: Query;
+  liveDelivery?: DeliveryReadyAccountCoverage;
 }) {
   const latest = syncRuns[0];
-  const coverage = buildDataHealthCoverage(creatives, dashboard.events);
+  const coverage = buildDataHealthCoverage(
+    creatives,
+    dashboard.events,
+    liveDelivery,
+  );
   const overall = overallStatus(latest, connected);
   const issues = buildDataHealthIssuesFromRuns(syncRuns);
   const selectedId = first(query.selected);
@@ -463,8 +511,9 @@ export function DataHealthV2({
           <div>
             <h2>Độ đầy đủ</h2>
             <p>
-              Tính trên Creative Family đã đồng bộ; không suy diễn tổng danh
-              mục Meta khi nguồn chưa trả về mẫu số.
+              Mỗi chiều dùng đúng mẫu số: Creative Family đã đồng bộ, mapping
+              Objective/OS hoặc Ad Account đủ điều kiện delivery. Không suy
+              diễn danh mục Meta khi nguồn chưa trả về mẫu số.
             </p>
           </div>
           <Gauge aria-hidden="true" size={18} />
@@ -473,6 +522,8 @@ export function DataHealthV2({
           {coverage.map((dimension) => (
             <Link
               className={`v2-coverage-card${
+                dimension.ratio === null ||
+                dimension.state === "partial" ||
                 dimension.ratio < 0.8
                   ? " v2-coverage-card--warning"
                   : ""
@@ -487,9 +538,15 @@ export function DataHealthV2({
             >
               <span>{dimension.label}</span>
               <strong>
-                {formatPercent(dimension.ratio * 100, 0)}
+                {dimension.ratio === null
+                  ? "—"
+                  : formatPercent(dimension.ratio * 100, 0)}
                 <small>
-                  {dimension.ratio < 0.8
+                  {dimension.ratio === null
+                    ? " · Chưa khả dụng"
+                    : dimension.state === "partial"
+                      ? " · Một phần"
+                    : dimension.ratio < 0.8
                     ? " · Cần kiểm tra"
                     : " · Đạt"}
                 </small>
@@ -500,13 +557,17 @@ export function DataHealthV2({
                 aria-label={dimension.label}
                 aria-valuemin={0}
                 aria-valuemax={100}
-                aria-valuenow={Math.round(dimension.ratio * 100)}
+                {...(dimension.ratio === null
+                  ? { "aria-valuetext": "Chưa khả dụng" }
+                  : { "aria-valuenow": Math.round(dimension.ratio * 100) })}
               >
-                <i style={{ width: `${dimension.ratio * 100}%` }} />
+                <i style={{ width: `${(dimension.ratio ?? 0) * 100}%` }} />
               </div>
               <small>{dimension.detail}</small>
               <small className="v2-link">
-                Xem {Math.max(0, dimension.total - dimension.covered)} mục thiếu
+                {dimension.ratio === null
+                  ? "Xem định nghĩa mẫu số"
+                  : `Xem ${Math.max(0, dimension.total - dimension.covered)} mục thiếu`}
               </small>
             </Link>
           ))}

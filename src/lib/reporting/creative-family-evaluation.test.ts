@@ -29,6 +29,14 @@ const context: ReportingContext = {
   syncVersion: "sync_1",
 };
 
+const V5_PEER_IDS = [
+  "cf_peer_1",
+  "cf_peer_2",
+  "cf_peer_3",
+  "cf_peer_4",
+  "cf_peer_5",
+] as const;
+
 const leadDefinition: ResultDefinition = {
   id: "result_lead",
   canonicalKey: "lead",
@@ -233,7 +241,7 @@ function evaluationWithFatigue({
   later: CreativeFamilyFatiguePeriod;
   windowDays: number;
 }) {
-  const peerIds = ["cf_peer_1", "cf_peer_2", "cf_peer_3"];
+  const peerIds = V5_PEER_IDS;
   const result = enrichCreativeFamiliesWithCanonicalResults({
     rows: [row("target", "cf_target", 100, 5_000)],
     actualResults: available([{ familyId: "cf_target", value: 10 }]),
@@ -269,7 +277,7 @@ describe("enrichCreativeFamiliesWithCanonicalResults", () => {
         platform: "iOS" as const,
       },
     ];
-    const peerIds = ["cf_peer_1", "cf_peer_2", "cf_peer_3"];
+    const peerIds = V5_PEER_IDS;
     const peerPerformance = peerIds.map((id) =>
       performance(id, 200, 10),
     );
@@ -313,12 +321,45 @@ describe("enrichCreativeFamiliesWithCanonicalResults", () => {
       metricKey: "cost_per_result",
       actualValue: 10,
       benchmarkValue: 20,
-      sampleSize: 3,
+      sampleSize: 5,
       performanceStatus: "above_benchmark",
       eligibility: "eligible",
       fatigueStatus: "insufficient",
     });
     expect(result[1].performance?.evaluation).toBeNull();
+  });
+
+  it("never lowers the V5 peer floor below five", () => {
+    const peerIds = V5_PEER_IDS.slice(0, 3);
+    const result = enrichCreativeFamiliesWithCanonicalResults({
+      rows: [row("target", "cf_target", 100, 5_000)],
+      actualResults: available([{ familyId: "cf_target", value: 10 }]),
+      benchmarkResults: available(
+        peerIds.map((familyId) => ({ familyId, value: 10 })),
+      ),
+      benchmarkPerformance: [
+        {
+          adAccountMetaId: "act_1",
+          items: peerIds.map((familyId) =>
+            performance(familyId, 200, 10),
+          ),
+        },
+      ],
+      assetFamilyIds: Object.fromEntries(
+        peerIds.map((id) => [`asset_${id}`, id]),
+      ),
+      accountBusinessIds: { act_1: ["bm_1"] },
+      context,
+      definitions: [leadDefinition],
+      benchmarkWindowDays: 30,
+      minimumPeerSampleSize: 3,
+    });
+
+    expect(result[0].performance?.evaluation).toMatchObject({
+      sampleSize: 3,
+      benchmarkValue: null,
+      performanceStatus: "not_eligible",
+    });
   });
 
   it("uses hydrated action aliases for an owner-remapped currency Result", () => {
@@ -375,7 +416,7 @@ describe("enrichCreativeFamiliesWithCanonicalResults", () => {
     });
   });
 
-  it("uses native Link Click delivery over a conflicting action fact for evaluation and fatigue", () => {
+  it("uses native Link Click delivery and keeps fatigue unavailable without exact Family Reach", () => {
     const trafficContext: ReportingContext = {
       ...context,
       objectiveKey: "traffic",
@@ -402,7 +443,7 @@ describe("enrichCreativeFamiliesWithCanonicalResults", () => {
         value: item.value,
       })),
     });
-    const peers = ["cf_peer_1", "cf_peer_2", "cf_peer_3"];
+    const peers = V5_PEER_IDS;
     const period = ({
       days,
       spend,
@@ -506,132 +547,27 @@ describe("enrichCreativeFamiliesWithCanonicalResults", () => {
       resultKey: "link_click",
       actualValue: 10,
       benchmarkValue: 20,
-      fatigueStatus: "fatigue_risk",
+      fatigueStatus: "insufficient",
     });
   });
 
-  it.each([
-    {
-      name: "stable when the available signals do not deteriorate",
-      later: {
-        spend: 200,
-        impressions: 5_000,
-        linkClicks: 100,
-        results: 10,
-      },
-      windowDays: 7,
-      expected: "stable",
-    },
-    {
-      name: "monitor when one available signal deteriorates",
-      later: {
-        spend: 200,
-        impressions: 5_000,
-        linkClicks: 80,
-        results: 10,
-      },
-      windowDays: 7,
-      expected: "monitor",
-    },
-    {
-      name: "fatigue risk when CTR and volume fall while cost rises",
-      later: {
-        spend: 240,
-        impressions: 5_000,
-        linkClicks: 70,
-        results: 8,
-      },
-      windowDays: 7,
-      expected: "fatigue_risk",
-    },
-    {
-      name: "insufficient for an exact window shorter than three days",
-      later: {
-        spend: 240,
-        impressions: 5_000,
-        linkClicks: 70,
-        results: 8,
-      },
-      windowDays: 2,
-      expected: "insufficient",
-    },
-  ])("returns $expected: $name", ({ later, windowDays, expected }) => {
+  it("fails closed instead of inferring fatigue from daily Reach sums", () => {
     const evaluation = evaluationWithFatigue({
       earlier: fatiguePeriod({
-        spend: 200,
-        impressions: 5_000,
-        linkClicks: 100,
-        results: 10,
-      }),
-      later: fatiguePeriod(later),
-      windowDays,
-    });
-
-    expect(evaluation?.fatigueStatus).toBe(expected);
-  });
-
-  it.each([
-    { windowDays: 3, earlierDays: 1, laterDays: 2 },
-    { windowDays: 5, earlierDays: 2, laterDays: 3 },
-    { windowDays: 7, earlierDays: 3, laterDays: 4 },
-  ])(
-    "normalizes stable Result volume across a $windowDays-day split",
-    ({ windowDays, earlierDays, laterDays }) => {
-      const steadyPeriod = (days: number) =>
-        fatiguePeriod({
-          days,
-          spend: 200 * days,
-          impressions: 5_000 * days,
-          linkClicks: 100 * days,
-          results: 10 * days,
-        });
-      const evaluation = evaluationWithFatigue({
-        earlier: steadyPeriod(earlierDays),
-        later: steadyPeriod(laterDays),
-        windowDays,
-      });
-
-      expect(evaluation?.fatigueStatus).toBe("stable");
-    },
-  );
-
-  it("detects a real decline across a 3+4 day odd split", () => {
-    const evaluation = evaluationWithFatigue({
-      earlier: fatiguePeriod({
-        days: 3,
-        spend: 200 * 3,
-        impressions: 5_000 * 3,
-        linkClicks: 100 * 3,
-        results: 10 * 3,
+        days: 7,
+        spend: 200 * 7,
+        impressions: 5_000 * 7,
+        linkClicks: 100 * 7,
+        results: 10 * 7,
       }),
       later: fatiguePeriod({
-        days: 4,
-        spend: 240 * 4,
-        impressions: 5_000 * 4,
-        linkClicks: 70 * 4,
-        results: 8 * 4,
+        days: 7,
+        spend: 240 * 7,
+        impressions: 5_000 * 7,
+        linkClicks: 70 * 7,
+        results: 8 * 7,
       }),
-      windowDays: 7,
-    });
-
-    expect(evaluation?.fatigueStatus).toBe("fatigue_risk");
-  });
-
-  it("keeps fatigue insufficient when fewer than two exact signals are available", () => {
-    const evaluation = evaluationWithFatigue({
-      earlier: fatiguePeriod({
-        spend: 200,
-        impressions: 5_000,
-        linkClicks: 100,
-        results: 10,
-      }),
-      later: fatiguePeriod({
-        spend: 200,
-        impressions: 0,
-        linkClicks: 0,
-        results: 0,
-      }),
-      windowDays: 7,
+      windowDays: 14,
     });
 
     expect(evaluation?.fatigueStatus).toBe("insufficient");

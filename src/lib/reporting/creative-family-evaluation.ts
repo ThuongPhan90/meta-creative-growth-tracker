@@ -15,8 +15,11 @@ import {
 } from "./benchmark-engine";
 import {
   evaluateCreative,
-  type CreativeEvaluationInput,
 } from "./creative-evaluation";
+import {
+  evaluateCreativeFatigue,
+  type CreativeFatigueResult,
+} from "./creative-fatigue";
 import type { ReportingContext } from "./report-context";
 import {
   resolveReportingResultMetricSource,
@@ -81,10 +84,6 @@ type FatiguePeriodAggregate = {
   linkClicks: number;
   results: number;
 };
-
-type FatigueTrend = NonNullable<
-  CreativeEvaluationInput["fatigueTrend"]
->;
 
 function familyId(row: CreativeRow) {
   return row.creativeFamilyId ?? row.entityLinks?.creativeFamilyId ?? null;
@@ -155,6 +154,8 @@ function metricDefinition(
       definition.efficiencyMetric === "cost_per_result"
         ? "cost_per_result"
         : "weighted_mean",
+    minimumResults: definition.minimumResults,
+    minimumImpressions: definition.minimumImpressions,
   };
 }
 
@@ -192,6 +193,7 @@ function observation({
   definition,
   spend,
   results,
+  impressions,
   linkClicks,
 }: {
   sampleKey: string;
@@ -204,6 +206,7 @@ function observation({
   definition: ResultDefinition;
   spend: number;
   results: number;
+  impressions: number;
   linkClicks: number;
 }): BenchmarkObservation {
   const value = metricValue({
@@ -228,6 +231,7 @@ function observation({
     currency,
     spend,
     results,
+    impressions,
     value,
     weight,
   };
@@ -407,22 +411,6 @@ function rate(numerator: number, denominator: number) {
   return denominator > 0 ? numerator / denominator : null;
 }
 
-function percentageChange(
-  earlier: number | null,
-  later: number | null,
-) {
-  if (
-    earlier === null ||
-    later === null ||
-    !Number.isFinite(earlier) ||
-    !Number.isFinite(later) ||
-    earlier <= 0
-  ) {
-    return null;
-  }
-  return ((later - earlier) / earlier) * 100;
-}
-
 function resultVolumePerDay(
   aggregate: FatiguePeriodAggregate,
   days: number,
@@ -432,7 +420,7 @@ function resultVolumePerDay(
     : null;
 }
 
-function fatigueTrendsByFamily({
+function fatigueEvaluationsByFamily({
   comparison,
   definition,
   assetFamilyIds,
@@ -443,7 +431,7 @@ function fatigueTrendsByFamily({
   assetFamilyIds: Readonly<Record<string, string>>;
   context: ReportingContext;
 }) {
-  const trends = new Map<string, FatigueTrend>();
+  const evaluations = new Map<string, CreativeFatigueResult>();
   if (
     !comparison ||
     !comparison.earlier.results.available ||
@@ -455,7 +443,7 @@ function fatigueTrendsByFamily({
     comparison.earlier.results.resultMappingVersion !==
       comparison.later.results.resultMappingVersion
   ) {
-    return trends;
+    return evaluations;
   }
 
   const earlier = fatiguePeriodAggregates({
@@ -474,45 +462,56 @@ function fatigueTrendsByFamily({
   for (const [key, earlierAggregate] of earlier) {
     const laterAggregate = later.get(key);
     if (!laterAggregate) continue;
-    const earlierCtr = rate(
-      earlierAggregate.linkClicks,
-      earlierAggregate.impressions,
+    evaluations.set(
+      key,
+      evaluateCreativeFatigue({
+        previous: {
+          days: comparison.earlier.days,
+          minimumSampleMet:
+            earlierAggregate.impressions >=
+              definition.minimumImpressions &&
+            earlierAggregate.results >= definition.minimumResults,
+          // Family-level exact-period Reach is not in the current read model.
+          // dailyReachSum is not a valid substitute, so Frequency stays
+          // unavailable until the repository can project exact Reach.
+          frequency: null,
+          linkCtr: rate(
+            earlierAggregate.linkClicks,
+            earlierAggregate.impressions,
+          ),
+          costPerResult: rate(
+            earlierAggregate.spend,
+            earlierAggregate.results,
+          ),
+          resultVolume: resultVolumePerDay(
+            earlierAggregate,
+            comparison.earlier.days,
+          ),
+        },
+        recent: {
+          days: comparison.later.days,
+          minimumSampleMet:
+            laterAggregate.impressions >= definition.minimumImpressions &&
+            laterAggregate.results >= definition.minimumResults,
+          frequency: null,
+          linkCtr: rate(
+            laterAggregate.linkClicks,
+            laterAggregate.impressions,
+          ),
+          costPerResult: rate(
+            laterAggregate.spend,
+            laterAggregate.results,
+          ),
+          resultVolume: resultVolumePerDay(
+            laterAggregate,
+            comparison.later.days,
+          ),
+        },
+      }),
     );
-    const laterCtr = rate(
-      laterAggregate.linkClicks,
-      laterAggregate.impressions,
-    );
-    const earlierCostPerResult = rate(
-      earlierAggregate.spend,
-      earlierAggregate.results,
-    );
-    const laterCostPerResult = rate(
-      laterAggregate.spend,
-      laterAggregate.results,
-    );
-    trends.set(key, {
-      // Family-level period Reach is not available in this projection, so a
-      // frequency delta would be fabricated. Keep it explicitly unavailable.
-      frequencyDeltaPercent: null,
-      ctrDeltaPercent: percentageChange(earlierCtr, laterCtr),
-      costPerResultDeltaPercent: percentageChange(
-        earlierCostPerResult,
-        laterCostPerResult,
-      ),
-      resultVolumeDeltaPercent: percentageChange(
-        resultVolumePerDay(
-          earlierAggregate,
-          comparison.earlier.days,
-        ),
-        resultVolumePerDay(
-          laterAggregate,
-          comparison.later.days,
-        ),
-      ),
-    });
   }
 
-  return trends;
+  return evaluations;
 }
 
 function aggregateActualRows(rows: readonly CreativeRow[]) {
@@ -626,6 +625,7 @@ function benchmarkObservations({
       definition,
       spend: item.spend,
       results: resultValues.get(key) ?? 0,
+      impressions: item.impressions,
       linkClicks: item.linkClicks,
     });
   });
@@ -645,9 +645,8 @@ export function enrichCreativeFamiliesWithCanonicalResults({
   accountBusinessIds,
   context,
   definitions,
-  benchmarkWindowDays,
   fatigueComparison,
-  minimumPeerSampleSize = 3,
+  minimumPeerSampleSize = 5,
   labels,
 }: EnrichCreativeFamiliesInput): CreativeRow[] {
   const enriched: CreativeRow[] = rows.map((row) => ({
@@ -712,17 +711,18 @@ export function enrichCreativeFamiliesWithCanonicalResults({
     context,
     definition,
   });
-  const fatigueTrends = fatigueTrendsByFamily({
+  const fatigueEvaluations = fatigueEvaluationsByFamily({
     comparison: fatigueComparison,
     definition,
     assetFamilyIds,
     context,
   });
-  const requestedWindowDays = fatigueComparison?.windowDays ??
-    benchmarkWindowDays;
-  const selectedWindowDays = Number.isFinite(requestedWindowDays)
-    ? Math.max(1, Math.floor(requestedWindowDays))
-    : 1;
+  const requiredPeerSampleSize = Math.max(
+    5,
+    Number.isFinite(minimumPeerSampleSize)
+      ? Math.floor(minimumPeerSampleSize)
+      : 5,
+  );
   const selectedAccounts = new Set(context.adAccountIds);
 
   for (const [key, aggregate] of actualGroups) {
@@ -749,8 +749,6 @@ export function enrichCreativeFamiliesWithCanonicalResults({
         : familyAccounts.length === 1
           ? familyAccounts[0]
           : "__selected_scope__";
-    const targetBusinesses =
-      accountBusinessIds[targetAccountId] ?? [];
     const selection = selectBenchmark({
       target: {
         sampleKey: familyCurrencyKey(
@@ -768,14 +766,6 @@ export function enrichCreativeFamiliesWithCanonicalResults({
           adAccount:
             labels?.accountNames?.[targetAccountId] ??
             targetAccountId,
-          selectedBusiness:
-            targetBusinesses.length === 1
-              ? labels?.businessNames?.[targetBusinesses[0]] ??
-                targetBusinesses[0]
-              : "Business đã chọn",
-          selectedScope:
-            labels?.selectedScope ??
-            `${context.adAccountIds.length} Ad Account đã chọn`,
           objective: context.objectiveKey,
           result: definition.label,
           format: aggregate.format,
@@ -785,10 +775,8 @@ export function enrichCreativeFamiliesWithCanonicalResults({
       candidatePools: {
         account_objective_result_format: peers,
         account_objective_result: peers,
-        selected_business_objective_result_format: peers,
-        selected_scope_objective_result: peers,
       },
-      minimumSampleSize: minimumPeerSampleSize,
+      minimumSampleSize: requiredPeerSampleSize,
     });
     performance.evaluation = evaluateCreative({
       resultKey: definition.canonicalKey,
@@ -805,8 +793,7 @@ export function enrichCreativeFamiliesWithCanonicalResults({
       minimumResults: definition.minimumResults,
       dataConfidence: evaluationConfidence(aggregate.confidence),
       mappingAvailable: true,
-      windowDays: selectedWindowDays,
-      fatigueTrend: fatigueTrends.get(key),
+      fatigue: fatigueEvaluations.get(key),
     });
   }
 

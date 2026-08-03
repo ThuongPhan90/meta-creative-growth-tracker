@@ -4,6 +4,7 @@ import {
   detailErrorResponse,
   requireOwnerDetailSnapshot,
 } from "@/lib/detail-api";
+import { getLiveDeliveryForReport } from "@/lib/app-data";
 import { createReportingResponse } from "@/lib/reporting/reporting-response";
 
 import {
@@ -19,9 +20,18 @@ export async function GET(request: NextRequest) {
   try {
     const { snapshot } =
       await requireOwnerDetailSnapshot(request);
+    const baseMetadata = ownerReportingMetadata({
+      snapshot,
+      searchParams: request.nextUrl.searchParams,
+    });
+    const liveDelivery = await getLiveDeliveryForReport({
+      snapshot,
+      context: baseMetadata.context,
+    });
     const metadata = ownerReportingMetadata({
       snapshot,
       searchParams: request.nextUrl.searchParams,
+      liveDelivery,
     });
     const issues = stableDataHealthIssues(snapshot);
     const issueCounts = {
@@ -55,7 +65,7 @@ export async function GET(request: NextRequest) {
             ...issueCounts,
             total: issues.length,
           },
-          coverage: dataHealthCoverageContract(snapshot),
+          coverage: dataHealthCoverageContract(snapshot, liveDelivery),
           latestRun: latestRun
             ? {
                 syncRunId: latestRun.id,

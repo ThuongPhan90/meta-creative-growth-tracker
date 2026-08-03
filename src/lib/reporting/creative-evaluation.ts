@@ -1,3 +1,5 @@
+import type { CreativeFatigueStatus } from "./creative-fatigue";
+
 export type EvaluationDirection =
   | "lower_is_better"
   | "higher_is_better";
@@ -8,11 +10,7 @@ export type EvaluationPerformanceStatus =
   | "within_benchmark"
   | "needs_review"
   | "not_eligible";
-export type EvaluationFatigueStatus =
-  | "stable"
-  | "monitor"
-  | "fatigue_risk"
-  | "insufficient";
+export type EvaluationFatigueStatus = CreativeFatigueStatus;
 export type EvaluationDataConfidence = "high" | "medium" | "low";
 
 export type EvaluationExplanation = {
@@ -52,16 +50,14 @@ export type CreativeEvaluationInput = {
   minimumResults?: number;
   dataConfidence: EvaluationDataConfidence;
   mappingAvailable?: boolean;
-  windowDays: number;
-  fatigueTrend?: {
-    frequencyDeltaPercent?: number | null;
-    ctrDeltaPercent?: number | null;
-    costPerResultDeltaPercent?: number | null;
-    resultVolumeDeltaPercent?: number | null;
+  /** Calculated by creative-fatigue from two auditable reporting windows. */
+  fatigue?: {
+    status: EvaluationFatigueStatus;
+    adverseSignalCount: number;
   };
 };
 
-const PERFORMANCE_BAND_PERCENT = 15;
+const PERFORMANCE_BAND_PERCENT = 20;
 
 function finite(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value)
@@ -77,36 +73,6 @@ function percentageDelta(
     return null;
   }
   return ((actual - benchmark) / benchmark) * 100;
-}
-
-function fatigueStatus(
-  windowDays: number,
-  trend: CreativeEvaluationInput["fatigueTrend"],
-): EvaluationFatigueStatus {
-  if (windowDays < 3 || !trend) return "insufficient";
-
-  const signals = [
-    finite(trend.frequencyDeltaPercent) !== null &&
-      finite(trend.frequencyDeltaPercent)! > 10,
-    finite(trend.ctrDeltaPercent) !== null &&
-      finite(trend.ctrDeltaPercent)! < -10,
-    finite(trend.costPerResultDeltaPercent) !== null &&
-      finite(trend.costPerResultDeltaPercent)! > 15,
-    finite(trend.resultVolumeDeltaPercent) !== null &&
-      finite(trend.resultVolumeDeltaPercent)! < -15,
-  ];
-  const available = [
-    trend.frequencyDeltaPercent,
-    trend.ctrDeltaPercent,
-    trend.costPerResultDeltaPercent,
-    trend.resultVolumeDeltaPercent,
-  ].filter((value) => finite(value) !== null).length;
-
-  if (available < 2) return "insufficient";
-  const adverse = signals.filter(Boolean).length;
-  if (adverse >= 3) return "fatigue_risk";
-  if (adverse >= 1) return "monitor";
-  return "stable";
 }
 
 /**
@@ -141,7 +107,9 @@ export function evaluateCreative(
     (input.primaryResults >= minimumResults ||
       (spendEligibilityThreshold !== null &&
         input.spend >= spendEligibilityThreshold));
-  const fatigue = fatigueStatus(input.windowDays, input.fatigueTrend);
+  // Missing fatigue input is intentionally not inferred from an arbitrary
+  // report range. The dedicated engine requires two valid, equal windows.
+  const fatigue = input.fatigue?.status ?? "insufficient";
   const reasons: string[] = [];
 
   let performanceStatus: EvaluationPerformanceStatus = "not_eligible";
@@ -205,7 +173,9 @@ export function evaluateCreative(
   }
 
   if (fatigue === "fatigue_risk") {
-    reasons.push("Nhiều tín hiệu xu hướng cho thấy Creative có dấu hiệu mỏi.");
+    reasons.push(
+      `Có ${input.fatigue?.adverseSignalCount ?? 0} tín hiệu xu hướng, gồm Frequency và ít nhất một chỉ số hiệu quả xấu đi.`,
+    );
   } else if (fatigue === "monitor") {
     reasons.push("Có tín hiệu xu hướng cần theo dõi thêm.");
   } else if (fatigue === "insufficient") {

@@ -10,7 +10,7 @@ export default async function AssetsPage({
 }) {
   redirect(
     buildCompatibilityHref(
-      "/sources?tab=businesses",
+      "/library",
       await searchParams,
     ),
   );

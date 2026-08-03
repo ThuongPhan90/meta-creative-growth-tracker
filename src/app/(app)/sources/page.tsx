@@ -4,12 +4,14 @@ import {
   type SourceTab,
   type SourcesResultRegistry,
 } from "@/components/sources-v2";
+import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import {
   getApplicationSnapshot,
   type ApplicationSnapshot,
 } from "@/lib/app-data";
 import { createTrackerRepository } from "@/lib/db";
 import { evaluateMetaConnectionLifecycle } from "@/lib/meta";
+import { isUiV3 } from "@/lib/presentation/ui-version";
 import {
   DEFAULT_RESULT_DEFINITIONS,
   hydrateResultDefinitions,
@@ -164,7 +166,7 @@ export default async function SourcesPage({
     connectionLifecycle !== "needs_reauth";
   const resultRegistry = await loadSourcesResultRegistry(snapshot);
 
-  return (
+  const content = (
     <SourcesV2
       activeTab={activeTab}
       query={query}
@@ -197,5 +199,11 @@ export default async function SourcesPage({
         />
       }
     />
+  );
+
+  return isUiV3() ? (
+    <V3SurfacePage surface="sources">{content}</V3SurfacePage>
+  ) : (
+    content
   );
 }

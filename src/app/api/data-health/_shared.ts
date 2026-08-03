@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import type { ApplicationSnapshot } from "@/lib/app-data";
+import type { DeliveryReadyAccountCoverage } from "@/lib/presentation/data-health-coverage";
 import {
   buildDataHealthIssuesFromRuns,
   dataHealthRunEvidence,
@@ -41,10 +42,12 @@ export function publicIssueContract(issue: DataHealthIssue) {
 
 export function dataHealthCoverageContract(
   snapshot: ApplicationSnapshot,
+  liveDelivery?: DeliveryReadyAccountCoverage,
 ) {
   return buildDataHealthCoverage(
     snapshot.creatives,
     snapshot.dashboard.events,
+    liveDelivery,
   ).map((dimension) => ({
     key: dimension.key,
     label: dimension.label,
@@ -58,6 +61,8 @@ export function dataHealthCoverageContract(
     basis:
       dimension.key === "event"
         ? "objective_result_mapping_cells"
+        : dimension.key === "delivery_ready_account"
+          ? "delivery_eligible_ad_accounts"
         : "synchronized_creative_families",
   }));
 }
@@ -65,15 +70,17 @@ export function dataHealthCoverageContract(
 export function ownerReportingMetadata({
   snapshot,
   searchParams,
+  liveDelivery,
 }: {
   snapshot: ApplicationSnapshot;
   searchParams: URLSearchParams;
+  liveDelivery?: DeliveryReadyAccountCoverage;
 }) {
   const reporting = resolveSnapshotReportingRequest({
     snapshot,
     searchParams,
   });
-  const dimensions = dataHealthCoverageContract(snapshot);
+  const dimensions = dataHealthCoverageContract(snapshot, liveDelivery);
   const coverage: ReportingCoverage = Object.fromEntries(
     dimensions.map((dimension) => [
       dimension.key,
@@ -88,8 +95,9 @@ export function ownerReportingMetadata({
   const warnings: ReportingWarning[] = [...reporting.warnings];
   const gaps = dimensions.filter(
     (dimension) =>
-      dimension.total > 0 &&
-      dimension.covered < dimension.total,
+      (dimension.total > 0 && dimension.covered < dimension.total) ||
+      (dimension.key === "delivery_ready_account" &&
+        dimension.ratio === null),
   );
   if (gaps.length) {
     warnings.push({

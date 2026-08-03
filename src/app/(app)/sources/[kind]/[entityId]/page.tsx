@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { CopyIdButton } from "@/components/ui/copy-id-button";
+import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import { getApplicationSnapshot } from "@/lib/app-data";
 import {
   sourceAccountCampaignsHref,
@@ -12,6 +13,7 @@ import {
   formatMetaVerificationStatus,
   sourceAssetStatus,
 } from "@/lib/presentation/source-status";
+import { isUiV3 } from "@/lib/presentation/ui-version";
 import type { MetaAssetKind } from "@/types/view-models";
 
 export const dynamic = "force-dynamic";
@@ -72,10 +74,11 @@ export default async function SourceEntityPage({
     (item) => item.kind === expectedKind && item.id === entityId,
   );
   if (!asset) notFound();
+  const sourceBackHref = backHref(kind, query);
 
-  return (
+  const content = (
     <div className="v2-page">
-      <Link className="v2-back-link" href={backHref(kind, query)}>
+      <Link className="v2-back-link" href={sourceBackHref}>
         <ArrowLeft aria-hidden="true" size={16} />
         Quay lại Nguồn dữ liệu
       </Link>
@@ -153,5 +156,26 @@ export default async function SourceEntityPage({
         </div>
       </section>
     </div>
+  );
+
+  return isUiV3() ? (
+    <V3SurfacePage
+      surface="sources"
+      eyebrow={asset.kind}
+      title={asset.name}
+      description="Chi tiết tài sản canonical từ lần đồng bộ Meta gần nhất; màn hình chỉ đọc."
+      backHref={sourceBackHref}
+      backLabel="Quay lại Nguồn dữ liệu"
+      meta={
+        <>
+          <code>{asset.id}</code>
+          <CopyIdButton value={asset.id} />
+        </>
+      }
+    >
+      {content}
+    </V3SurfacePage>
+  ) : (
+    content
   );
 }

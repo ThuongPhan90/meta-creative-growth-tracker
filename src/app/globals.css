@@ -1,3 +1,7 @@
+@import "../styles/tokens.css";
+@import "../styles/shell.css";
+@import "../styles/utilities.css";
+
 :root {
   color-scheme: light;
   --bg: #f7f8fc;
@@ -2696,6 +2700,167 @@ a.v2-kpi:hover {
   font-weight: 400;
 }
 
+.v2-metric-presets {
+  margin: 0 16px 16px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: #fbfcff;
+}
+
+.v2-metric-presets__header {
+  display: flex;
+  min-height: 76px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--border);
+  background: #fff;
+}
+
+.v2-metric-presets__header h3,
+.v2-metric-presets__list h4 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.v2-metric-presets__header p,
+.v2-metric-presets__list article > header p,
+.v2-metric-presets__empty p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.v2-metric-presets__list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 12px;
+  list-style: none;
+}
+
+.v2-metric-presets__list > li {
+  min-width: 0;
+}
+
+.v2-metric-presets__list article {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.v2-metric-presets__list article > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.v2-metric-presets__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.v2-metric-presets__actions > .v2-link,
+.v2-metric-presets__actions > button {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+
+.v2-metric-presets__list article > ul {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.v2-metric-presets__list article > ul > li {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-top: 1px solid #eef0f5;
+}
+
+.v2-metric-presets__list article > ul > li:first-child {
+  border-top: 0;
+}
+
+.v2-metric-presets__list article > ul strong,
+.v2-metric-presets__list article > ul small {
+  display: block;
+}
+
+.v2-metric-presets__list article > ul strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.v2-metric-presets__list article > ul small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.v2-metric-presets__list article > ul .v2-chip {
+  max-width: min(310px, 44%);
+  flex: 0 0 auto;
+  text-align: right;
+}
+
+.v2-metric-presets__empty,
+.v2-metric-presets__notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 12px;
+  padding: 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 9px;
+  color: var(--muted-strong);
+  background: #fff;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.v2-metric-presets__empty {
+  display: block;
+}
+
+.v2-metric-presets__empty strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.v2-metric-presets__notice {
+  color: #945d08;
+  background: #fffaf0;
+}
+
+.v2-metric-presets__notice svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
 .v2-settings-stack {
   display: grid;
   gap: 12px;
@@ -3062,6 +3227,24 @@ a.v2-kpi:hover {
 }
 
 @media (max-width: 560px) {
+  .v2-metric-presets__header,
+  .v2-metric-presets__list article > header,
+  .v2-metric-presets__list article > ul > li {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .v2-metric-presets__actions {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .v2-metric-presets__list article > ul .v2-chip {
+    max-width: none;
+    text-align: left;
+  }
+
   .v2-action-editor__input,
   .v2-weight-grid {
     grid-template-columns: 1fr;

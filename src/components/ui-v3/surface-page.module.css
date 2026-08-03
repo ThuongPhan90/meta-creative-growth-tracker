@@ -1,0 +1,297 @@
+.page {
+  display: grid;
+  min-width: 0;
+  gap: 20px;
+}
+
+.header {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.heading {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--ui-v3-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+
+.heading h1 {
+  margin: 0;
+  color: var(--ui-v3-text-primary);
+  font-size: clamp(26px, 2.5vw, 34px);
+  font-weight: 720;
+  letter-spacing: -0.045em;
+  line-height: 1.12;
+}
+
+.description {
+  max-width: 760px;
+  margin: 0;
+  color: var(--ui-v3-text-secondary);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.meta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+  color: var(--ui-v3-text-secondary);
+  font-size: 12px;
+}
+
+.actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.readOnly {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid #c7d7fe;
+  border-radius: var(--ui-v3-radius-control);
+  color: #175cd3;
+  background: #eff4ff;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.backLink {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 30px;
+  align-items: center;
+  gap: 7px;
+  color: var(--ui-v3-text-secondary);
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.backLink:hover {
+  color: var(--ui-v3-accent);
+}
+
+.content {
+  min-width: 0;
+}
+
+/*
+ * V2 feature components keep the tested data, filtering and drawer logic.
+ * These scoped rules make their structural primitives follow the V3 system
+ * only when a page is intentionally wrapped by V3SurfacePage.
+ */
+.legacy :global(.v2-page) {
+  display: grid;
+  min-width: 0;
+  gap: 18px;
+  padding: 0;
+}
+
+.legacy :global(.v2-page-header),
+.legacy :global(.v2-back-link) {
+  display: none;
+}
+
+.legacy :global(.v2-panel),
+.legacy :global(.v2-overall-health),
+.legacy :global(.v2-source-summary),
+.legacy :global(.v2-manual-sync),
+.legacy :global(.v2-settings-footer) {
+  border-color: var(--ui-v3-border);
+  border-radius: var(--ui-v3-radius-card);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.03);
+}
+
+.legacy :global(.v2-panel) {
+  background: var(--ui-v3-surface);
+}
+
+.legacy :global(.v2-panel__header),
+.legacy :global(.v2-settings-section__intro) {
+  gap: 12px;
+}
+
+.legacy :global(.v2-panel__header h2),
+.legacy :global(.v2-settings-section__intro h2) {
+  color: var(--ui-v3-text-primary);
+  letter-spacing: -0.02em;
+}
+
+.legacy :global(.v2-panel__header p),
+.legacy :global(.v2-settings-section__intro p) {
+  color: var(--ui-v3-text-secondary);
+}
+
+.legacy :global(.v2-tabs) {
+  width: 100%;
+  max-width: 100%;
+  padding-bottom: 2px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.legacy :global(.v2-tab) {
+  min-height: 38px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.legacy :global(.v2-tab[aria-current="page"]) {
+  color: #3730a3;
+  background: #f1f0ff;
+}
+
+.legacy :global(.v2-kpi-grid) {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.legacy :global(.v2-kpi) {
+  min-width: 0;
+  border-color: var(--ui-v3-border);
+  border-radius: var(--ui-v3-radius-card);
+  background: var(--ui-v3-surface);
+  box-shadow: none;
+}
+
+.legacy :global(.v2-filter-bar),
+.legacy :global(.v2-library-toolbar),
+.legacy :global(.v2-campaign-filters) {
+  min-width: 0;
+  border-color: var(--ui-v3-border);
+  border-radius: var(--ui-v3-radius-card);
+  background: var(--ui-v3-surface);
+}
+
+.legacy :global(.v2-report-context-shell) {
+  border-color: var(--ui-v3-border);
+  border-radius: var(--ui-v3-radius-card);
+  background: var(--ui-v3-surface);
+}
+
+/* Freshness is already presented once in the V3 top bar. */
+.legacy :global(.v2-freshness) {
+  display: none;
+}
+
+.legacy :global(.v2-campaign-table),
+.legacy :global(.v2-ads-table),
+.legacy :global(.v2-sync-table),
+.legacy :global(.v2-creative-table),
+.legacy :global([role="table"]) {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.legacy :global(.v2-campaign-table:focus-visible),
+.legacy :global(.v2-ads-table:focus-visible),
+.legacy :global(.v2-sync-table:focus-visible),
+.legacy :global(.v2-creative-table:focus-visible) {
+  outline: 3px solid rgba(37, 99, 235, 0.6);
+  outline-offset: 2px;
+}
+
+.legacy :global(.v2-library-grid) {
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+}
+
+.legacy :global(.v2-library-card) {
+  min-width: 0;
+  border-color: var(--ui-v3-border);
+  border-radius: var(--ui-v3-radius-card);
+  box-shadow: none;
+}
+
+.legacy :global(.v2-source-summary) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  background: var(--ui-v3-border);
+}
+
+.legacy :global(.v2-source-summary > a) {
+  min-width: 0;
+  background: var(--ui-v3-surface);
+}
+
+.legacy :global(.v2-source-summary > a[aria-current="page"]) {
+  background: #f5f3ff;
+}
+
+.legacy :global(.v2-detail-list) {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.legacy :global(.v2-settings-form) {
+  min-width: 0;
+}
+
+.legacy :global(.v2-settings-footer) {
+  position: sticky;
+  bottom: 12px;
+  z-index: 3;
+}
+
+.legacy :global(.v2-drawer) {
+  max-width: min(620px, 100vw);
+}
+
+@media (max-width: 700px) {
+  .page {
+    gap: 16px;
+  }
+
+  .header {
+    display: grid;
+    gap: 12px;
+  }
+
+  .heading h1 {
+    font-size: 27px;
+  }
+
+  .description {
+    font-size: 13px;
+  }
+
+  .actions {
+    justify-content: flex-start;
+  }
+
+  .legacy :global(.v2-kpi-grid) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .legacy :global(.v2-library-grid) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .legacy :global(.v2-settings-footer) {
+    position: static;
+  }
+}

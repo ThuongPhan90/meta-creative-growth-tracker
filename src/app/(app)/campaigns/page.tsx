@@ -1,5 +1,6 @@
 import { CampaignsV2 } from "@/components/campaigns-v2";
 import { AdsInventoryV2 } from "@/components/ads-inventory-v2";
+import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import {
   createTrackerRepository,
   type AdInventoryItem,
@@ -26,6 +27,7 @@ import {
 } from "@/lib/meta";
 import { formatFreshnessFields } from "@/lib/presentation/freshness-presentation";
 import { buildReportingBarModel } from "@/lib/presentation/reporting-bar";
+import { isUiV3 } from "@/lib/presentation/ui-version";
 import {
   DEFAULT_OBJECTIVE_REGISTRY,
   objectiveDatabaseKeys,
@@ -451,7 +453,7 @@ export default async function CampaignsPage({
           })
         : EMPTY_AD_PAGE;
 
-    return (
+    const content = (
       <AdsInventoryV2
         data={adsPage}
         query={query}
@@ -466,6 +468,12 @@ export default async function CampaignsPage({
         freshness={freshness}
         reportingBar={reportingBar}
       />
+    );
+
+    return isUiV3() ? (
+      <V3SurfacePage surface="campaigns">{content}</V3SurfacePage>
+    ) : (
+      content
     );
   }
   const resultMappingsPromise =
@@ -577,7 +585,7 @@ export default async function CampaignsPage({
     context,
     legacyBridge: snapshot.demoMode,
   });
-  return (
+  const content = (
     <CampaignsV2
       data={data}
       delivery={delivery}
@@ -612,5 +620,11 @@ export default async function CampaignsPage({
           : { canonicalResults: canonicalResults.values }),
       })}
     />
+  );
+
+  return isUiV3() ? (
+    <V3SurfacePage surface="campaigns">{content}</V3SurfacePage>
+  ) : (
+    content
   );
 }

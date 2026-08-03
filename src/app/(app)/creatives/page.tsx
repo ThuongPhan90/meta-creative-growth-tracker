@@ -1,4 +1,5 @@
 import { CreativePerformanceV2 } from "@/components/creative-performance-v2";
+import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import {
   buildApplicationResultMetrics,
   getApplicationSnapshot,
@@ -8,6 +9,7 @@ import {
 } from "@/lib/app-data";
 import { formatFreshnessFields } from "@/lib/presentation/freshness-presentation";
 import { buildReportingBarModel } from "@/lib/presentation/reporting-bar";
+import { isUiV3 } from "@/lib/presentation/ui-version";
 
 export const dynamic = "force-dynamic";
 
@@ -48,7 +50,7 @@ export default async function CreativesPage({
     getCanonicalResultsForReport({ snapshot, context }),
   ]);
 
-  return (
+  const content = (
     <CreativePerformanceV2
       creatives={report.creatives}
       delivery={report.delivery}
@@ -94,5 +96,11 @@ export default async function CreativesPage({
           : { canonicalResults: canonicalResults.values }),
       })}
     />
+  );
+
+  return isUiV3() ? (
+    <V3SurfacePage surface="creatives">{content}</V3SurfacePage>
+  ) : (
+    content
   );
 }
