@@ -598,7 +598,7 @@ describe("application snapshot Result registry", () => {
     ]);
   });
 
-  it("starts schema health, owner connection and settings in one database wave", async () => {
+  it("pipelines owner-scoped context reads after connection identity resolves", async () => {
     serverMocks.getRuntimeConfiguration.mockReturnValue(
       runtimeConfiguration(false),
     );
@@ -635,8 +635,16 @@ describe("application snapshot Result registry", () => {
       expect(repository.getSettings).toHaveBeenCalledOnce();
     });
 
-    resolveHealth({ ok: true });
     resolveConnection(liveConnection);
+    await vi.waitFor(() => {
+      expect(repository.getInsightsFreshness).toHaveBeenCalledOnce();
+      expect(repository.listReportingScopeInventory).toHaveBeenCalledOnce();
+      expect(repository.getReportingScope).toHaveBeenCalledOnce();
+      expect(repository.listResultDefinitions).toHaveBeenCalledOnce();
+      expect(repository.listResultMappings).toHaveBeenCalledOnce();
+    });
+
+    resolveHealth({ ok: true });
     resolveSettings(storedSettings);
     await expect(loading).resolves.toMatchObject({
       authenticated: true,
@@ -666,6 +674,28 @@ describe("application snapshot Result registry", () => {
       connection: null,
       assets: [],
     });
+  });
+
+  it("keeps the setup-safe fallback when a pipelined context read also fails", async () => {
+    serverMocks.getRuntimeConfiguration.mockReturnValue(
+      runtimeConfiguration(false),
+    );
+    serverMocks.readPageOwnerSession.mockResolvedValue({
+      sub: liveConnection.connectionId,
+    });
+    serverMocks.readDatabaseHealth.mockResolvedValue(null);
+    const repository = liveSnapshotRepository([liveLeadDefinition]);
+    vi.mocked(repository.getInsightsFreshness).mockRejectedValue(
+      new Error("context wave unavailable"),
+    );
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    await expect(getApplicationContextSnapshot()).resolves.toMatchObject({
+      authenticated: true,
+      connection: null,
+      assets: [],
+    });
+    expect(repository.getInsightsFreshness).toHaveBeenCalledOnce();
   });
 
   it("keeps the database-unavailable snapshot when repository creation also fails", async () => {
@@ -704,6 +734,9 @@ describe("application snapshot Result registry", () => {
       connection: null,
       assets: [],
     });
+    expect(repository.getInsightsFreshness).not.toHaveBeenCalled();
+    expect(repository.listReportingScopeInventory).not.toHaveBeenCalled();
+    expect(repository.getReportingScope).not.toHaveBeenCalled();
   });
 
   it("surfaces connection and settings failures after healthy owner validation", async () => {

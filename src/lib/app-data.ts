@@ -3171,20 +3171,63 @@ async function loadApplicationContextSnapshot(): Promise<ApplicationSnapshot> {
     }
 
     const repositoryPromise = createTrackerRepository();
+    const healthPromise = readDatabaseHealth();
+    const connectionPromise = repositoryPromise.then((repository) =>
+      repository.getConnection(),
+    );
+    const settingsPromise = repositoryPromise.then((repository) =>
+      repository.getSettings(),
+    );
+    const initialResultsPromise = Promise.allSettled([
+      healthPromise,
+      repositoryPromise,
+      connectionPromise,
+      settingsPromise,
+    ]);
+    const startContextReads = (
+      repository: TrackerRepository,
+      connection: MetaConnectionRecord,
+    ) =>
+      Promise.all([
+        repository.getInsightsFreshness(connection.connectionId),
+        repository.listReportingScopeInventory(connection.connectionId),
+        repository.getReportingScope(connection.connectionId),
+        loadApplicationResultRegistry(repository),
+      ]);
+
+    // Connection identity is the only prerequisite for the second read wave.
+    // Start it as soon as owner binding is known instead of waiting for the
+    // independent schema-health and settings reads to finish.
+    let contextDataPromise:
+      | ReturnType<typeof startContextReads>
+      | undefined;
+    try {
+      const earlyConnection = await connectionPromise;
+      if (
+        earlyConnection &&
+        session?.sub === earlyConnection.connectionId
+      ) {
+        const earlyRepository = await repositoryPromise;
+        contextDataPromise = startContextReads(
+          earlyRepository,
+          earlyConnection,
+        );
+        // The health result retains precedence for the setup fallback. Attach
+        // a handler now so an early return cannot leave a rejected read wave
+        // unobserved; awaiting the original promise below still surfaces it.
+        void contextDataPromise.catch(() => undefined);
+      }
+    } catch {
+      // Preserve the existing error precedence after every initial read has
+      // settled; a failed health check still returns the setup-safe snapshot.
+    }
+
     const [
       healthResult,
       repositoryResult,
       connectionResult,
       settingsResult,
-    ] =
-      await Promise.allSettled([
-        readDatabaseHealth(),
-        repositoryPromise,
-        repositoryPromise.then((repository) =>
-          repository.getConnection(),
-        ),
-        repositoryPromise.then((repository) => repository.getSettings()),
-      ]);
+    ] = await initialResultsPromise;
     const databaseHealth =
       healthResult.status === "fulfilled" ? healthResult.value : null;
     if (!databaseHealth?.ok) {
@@ -3282,12 +3325,9 @@ async function loadApplicationContextSnapshot(): Promise<ApplicationSnapshot> {
       scopeInventory,
       persistedScope,
       resultRegistry,
-    ] = await Promise.all([
-      repository.getInsightsFreshness(connection.connectionId),
-      repository.listReportingScopeInventory(connection.connectionId),
-      repository.getReportingScope(connection.connectionId),
-      loadApplicationResultRegistry(repository),
-    ]);
+    ] = await (
+      contextDataPromise ?? startContextReads(repository, connection)
+    );
 
     // Reporting pages only need Business and Ad Account identity. Page/App
     // inventory, delivery health, coverage and sync history are loaded lazily
