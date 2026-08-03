@@ -34,6 +34,8 @@ import type {
   CreativeInput,
   CreativeLibraryFilters,
   CreativeLibraryItem,
+  CreativePerformanceAccountGroup,
+  CreativePerformanceByAccountFilters,
   CreativePerformanceFilters,
   CreativePerformanceItem,
   CreativeTrackerFilters,
@@ -732,6 +734,57 @@ function normalizeCanonicalEntityResultFilters(
     attributionWindow: input.attributionWindow.trim(),
     syncVersion: input.syncVersion.trim(),
     resultMappingVersion: input.resultMappingVersion.trim(),
+  };
+}
+
+function mapCreativePerformanceItem(
+  row: DatabaseRow,
+): CreativePerformanceItem {
+  const spend = asNumber(row.spend);
+  const impressions = asNumber(row.impressions);
+  const dailyReachSum = asNumber(row.daily_reach_sum);
+  const linkClicks = asNumber(row.link_clicks);
+  const installs = asNumber(row.installs);
+  const registrations = asNumber(row.registrations);
+  const video3sViews = asNumber(row.video_3s_views);
+  const video100Views = asNumber(row.video_100_views);
+  const isVideo = row.asset_type === "video";
+
+  return {
+    creativeAssetId: asId(row.creative_asset_id),
+    creativeFamilyId:
+      row.creative_family_id === null
+        ? undefined
+        : asId(row.creative_family_id),
+    assetKey: String(row.asset_key),
+    assetType: row.asset_type as CreativePerformanceItem["assetType"],
+    name: row.name === null ? null : String(row.name),
+    thumbnailUrl:
+      row.thumbnail_url === null ? null : String(row.thumbnail_url),
+    operatingSystem:
+      row.operating_system as CreativePerformanceItem["operatingSystem"],
+    currency: String(row.currency),
+    spend,
+    impressions,
+    dailyReachSum,
+    linkClicks,
+    installs,
+    registrations,
+    video3sViews,
+    video100Views,
+    linkCtr: impressions > 0 ? (linkClicks / impressions) * 100 : null,
+    cpi: installs > 0 ? spend / installs : null,
+    costPerRegistration:
+      registrations > 0 ? spend / registrations : null,
+    hookRate:
+      isVideo && impressions > 0
+        ? (video3sViews / impressions) * 100
+        : null,
+    holdRate:
+      isVideo && video3sViews > 0
+        ? (video100Views / video3sViews) * 100
+        : null,
+    metricDays: asNumber(row.metric_days),
   };
 }
 
@@ -6390,7 +6443,12 @@ export class TrackerRepository {
             $11::text is null
             or asset.creative_family_id = $11
           )
-        order by aggregate.spend desc, aggregate.impressions desc
+        order by
+          aggregate.spend desc,
+          aggregate.impressions desc,
+          asset.creative_asset_id,
+          aggregate.operating_system,
+          aggregate.currency
         limit $7
         offset $8
       `,
@@ -6418,54 +6476,278 @@ export class TrackerRepository {
       ],
     );
 
-    return rows.map((row) => {
-      const spend = asNumber(row.spend);
-      const impressions = asNumber(row.impressions);
-      const dailyReachSum = asNumber(row.daily_reach_sum);
-      const linkClicks = asNumber(row.link_clicks);
-      const installs = asNumber(row.installs);
-      const registrations = asNumber(row.registrations);
-      const video3sViews = asNumber(row.video_3s_views);
-      const video100Views = asNumber(row.video_100_views);
-      const isVideo = row.asset_type === "video";
+    return rows.map(mapCreativePerformanceItem);
+  }
 
-      return {
-        creativeAssetId: asId(row.creative_asset_id),
-        creativeFamilyId:
-          row.creative_family_id === null
-            ? undefined
-            : asId(row.creative_family_id),
-        assetKey: String(row.asset_key),
-        assetType: row.asset_type as CreativePerformanceItem["assetType"],
-        name: row.name === null ? null : String(row.name),
-        thumbnailUrl:
-          row.thumbnail_url === null ? null : String(row.thumbnail_url),
-        operatingSystem:
-          row.operating_system as CreativePerformanceItem["operatingSystem"],
-        currency: String(row.currency),
-        spend,
-        impressions,
-        dailyReachSum,
-        linkClicks,
-        installs,
-        registrations,
-        video3sViews,
-        video100Views,
-        linkCtr: impressions > 0 ? (linkClicks / impressions) * 100 : null,
-        cpi: installs > 0 ? spend / installs : null,
-        costPerRegistration:
-          registrations > 0 ? spend / registrations : null,
-        hookRate:
-          isVideo && impressions > 0
-            ? (video3sViews / impressions) * 100
-            : null,
-        holdRate:
-          isVideo && video3sViews > 0
-            ? (video100Views / video3sViews) * 100
-            : null,
-        metricDays: asNumber(row.metric_days),
-      };
-    });
+  /**
+   * Loads the same Creative Performance projection as one
+   * `listCreativePerformance` call per selected Meta Ad Account, but with one
+   * read-only SQL statement. Pagination is partitioned by account and empty
+   * account groups are retained in the normalized selection order.
+   */
+  async listCreativePerformanceByAccount(
+    filters: CreativePerformanceByAccountFilters,
+  ): Promise<CreativePerformanceAccountGroup[]> {
+    const accountMetaIds = normalizeSelectedAdAccountMetaIds(
+      filters.accountMetaIds,
+    );
+    if (accountMetaIds.length === 0) {
+      return [];
+    }
+
+    const limit = Math.min(
+      Math.max(filters.limit ?? 50, 1),
+      MAX_CREATIVE_PERFORMANCE_ROWS,
+    );
+    const offset = Math.max(filters.offset ?? 0, 0);
+    const rows = await this.query<DatabaseRow>(
+      `
+        with selected_accounts as (
+          select
+            selected.meta_ad_account_id,
+            selected.selection_order
+          from unnest($9::text[]) with ordinality as selected(
+            meta_ad_account_id,
+            selection_order
+          )
+        ),
+        ad_asset_counts as (
+          select
+            ad_link.ad_id,
+            min(asset_link.creative_asset_id) as only_asset_id,
+            count(distinct asset_link.creative_asset_id) as asset_count
+          from tracker.ad_creative_links ad_link
+          join tracker.creative_asset_links asset_link
+            on asset_link.creative_id = ad_link.creative_id
+          group by ad_link.ad_id
+        ),
+        attributable_metrics as (
+          select
+            metric.*,
+            metric.creative_asset_id as attributed_asset_id,
+            case
+              when lower(metric.impression_device) like 'android%' then 'ANDROID'
+              when lower(metric.impression_device) in (
+                'ios',
+                'iphone',
+                'ipad',
+                'ipod'
+              ) then 'IOS'
+              else 'UNKNOWN'
+            end as operating_system
+          from tracker.daily_metrics metric
+          where metric.metric_scope = 'asset'
+            and metric.creative_asset_id is not null
+
+          union all
+
+          select
+            metric.*,
+            counts.only_asset_id as attributed_asset_id,
+            case
+              when lower(metric.impression_device) like 'android%' then 'ANDROID'
+              when lower(metric.impression_device) in (
+                'ios',
+                'iphone',
+                'ipad',
+                'ipod'
+              ) then 'IOS'
+              else 'UNKNOWN'
+            end as operating_system
+          from tracker.daily_metrics metric
+          join ad_asset_counts counts
+            on counts.ad_id = metric.ad_id
+           and counts.asset_count = 1
+          where metric.metric_scope = 'ad'
+            and not exists (
+              select 1
+              from tracker.daily_metrics exact_metric
+              where exact_metric.ad_id = metric.ad_id
+                and exact_metric.metric_date = metric.metric_date
+                and exact_metric.metric_scope = 'asset'
+                and exact_metric.country = metric.country
+                and exact_metric.publisher_platform = metric.publisher_platform
+                and exact_metric.platform_position = metric.platform_position
+                and exact_metric.impression_device = metric.impression_device
+                and exact_metric.attribution_window = metric.attribution_window
+            )
+        ),
+        aggregate as (
+          select
+            selected.meta_ad_account_id,
+            selected.selection_order,
+            metric.attributed_asset_id,
+            metric.operating_system,
+            metric.currency,
+            sum(metric.spend) as spend,
+            sum(metric.impressions) as impressions,
+            sum(metric.reported_reach) as daily_reach_sum,
+            sum(metric.link_clicks) as link_clicks,
+            sum(metric.installs) as installs,
+            sum(metric.registrations) as registrations,
+            sum(metric.video_3s_views) as video_3s_views,
+            sum(metric.video_100_views) as video_100_views,
+            count(distinct metric.metric_date) as metric_days
+          from attributable_metrics metric
+          join tracker.meta_ad_accounts account
+            on account.ad_account_id = metric.ad_account_id
+          join selected_accounts selected
+            on selected.meta_ad_account_id = account.meta_ad_account_id
+          where metric.metric_date between $2::date and $3::date
+            and account.connection_id = $1
+            and (
+              $15::boolean
+              or (account.is_active and account.account_status = 1)
+            )
+            and ($4::bigint is null or metric.ad_account_id = $4)
+            and ($5::text is null or metric.currency = $5)
+            and (
+              $10::text is null
+              or exists (
+                select 1
+                from tracker.meta_campaigns selected_campaign
+                where selected_campaign.campaign_id = metric.campaign_id
+                  and selected_campaign.meta_campaign_id = $10
+              )
+            )
+            and (
+              $12::text is null
+              or $12 = 'account_default'
+              or metric.attribution_window = $12
+            )
+            and (
+              $13::text is null
+              or metric.action_report_time = $13
+            )
+            and (
+              $14::text is null
+              or metric.sync_version = $14
+            )
+            and (
+              $16::text[] is null
+              or exists (
+                select 1
+                from tracker.meta_campaigns objective_campaign
+                where objective_campaign.campaign_id = metric.campaign_id
+                  and upper(coalesce(objective_campaign.objective, ''))
+                    = any($16::text[])
+              )
+            )
+          group by
+            selected.meta_ad_account_id,
+            selected.selection_order,
+            metric.attributed_asset_id,
+            metric.operating_system,
+            metric.currency
+        ),
+        filtered as (
+          select
+            aggregate.meta_ad_account_id,
+            aggregate.selection_order,
+            asset.creative_asset_id,
+            asset.creative_family_id,
+            asset.asset_key,
+            asset.asset_type,
+            asset.name,
+            asset.thumbnail_url,
+            aggregate.operating_system,
+            aggregate.currency,
+            aggregate.spend,
+            aggregate.impressions,
+            aggregate.daily_reach_sum,
+            aggregate.link_clicks,
+            aggregate.installs,
+            aggregate.registrations,
+            aggregate.video_3s_views,
+            aggregate.video_100_views,
+            aggregate.metric_days
+          from aggregate
+          join tracker.creative_assets asset
+            on asset.creative_asset_id = aggregate.attributed_asset_id
+          where ($6::text is null or asset.asset_type = $6)
+            and (
+              $11::text is null
+              or asset.creative_family_id = $11
+            )
+        ),
+        ranked as (
+          select
+            filtered.*,
+            row_number() over (
+              partition by filtered.meta_ad_account_id
+              order by
+                filtered.spend desc,
+                filtered.impressions desc,
+                filtered.creative_asset_id,
+                filtered.operating_system,
+                filtered.currency
+            ) as account_rank
+          from filtered
+        )
+        select
+          ranked.meta_ad_account_id,
+          ranked.creative_asset_id,
+          ranked.creative_family_id,
+          ranked.asset_key,
+          ranked.asset_type,
+          ranked.name,
+          ranked.thumbnail_url,
+          ranked.operating_system,
+          ranked.currency,
+          ranked.spend,
+          ranked.impressions,
+          ranked.daily_reach_sum,
+          ranked.link_clicks,
+          ranked.installs,
+          ranked.registrations,
+          ranked.video_3s_views,
+          ranked.video_100_views,
+          ranked.metric_days
+        from ranked
+        where ranked.account_rank > $8
+          and ranked.account_rank <= $8 + $7
+        order by ranked.selection_order, ranked.account_rank
+      `,
+      [
+        filters.connectionId,
+        filters.dateFrom,
+        filters.dateTo,
+        null,
+        filters.currency ?? null,
+        filters.assetType ?? null,
+        limit,
+        offset,
+        accountMetaIds,
+        filters.campaignMetaId?.trim() || null,
+        filters.creativeFamilyId?.trim() || null,
+        filters.attributionWindow?.trim() || null,
+        filters.actionReportTime ?? null,
+        filters.syncVersion?.trim() || null,
+        filters.includeInactiveAccounts === true,
+        filters.objectiveRawKeys?.length
+          ? filters.objectiveRawKeys.map((key) =>
+              key.trim().toUpperCase(),
+            )
+          : null,
+      ],
+    );
+
+    const itemsByAccount = new Map(
+      accountMetaIds.map((adAccountMetaId) => [
+        adAccountMetaId,
+        [] as CreativePerformanceItem[],
+      ]),
+    );
+    for (const row of rows) {
+      itemsByAccount
+        .get(String(row.meta_ad_account_id))
+        ?.push(mapCreativePerformanceItem(row));
+    }
+
+    return accountMetaIds.map((adAccountMetaId) => ({
+      adAccountMetaId,
+      items: itemsByAccount.get(adAccountMetaId) ?? [],
+    }));
   }
 
   /**

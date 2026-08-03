@@ -46,15 +46,15 @@ function summary(): LiveDeliverySummary {
     accounts: [],
     activeCampaigns: metric(3),
     activeAdSets: metric(4),
-    activeAds: metric(5),
-    activeAdsComparableForDelivery: metric(5),
+    activeAds: metric(4),
+    activeAdsComparableForDelivery: metric(4),
     activeDeliveringAds: metric(4),
     activeWithoutDelivery: metric(1),
-    mappedActiveCreativeFamilies: metric(4),
+    mappedActiveCreativeFamilies: metric(2),
     mappingCoverage: {
-      activeAdsTotal: 5,
-      activeAdsWithCreativeFamily: 4,
-      percent: 0.8,
+      activeAdsTotal: 4,
+      activeAdsWithCreativeFamily: 2,
+      percent: 50,
     },
   };
 }
@@ -95,6 +95,15 @@ function expectReportingContext(link: URL) {
 }
 
 describe("V6 Live Delivery navigation acceptance", () => {
+  it("renders repository mapping percentages without scaling them a second time", () => {
+    const markup = renderToStaticMarkup(
+      <LiveDeliveryStripV3 summary={summary()} query={REPORTING_CONTEXT} />,
+    );
+
+    expect(markup).toContain("Creative mapping 50%");
+    expect(markup).not.toMatch(/Creative mapping 5[.,]000%/);
+  });
+
   it("makes each operational metric a correctly filtered V3 deep link without dropping report context", () => {
     const links = renderedLinks();
     const targets = [

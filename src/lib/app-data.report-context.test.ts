@@ -1489,6 +1489,168 @@ describe("live Creative fatigue integration", () => {
 });
 
 describe("live Creative campaign scope", () => {
+  it("reuses an exact preloaded delivery read for the Creative report", async () => {
+    const snapshot = connectedApplicationSnapshot([liveLeadDefinition]);
+    const repository = liveSnapshotRepository([liveLeadDefinition]);
+    const preloadedDelivery = [
+      {
+        operatingSystem: "ANDROID" as const,
+        currency: "VND",
+        spend: 1_200,
+        impressions: 8_000,
+        linkClicks: 200,
+        installs: 40,
+        registrations: 10,
+        video3sViews: 0,
+        video100Views: 0,
+        metricDays: 7,
+      },
+    ];
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    const report = await getCreativeRowsForReport({
+      snapshot,
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-07",
+      accountMetaIds: ["act_1", "act_2"],
+      currency: "VND",
+      syncVersion: "run-1",
+      preloadedDelivery,
+    });
+
+    expect(report.delivery).toEqual(preloadedDelivery);
+    expect(repository.getDeliveryPerformance).not.toHaveBeenCalled();
+  });
+
+  it("loads benchmark and fatigue performance once per period for a multi-account scope", async () => {
+    const dateFrom = "2026-07-01";
+    const dateTo = "2026-07-14";
+    const snapshot = connectedApplicationSnapshot([liveLeadDefinition]);
+    const context = {
+      ...resolveApplicationReportContext(snapshot, {
+        objective: "leads",
+      }),
+      adAccountIds: ["act_1", "act_2"],
+      dateFrom,
+      dateTo,
+      currency: "VND",
+      currencyMode: "single" as const,
+      syncVersion: "run-1",
+    };
+    const { repository, listCreativePerformance } =
+      liveFatigueRepository({ dateFrom, dateTo });
+    const listCreativePerformanceByAccount = vi.fn(
+      async (
+        filters: Parameters<
+          TrackerRepository["listCreativePerformanceByAccount"]
+        >[0],
+      ) =>
+        filters.accountMetaIds.map((adAccountMetaId) => ({
+          adAccountMetaId,
+          items: [],
+        })),
+    );
+    Object.assign(repository, { listCreativePerformanceByAccount });
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    await getCreativeRowsForReport({
+      snapshot,
+      dateFrom,
+      dateTo,
+      accountMetaIds: context.adAccountIds,
+      campaignMetaId: "campaign_1",
+      currency: context.currency,
+      attributionWindow: context.attributionSettingKey,
+      actionReportTime: context.actionReportTime,
+      syncVersion: context.syncVersion,
+      reportContext: context,
+    });
+
+    expect(listCreativePerformance).toHaveBeenCalledTimes(1);
+    expect(listCreativePerformanceByAccount).toHaveBeenCalledTimes(3);
+    expect(
+      listCreativePerformanceByAccount.mock.calls.map(
+        ([filters]) => [filters.dateFrom, filters.dateTo],
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        ["2026-06-15", "2026-07-14"],
+        ["2026-07-01", "2026-07-07"],
+        ["2026-07-08", "2026-07-14"],
+      ]),
+    );
+    for (const [filters] of listCreativePerformanceByAccount.mock.calls) {
+      expect(filters).toMatchObject({
+        accountMetaIds: ["act_1", "act_2"],
+        includeInactiveAccounts: true,
+        currency: "VND",
+        attributionWindow: context.attributionSettingKey,
+        actionReportTime: context.actionReportTime,
+        syncVersion: "run-1",
+        objectiveRawKeys: expect.arrayContaining(["OUTCOME_LEADS"]),
+      });
+      expect(filters.campaignMetaId).toBe(
+        filters.dateFrom === "2026-06-15"
+          ? undefined
+          : "campaign_1",
+      );
+    }
+  });
+
+  it("fails closed on optional benchmark reads for a very broad account scope", async () => {
+    const dateFrom = "2026-07-01";
+    const dateTo = "2026-07-14";
+    const snapshot = connectedApplicationSnapshot([liveLeadDefinition]);
+    const accountMetaIds = Array.from(
+      { length: 9 },
+      (_, index) => `act_${index + 1}`,
+    );
+    const context = {
+      ...resolveApplicationReportContext(snapshot, {
+        objective: "leads",
+      }),
+      adAccountIds: accountMetaIds,
+      dateFrom,
+      dateTo,
+      currency: "VND",
+      currencyMode: "single" as const,
+      syncVersion: "run-1",
+    };
+    const {
+      repository,
+      getCanonicalCreativeFamilyResultTotals,
+    } = liveFatigueRepository({ dateFrom, dateTo });
+    const listCreativePerformanceByAccount = vi
+      .fn()
+      .mockResolvedValue([]);
+    Object.assign(repository, { listCreativePerformanceByAccount });
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    const report = await getCreativeRowsForReport({
+      snapshot,
+      dateFrom,
+      dateTo,
+      accountMetaIds,
+      campaignMetaId: "campaign_1",
+      currency: context.currency,
+      attributionWindow: context.attributionSettingKey,
+      actionReportTime: context.actionReportTime,
+      syncVersion: context.syncVersion,
+      reportContext: context,
+    });
+
+    expect(report.creatives).toHaveLength(1);
+    expect(listCreativePerformanceByAccount).not.toHaveBeenCalled();
+    expect(getCanonicalCreativeFamilyResultTotals).toHaveBeenCalledTimes(1);
+    expect(
+      report.creatives[0]?.performance?.evaluation,
+    ).toMatchObject({
+      performanceStatus: "not_eligible",
+      fatigueStatus: "insufficient",
+      sampleSize: 0,
+    });
+  });
+
   it("batches an exact multi-account scope into one performance and one delivery read", async () => {
     const snapshot = connectedApplicationSnapshot([liveLeadDefinition]);
     const repository = liveSnapshotRepository([liveLeadDefinition]);

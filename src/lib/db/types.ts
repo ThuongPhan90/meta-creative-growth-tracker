@@ -689,6 +689,21 @@ export interface CreativePerformanceFilters {
   offset?: number;
 }
 
+/**
+ * One read-only Creative Performance snapshot for each selected Meta Ad
+ * Account. Every shared filter has the same meaning as a separate
+ * `listCreativePerformance` call; limit and offset apply independently to
+ * each account.
+ */
+export interface CreativePerformanceByAccountFilters
+  extends Omit<
+    CreativePerformanceFilters,
+    "adAccountId" | "accountMetaId" | "accountMetaIds"
+  > {
+  /** Exact Meta account scope. An explicitly empty scope returns no groups. */
+  accountMetaIds: readonly string[];
+}
+
 export interface CreativePerformanceItem {
   creativeAssetId: DatabaseId;
   /** Present on V2 projections; older repository projections remain valid. */
@@ -713,6 +728,11 @@ export interface CreativePerformanceItem {
   hookRate: number | null;
   holdRate: number | null;
   metricDays: number;
+}
+
+export interface CreativePerformanceAccountGroup {
+  adAccountMetaId: string;
+  items: CreativePerformanceItem[];
 }
 
 export interface DeliveryPerformanceFilters {

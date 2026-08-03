@@ -1,6 +1,8 @@
 import type { ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("server-only", () => ({}));
+
 const mocks = vi.hoisted(() => ({
   getApplicationContextSnapshot: vi.fn(),
   getApplicationOperationalSnapshot: vi.fn(),
@@ -88,10 +90,13 @@ const snapshot = {
     syncVersion: "20",
   },
   reportingScope: null,
+  resultDefinitions: [],
   settings: {
     timezone: "Asia/Ho_Chi_Minh",
     lookbackDays: 30,
     compareDefault: "none",
+    metricDisplayPresets: { version: 1, presets: {} },
+    updatedAt: "2026-07-31T00:00:00.000Z",
   },
 };
 
@@ -125,7 +130,23 @@ const context = {
 type OverviewPageElement = ReactElement<{
   reportWarnings: readonly string[];
   query: Record<string, string | string[] | undefined>;
+  coreSlot?: ReactElement<{ children: ReactElement }>;
+  liveDeliverySlot?: ReactElement<{ children: ReactElement }>;
 }>;
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
+async function renderAsyncElement(element: ReactElement) {
+  return (await (
+    element.type as (props: typeof element.props) => Promise<ReactElement>
+  )(element.props)) as ReactElement;
+}
 
 const canonicalQuery = {
   from: "2026-07-02",
@@ -313,6 +334,7 @@ describe("Overview page canonical reporting context", () => {
   });
 
   it("shows a canonical Result fallback notice once without propagating it to links", async () => {
+    process.env.UI_VERSION = "v2";
     mocks.getCanonicalResultsForReport.mockResolvedValue({
       definitions: [],
       values: [],
@@ -387,6 +409,7 @@ describe("Overview page canonical reporting context", () => {
   });
 
   it("applies the campaign scope to current and previous canonical Result totals", async () => {
+    process.env.UI_VERSION = "v3";
     const previousPeriodContext = {
       ...context,
       compareMode: "previous_period" as const,
@@ -396,13 +419,13 @@ describe("Overview page canonical reporting context", () => {
       previousPeriodContext,
     );
 
-    await OverviewPage({
+    const element = (await OverviewPage({
       searchParams: Promise.resolve({
         ...canonicalQuery,
         compare: "previous_period",
         campaign: "campaign_42",
       }),
-    });
+    })) as OverviewPageElement;
 
     expect(mocks.redirect).not.toHaveBeenCalled();
     expect(
@@ -423,14 +446,25 @@ describe("Overview page canonical reporting context", () => {
       },
       campaignMetaIds: ["campaign_42"],
     });
-    expect(mocks.getCreativeRowsForReport).toHaveBeenCalledWith(
-      expect.objectContaining({ campaignMetaId: "campaign_42" }),
-    );
+    expect(mocks.getCreativeRowsForReport).not.toHaveBeenCalled();
     expect(mocks.getOverviewTrendForReport).toHaveBeenCalledWith(
       expect.objectContaining({ campaignMetaId: "campaign_42" }),
     );
     expect(mocks.getDeliveryForReport).toHaveBeenCalledWith(
       expect.objectContaining({ campaignMetaId: "campaign_42" }),
+    );
+    expect(mocks.getMetaBreakdownForReport).not.toHaveBeenCalled();
+
+    const coreBoundary = element.props.coreSlot;
+    expect(coreBoundary).toBeDefined();
+    const coreSection = coreBoundary!.props.children;
+    await renderAsyncElement(coreSection);
+
+    expect(mocks.getCreativeRowsForReport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        campaignMetaId: "campaign_42",
+        preloadedDelivery: [],
+      }),
     );
     expect(mocks.getMetaBreakdownForReport).toHaveBeenCalledWith({
       snapshot,
@@ -446,8 +480,8 @@ describe("Overview page canonical reporting context", () => {
       searchParams: Promise.resolve(canonicalQuery),
     })) as ReactElement<{
       resetHref: string;
-      resultDefinitions: unknown[];
-      watchlist: unknown;
+      coreSlot: ReactElement;
+      liveDeliverySlot: ReactElement;
     }>;
 
     expect(element.type).toBe(mocks.overviewV3);
@@ -455,19 +489,11 @@ describe("Overview page canonical reporting context", () => {
     expect(
       mocks.getApplicationOperationalSnapshot,
     ).not.toHaveBeenCalled();
-    expect(element.props.resultDefinitions).toEqual([]);
-    expect(element.props.watchlist).toEqual(
-      mocks.buildOverviewCreativeWatchlistModel.mock.results[0]?.value,
-    );
-    expect(
-      mocks.buildOverviewCreativeWatchlistModel,
-    ).toHaveBeenCalledWith({
-      creatives: [],
-      objectiveKey: "sales",
-      resultKey: "purchase",
-      resultDefinitions: [],
-      currency: "VND",
-    });
+    expect(element.props.coreSlot).toBeDefined();
+    expect(element.props.liveDeliverySlot).toBeDefined();
+    expect(mocks.getCreativeRowsForReport).not.toHaveBeenCalled();
+    expect(mocks.getMetaBreakdownForReport).not.toHaveBeenCalled();
+    expect(mocks.buildOverviewCreativeWatchlistModel).not.toHaveBeenCalled();
     expect(element.props).not.toHaveProperty("creatives");
     expect(element.props).not.toHaveProperty("dashboard");
     expect(element.props).not.toHaveProperty("delivery");
@@ -482,5 +508,62 @@ describe("Overview page canonical reporting context", () => {
     expect(reset.searchParams.get("sync_version")).toBe("20");
     expect(reset.searchParams.has("objective")).toBe(false);
     expect(reset.searchParams.has("currency")).toBe(false);
+  });
+
+  it("returns the V3 shell while Creative is pending and starts Creative only after core", async () => {
+    process.env.UI_VERSION = "v3";
+    const currentDelivery = deferred<never[]>();
+    const creative = deferred<{
+      creatives: never[];
+      delivery: never[];
+      truncated: boolean;
+    }>();
+    mocks.getDeliveryForReport.mockReturnValueOnce(
+      currentDelivery.promise,
+    );
+    mocks.getCreativeRowsForReport.mockReturnValueOnce(
+      creative.promise,
+    );
+
+    const element = (await OverviewPage({
+      searchParams: Promise.resolve(canonicalQuery),
+    })) as OverviewPageElement;
+
+    expect(element.type).toBe(mocks.overviewV3);
+    expect(element.props.coreSlot).toBeDefined();
+    expect(mocks.getCreativeRowsForReport).not.toHaveBeenCalled();
+    expect(mocks.getMetaBreakdownForReport).not.toHaveBeenCalled();
+
+    const coreRender = renderAsyncElement(
+      element.props.coreSlot!.props.children,
+    );
+    await Promise.resolve();
+    expect(mocks.getCreativeRowsForReport).not.toHaveBeenCalled();
+
+    currentDelivery.resolve([]);
+    const metricsElement = (await coreRender) as ReactElement<{
+      creativeSlot: ReactElement<{ children: ReactElement }>;
+    }>;
+    expect(mocks.getCreativeRowsForReport).toHaveBeenCalledOnce();
+    expect(mocks.getCreativeRowsForReport).toHaveBeenCalledWith(
+      expect.objectContaining({ preloadedDelivery: [] }),
+    );
+    expect(mocks.getMetaBreakdownForReport).toHaveBeenCalledOnce();
+
+    const creativeBoundary = metricsElement.props.creativeSlot;
+    let creativeSettled = false;
+    const creativeRender = renderAsyncElement(
+      creativeBoundary.props.children,
+    ).then((value) => {
+      creativeSettled = true;
+      return value;
+    });
+    await Promise.resolve();
+    expect(creativeSettled).toBe(false);
+    expect(mocks.buildOverviewCreativeWatchlistModel).not.toHaveBeenCalled();
+
+    creative.resolve({ creatives: [], delivery: [], truncated: false });
+    await creativeRender;
+    expect(mocks.buildOverviewCreativeWatchlistModel).toHaveBeenCalledOnce();
   });
 });

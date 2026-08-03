@@ -30,7 +30,7 @@ export function DataQualityCompactV3({
   const mappingLabel = liveDelivery
     ? liveDelivery.mappingCoverage.percent === null
       ? "Creative mapping chưa khả dụng"
-      : `Creative mapping ${formatPercent(liveDelivery.mappingCoverage.percent * 100)}`
+      : `Creative mapping ${formatPercent(liveDelivery.mappingCoverage.percent)}`
     : "Chưa có snapshot delivery";
   const deliveryCoverage = !liveDelivery
     ? "Chưa có snapshot delivery để xác nhận coverage"

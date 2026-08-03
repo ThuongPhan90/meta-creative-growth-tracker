@@ -2600,6 +2600,170 @@ describe("Ad account activity filters", () => {
     expect(parameters?.at(-1)).toEqual(["OUTCOME_LEADS"]);
   });
 
+  it("loads per-account Creative Performance snapshots with one query", async () => {
+    const unsafe = vi.fn(
+      async (_query: string, _parameters?: unknown[]) => {
+        void _query;
+        void _parameters;
+        return [];
+      },
+    );
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.listCreativePerformanceByAccount({
+        connectionId: "connection-1",
+        dateFrom: "2026-07-01",
+        dateTo: "2026-07-31",
+        accountMetaIds: [" act_2 ", "act_1", "act_2", ""],
+        includeInactiveAccounts: true,
+        campaignMetaId: " campaign_1 ",
+        creativeFamilyId: " family_1 ",
+        attributionWindow: " 7d_click ",
+        actionReportTime: "conversion",
+        syncVersion: " sync_28 ",
+        objectiveRawKeys: [" outcome_app_promotion "],
+        assetType: "video",
+        currency: "VND",
+        limit: 9_000,
+        offset: -4,
+      }),
+    ).resolves.toEqual([
+      { adAccountMetaId: "act_2", items: [] },
+      { adAccountMetaId: "act_1", items: [] },
+    ]);
+
+    expect(unsafe).toHaveBeenCalledTimes(1);
+    const [query, parameters] = unsafe.mock.calls[0];
+    const normalized = compactSql(query);
+    expect(normalized).toContain(
+      "from unnest($9::text[]) with ordinality",
+    );
+    expect(normalized).toContain(
+      "join selected_accounts selected on selected.meta_ad_account_id = account.meta_ad_account_id",
+    );
+    expect(normalized).toContain(
+      "$15::boolean or (account.is_active and account.account_status = 1)",
+    );
+    expect(normalized).toContain(
+      "partition by filtered.meta_ad_account_id order by filtered.spend desc, filtered.impressions desc",
+    );
+    expect(normalized).toContain(
+      "where ranked.account_rank > $8 and ranked.account_rank <= $8 + $7",
+    );
+    expect(query.indexOf("$6::text is null")).toBeLessThan(
+      query.indexOf("row_number() over"),
+    );
+    expect(query.indexOf("$11::text is null")).toBeLessThan(
+      query.indexOf("row_number() over"),
+    );
+    expect(parameters).toEqual([
+      "connection-1",
+      "2026-07-01",
+      "2026-07-31",
+      null,
+      "VND",
+      "video",
+      5_001,
+      0,
+      ["act_2", "act_1"],
+      "campaign_1",
+      "family_1",
+      "7d_click",
+      "conversion",
+      "sync_28",
+      true,
+      ["OUTCOME_APP_PROMOTION"],
+    ]);
+  });
+
+  it("maps batch rows into ordered account groups and keeps empty groups", async () => {
+    const unsafe = vi.fn().mockResolvedValue([
+      {
+        meta_ad_account_id: "act_1",
+        creative_asset_id: "asset_1",
+        creative_family_id: "family_1",
+        asset_key: "video:1",
+        asset_type: "video",
+        name: "Video One",
+        thumbnail_url: "https://example.test/1.jpg",
+        operating_system: "ANDROID",
+        currency: "VND",
+        spend: "120",
+        impressions: "1000",
+        daily_reach_sum: "900",
+        link_clicks: "40",
+        installs: "10",
+        registrations: "4",
+        video_3s_views: "500",
+        video_100_views: "125",
+        metric_days: "7",
+      },
+    ]);
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.listCreativePerformanceByAccount({
+        connectionId: "connection-1",
+        dateFrom: "2026-07-01",
+        dateTo: "2026-07-31",
+        accountMetaIds: ["act_2", "act_1"],
+      }),
+    ).resolves.toEqual([
+      { adAccountMetaId: "act_2", items: [] },
+      {
+        adAccountMetaId: "act_1",
+        items: [
+          {
+            creativeAssetId: "asset_1",
+            creativeFamilyId: "family_1",
+            assetKey: "video:1",
+            assetType: "video",
+            name: "Video One",
+            thumbnailUrl: "https://example.test/1.jpg",
+            operatingSystem: "ANDROID",
+            currency: "VND",
+            spend: 120,
+            impressions: 1_000,
+            dailyReachSum: 900,
+            linkClicks: 40,
+            installs: 10,
+            registrations: 4,
+            video3sViews: 500,
+            video100Views: 125,
+            linkCtr: 4,
+            cpi: 12,
+            costPerRegistration: 30,
+            hookRate: 50,
+            holdRate: 25,
+            metricDays: 7,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("fails closed for an explicitly empty batch account scope", async () => {
+    const unsafe = vi.fn();
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await expect(
+      repository.listCreativePerformanceByAccount({
+        connectionId: "connection-1",
+        dateFrom: "2026-07-01",
+        dateTo: "2026-07-31",
+        accountMetaIds: [],
+      }),
+    ).resolves.toEqual([]);
+    expect(unsafe).not.toHaveBeenCalled();
+  });
+
   it("fails closed for explicit empty performance account scopes", async () => {
     const unsafe = vi.fn(
       async (_query: string, _parameters?: unknown[]) => {

@@ -88,7 +88,7 @@ export function LiveDeliveryStripV3({
   const coverage =
     summary.mappingCoverage.percent === null
       ? "Creative mapping chưa khả dụng"
-      : `Creative mapping ${formatPercent(summary.mappingCoverage.percent * 100)}`;
+      : `Creative mapping ${formatPercent(summary.mappingCoverage.percent)}`;
   const deliveryCoverage =
     summary.state === "unavailable" || summary.activeAds.value === null
       ? "Coverage delivery chưa khả dụng"

@@ -104,6 +104,68 @@
   line-height: 1.5;
 }
 
+.skeletonCore {
+  display: grid;
+  gap: 24px;
+  min-width: 0;
+}
+
+.skeletonPanel {
+  overflow: hidden;
+  border: 1px solid var(--ui-v3-border);
+  border-radius: var(--ui-v3-radius-card);
+  background: var(--ui-v3-surface);
+}
+
+.skeletonLive {
+  min-height: 224px;
+  padding: 22px;
+}
+
+.skeletonKpis {
+  min-height: 184px;
+  padding: 22px;
+}
+
+.skeletonCreative {
+  min-height: 430px;
+  padding: 22px;
+}
+
+.skeletonAnalytics {
+  min-height: 360px;
+  padding: 22px;
+}
+
+.skeletonBreakdown,
+.skeletonQuality {
+  min-height: 300px;
+  padding: 22px;
+}
+
+.skeletonLines {
+  display: grid;
+  gap: 14px;
+  width: 100%;
+}
+
+.skeletonLines span {
+  display: block;
+  width: 100%;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--ui-v3-surface-muted);
+}
+
+.skeletonLines span:first-child {
+  width: min(38%, 320px);
+  height: 24px;
+}
+
+.skeletonLines span:nth-child(2n + 3) {
+  width: 78%;
+}
+
 .primaryLink {
   display: inline-flex;
   align-items: center;

@@ -6,7 +6,6 @@ import {
   createTrackerRepository,
   type CreativeLibraryItem,
   type CreativePerformanceItem,
-  type CanonicalCreativeFamilyResultTotals,
   type CanonicalResultTrendPoint as DatabaseCanonicalResultTrendPoint,
   type ConnectionCoverage,
   type DeliveryPerformanceItem,
@@ -92,6 +91,10 @@ import type {
 } from "@/types/view-models";
 
 const MAX_VIEW_ROWS = 5_000;
+// Exact benchmark/fatigue evaluation keeps up to MAX_VIEW_ROWS per account
+// for three periods. Larger scopes remain visible, but fail closed on the
+// optional evaluation instead of risking an unbounded serverless payload.
+const MAX_EXACT_CREATIVE_EVALUATION_ACCOUNTS = 8;
 const DEFAULT_INSTALL_ACTION_TYPES = [
   "mobile_app_install",
   "omni_app_install",
@@ -785,6 +788,77 @@ async function mapAccountBatches<T>(
   return values;
 }
 
+async function loadPerformanceByAccount({
+  repository,
+  connectionId,
+  accountMetaIds,
+  dateFrom,
+  dateTo,
+  currency,
+  campaignMetaId,
+  attributionWindow,
+  actionReportTime,
+  syncVersion,
+  objectiveRawKeys,
+}: {
+  repository: TrackerRepository;
+  connectionId: string;
+  accountMetaIds: readonly string[];
+  dateFrom: string;
+  dateTo: string;
+  currency: string | null;
+  campaignMetaId?: string;
+  attributionWindow?: string;
+  actionReportTime?: "impression" | "conversion" | "mixed";
+  syncVersion?: string;
+  objectiveRawKeys?: readonly string[];
+}): Promise<AccountCreativePerformance[]> {
+  // Production repositories can collapse the former N-account fan-out into
+  // one partitioned SQL read. Keep the fallback for lightweight test doubles
+  // and older injected repositories so this optimization remains additive.
+  if (typeof repository.listCreativePerformanceByAccount === "function") {
+    const groups = await repository.listCreativePerformanceByAccount({
+      connectionId,
+      accountMetaIds,
+      dateFrom,
+      dateTo,
+      currency: currency ?? undefined,
+      campaignMetaId: campaignMetaId?.trim() || undefined,
+      attributionWindow: attributionWindow || undefined,
+      actionReportTime,
+      syncVersion: syncVersion || undefined,
+      objectiveRawKeys:
+        objectiveRawKeys?.length ? objectiveRawKeys : undefined,
+      includeInactiveAccounts: true,
+      limit: MAX_VIEW_ROWS + 1,
+      offset: 0,
+    });
+    return groups.map((group) => ({
+      adAccountMetaId: group.adAccountMetaId,
+      items: group.items.slice(0, MAX_VIEW_ROWS),
+    }));
+  }
+
+  return mapAccountBatches(accountMetaIds, async (accountMetaId) => ({
+    adAccountMetaId: accountMetaId,
+    items: (
+      await loadPerformance(
+        repository,
+        connectionId,
+        dateFrom,
+        dateTo,
+        currency,
+        accountMetaId,
+        campaignMetaId,
+        attributionWindow,
+        actionReportTime,
+        syncVersion,
+        objectiveRawKeys,
+      )
+    ).items,
+  }));
+}
+
 function benchmarkDateFrom(dateTo: string, windowDays: number) {
   const end = new Date(`${dateTo}T00:00:00.000Z`);
   end.setUTCDate(
@@ -897,8 +971,9 @@ async function enrichLiveCreativeRowsForReport({
     const resultMappingVersion =
       computeResultMappingVersion(mappings);
     const exactCampaignMetaId = campaignMetaId?.trim() || undefined;
+    const connectionId = snapshot.connection.connectionId;
     const baseFilters = {
-      connectionId: snapshot.connection.connectionId,
+      connectionId,
       adAccountIds: requestedAccountIds,
       objectiveKeys: [context.objectiveKey],
       objectiveMappings: DEFAULT_OBJECTIVE_REGISTRY.map(
@@ -915,15 +990,6 @@ async function enrichLiveCreativeRowsForReport({
       syncVersion: context.syncVersion,
       resultMappingVersion,
     } as const;
-    const actualResults =
-      await repository.getCanonicalCreativeFamilyResultTotals({
-        ...baseFilters,
-        dateFrom,
-        dateTo,
-        ...(exactCampaignMetaId
-          ? { campaignMetaIds: [exactCampaignMetaId] }
-          : {}),
-      });
     const selectedDefinition =
       context.primaryResultKey
         ? enabledDefinitions.find(
@@ -938,55 +1004,58 @@ async function enrichLiveCreativeRowsForReport({
     const needsBenchmark =
       !!selectedDefinition &&
       selectedDefinition.efficiencyMetric !== "none" &&
-      context.currencyMode === "single";
-    let benchmarkResults: CanonicalCreativeFamilyResultTotals =
-      actualResults;
+      context.currencyMode === "single" &&
+      requestedAccountIds.length <=
+        MAX_EXACT_CREATIVE_EVALUATION_ACCOUNTS;
+    const fatigueRange = needsBenchmark
+      ? splitFatigueComparisonRange(dateFrom, dateTo)
+      : null;
+    // Confirm the exact current-period result contract before starting any
+    // optional benchmark work. If it fails, the catch below can fail closed
+    // without leaving six unrelated reads occupying the database pool.
+    const actualResults =
+      await repository.getCanonicalCreativeFamilyResultTotals({
+        ...baseFilters,
+        dateFrom,
+        dateTo,
+        ...(exactCampaignMetaId
+          ? { campaignMetaIds: [exactCampaignMetaId] }
+          : {}),
+      });
+    let benchmarkResults = actualResults;
     let benchmarkPerformance: AccountCreativePerformance[] = [];
+    let fatigueComparison:
+      | CreativeFamilyFatigueComparison
+      | undefined;
     if (needsBenchmark) {
       const benchmarkFrom = benchmarkDateFrom(
         dateTo,
         settings.benchmarkWindowDays,
       );
-      const [resultBatch, performanceBatches] =
-        await Promise.all([
-          repository.getCanonicalCreativeFamilyResultTotals({
-            ...baseFilters,
-            dateFrom: benchmarkFrom,
-            dateTo,
-          }),
-          mapAccountBatches(
-            requestedAccountIds,
-            async (selectedAccountId) => ({
-              adAccountMetaId: selectedAccountId,
-              items: (
-                await loadPerformance(
-                  repository,
-                  snapshot.connection!.connectionId,
-                  benchmarkFrom,
-                  dateTo,
-                  effectiveCurrency,
-                  selectedAccountId,
-                  undefined,
-                  context.attributionSettingKey,
-                  context.actionReportTime,
-                  context.syncVersion,
-                  objectiveDatabaseKeys(context.objectiveKey),
-                )
-              ).items,
-            }),
+      [benchmarkResults, benchmarkPerformance] = await Promise.all([
+        repository.getCanonicalCreativeFamilyResultTotals({
+          ...baseFilters,
+          dateFrom: benchmarkFrom,
+          dateTo,
+        }),
+        loadPerformanceByAccount({
+          repository,
+          connectionId,
+          accountMetaIds: requestedAccountIds,
+          dateFrom: benchmarkFrom,
+          dateTo,
+          currency: effectiveCurrency,
+          attributionWindow: context.attributionSettingKey,
+          actionReportTime: context.actionReportTime,
+          syncVersion: context.syncVersion,
+          objectiveRawKeys: objectiveDatabaseKeys(
+            context.objectiveKey,
           ),
-        ]);
-      benchmarkResults = resultBatch;
-      benchmarkPerformance = performanceBatches;
+        }),
+      ]);
     }
-    const fatigueRange = needsBenchmark
-      ? splitFatigueComparisonRange(dateFrom, dateTo)
-      : null;
-    let fatigueComparison:
-      | CreativeFamilyFatigueComparison
-      | undefined;
     if (fatigueRange) {
-      const loadFatiguePeriod = async ({
+      const loadPeriod = async ({
         dateFrom: periodFrom,
         dateTo: periodTo,
         days,
@@ -1004,34 +1073,28 @@ async function enrichLiveCreativeRowsForReport({
               ? { campaignMetaIds: [exactCampaignMetaId] }
               : {}),
           }),
-          mapAccountBatches(
-            requestedAccountIds,
-            async (selectedAccountId) => ({
-              adAccountMetaId: selectedAccountId,
-              items: (
-                await loadPerformance(
-                  repository,
-                  snapshot.connection!.connectionId,
-                  periodFrom,
-                  periodTo,
-                  effectiveCurrency,
-                  selectedAccountId,
-                  exactCampaignMetaId,
-                  context.attributionSettingKey,
-                  context.actionReportTime,
-                  context.syncVersion,
-                  objectiveDatabaseKeys(context.objectiveKey),
-                )
-              ).items,
-            }),
-          ),
+          loadPerformanceByAccount({
+            repository,
+            connectionId,
+            accountMetaIds: requestedAccountIds,
+            dateFrom: periodFrom,
+            dateTo: periodTo,
+            currency: effectiveCurrency,
+            campaignMetaId: exactCampaignMetaId,
+            attributionWindow: context.attributionSettingKey,
+            actionReportTime: context.actionReportTime,
+            syncVersion: context.syncVersion,
+            objectiveRawKeys: objectiveDatabaseKeys(
+              context.objectiveKey,
+            ),
+          }),
         ]);
         return { results, performance, days };
       };
-      const [earlier, later] = await Promise.all([
-        loadFatiguePeriod(fatigueRange.earlier),
-        loadFatiguePeriod(fatigueRange.later),
-      ]);
+      // Keep each two-query period bounded. The later period begins only after
+      // the earlier pair settles, so a failure cannot strand four more reads.
+      const earlier = await loadPeriod(fatigueRange.earlier);
+      const later = await loadPeriod(fatigueRange.later);
       fatigueComparison = {
         earlier,
         later,
@@ -1236,6 +1299,7 @@ export async function getCreativeRowsForReport({
   actionReportTime,
   syncVersion,
   reportContext,
+  preloadedDelivery,
 }: {
   snapshot: ApplicationSnapshot;
   dateFrom: string;
@@ -1248,6 +1312,8 @@ export async function getCreativeRowsForReport({
   actionReportTime?: "impression" | "conversion" | "mixed";
   syncVersion?: string;
   reportContext?: ReportingContext;
+  /** Reuses an exact current-period read already resolved by the caller. */
+  preloadedDelivery?: readonly DeliveryPerformanceItem[];
 }): Promise<{
   creatives: CreativeRow[];
   truncated: boolean;
@@ -1363,20 +1429,22 @@ export async function getCreativeRowsForReport({
       objectiveRawKeys,
       requestedAccountIds,
     ),
-    repository.getDeliveryPerformance({
-      connectionId: snapshot.connection.connectionId,
-      dateFrom,
-      dateTo,
-      currency: effectiveCurrency ?? undefined,
-      adAccountMetaIds: requestedAccountIds,
-      includeInactiveAccounts: requestedAccountIds !== undefined,
-      campaignMetaId: exactCampaignMetaId,
-      attributionWindow: attributionWindow || undefined,
-      actionReportTime,
-      syncVersion: syncVersion || undefined,
-      objectiveRawKeys:
-        objectiveRawKeys.length ? objectiveRawKeys : undefined,
-    }),
+    preloadedDelivery !== undefined
+      ? Promise.resolve([...preloadedDelivery])
+      : repository.getDeliveryPerformance({
+          connectionId: snapshot.connection.connectionId,
+          dateFrom,
+          dateTo,
+          currency: effectiveCurrency ?? undefined,
+          adAccountMetaIds: requestedAccountIds,
+          includeInactiveAccounts: requestedAccountIds !== undefined,
+          campaignMetaId: exactCampaignMetaId,
+          attributionWindow: attributionWindow || undefined,
+          actionReportTime,
+          syncVersion: syncVersion || undefined,
+          objectiveRawKeys:
+            objectiveRawKeys.length ? objectiveRawKeys : undefined,
+        }),
   ]);
   const libraryItems = libraryResult.items.filter(
     (item) =>

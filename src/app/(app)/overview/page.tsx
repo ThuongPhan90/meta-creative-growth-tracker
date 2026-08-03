@@ -3,6 +3,7 @@ import {
   groupCreativeFamiliesForView,
 } from "@/components/creative-performance-v2";
 import { OverviewV3 } from "@/features/overview-v3/overview-page";
+import { buildOverviewV3ServerSlots } from "@/features/overview-v3/overview-server";
 import { OverviewV2 } from "@/components/overview-v2";
 import { EntityDrawer } from "@/components/ui/entity-drawer";
 import {
@@ -13,11 +14,9 @@ import {
   getCreativeRowsForReport,
   getDeliveryForReport,
   getLiveDeliveryForReport,
-  getMetaBreakdownForReport,
   getOverviewTrendForReport,
   resolveApplicationReportContext,
 } from "@/lib/app-data";
-import { buildOverviewCreativeWatchlistModel } from "@/features/overview-v3/creative-watchlist-model";
 import { addReportDays } from "@/lib/reporting";
 import { formatFreshnessFields } from "@/lib/presentation/freshness-presentation";
 import { buildReportingBarModel } from "@/lib/presentation/reporting-bar";
@@ -223,6 +222,82 @@ export default async function OverviewPage({
     previousDateTo,
     -(periodDays - 1),
   );
+  const connected =
+    snapshot.demoMode ||
+    (snapshot.authenticated &&
+      snapshot.connection?.status === "connected");
+  const currencyOptions = [
+    ...new Set(
+      snapshot.assets.flatMap((asset) =>
+        asset.kind === "Ad Account" && asset.currency
+          ? [asset.currency]
+          : [],
+      ),
+    ),
+  ];
+  const accounts = snapshot.assets
+    .filter((asset) => asset.kind === "Ad Account")
+    .map((asset) => ({ id: asset.id, name: asset.name }));
+  const baseWarnings = [
+    ...new Set([
+      ...(requestedNotice
+        ? [OVERVIEW_FLASH_NOTICE_MESSAGES[requestedNotice]]
+        : []),
+      ...context.warnings.map(contextWarningMessage),
+    ]),
+  ];
+
+  if (v3Enabled) {
+    const reportingBar = buildReportingBarModel(
+      snapshot.reportingScope,
+      context,
+      {
+        persistScope:
+          !snapshot.demoMode &&
+          snapshot.authenticated &&
+          Boolean(snapshot.connection),
+      },
+      snapshot.resultDefinitions,
+    );
+    const shellProps = {
+      connected,
+      query: canonicalQuery,
+      dateFrom: context.dateFrom,
+      dateTo: context.dateTo,
+      account: context.account,
+      reportingCurrency: context.currency,
+      currencyOptions,
+      compare: context.compareMode,
+      accounts,
+      reportingBar,
+      attribution: context.attributionSettingKey,
+      actionReportTime: context.actionReportTime,
+      syncVersion: context.syncVersion,
+      reportWarnings: baseWarnings,
+      resetHref: resetOverviewHref(canonicalQuery),
+    };
+
+    if (!connected) {
+      return <OverviewV3 {...shellProps} />;
+    }
+
+    const slots = buildOverviewV3ServerSlots({
+      snapshot,
+      context,
+      reportFilters,
+      campaignMetaId,
+      previousDateFrom,
+      previousDateTo,
+      canonicalQuery,
+      reportingBar,
+      baseWarnings,
+      currencyOptions,
+      drawerCloseHref: withoutDrawer(canonicalQuery),
+    });
+
+    return <OverviewV3 {...shellProps} {...slots} />;
+  }
+
   const canonicalResultsPromise = getCanonicalResultsForReport({
     snapshot,
     context,
@@ -244,11 +319,6 @@ export default async function OverviewPage({
             : {}),
         })
       : Promise.resolve(null);
-  const metaBreakdownPromise = getMetaBreakdownForReport({
-    snapshot,
-    context,
-    ...(campaignMetaId ? { campaignMetaId } : {}),
-  });
   const [
     report,
     trend,
@@ -256,7 +326,6 @@ export default async function OverviewPage({
     canonicalResults,
     liveDelivery,
     previousCanonicalResults,
-    metaBreakdown,
   ] = await Promise.all([
     getCreativeRowsForReport(reportFilters),
     getOverviewTrendForReport(reportFilters),
@@ -270,17 +339,12 @@ export default async function OverviewPage({
     canonicalResultsPromise,
     getLiveDeliveryForReport({ snapshot, context }),
     previousCanonicalResultsPromise,
-    metaBreakdownPromise,
   ]);
   const families = groupCreativeFamiliesForView(report.creatives);
   const selectedId = first(canonicalQuery.selected);
   const selected = selectedId
     ? families.find((family) => family.id === selectedId)
     : undefined;
-  const connected =
-    snapshot.demoMode ||
-    (snapshot.authenticated &&
-      snapshot.connection?.status === "connected");
   const resultMetrics = buildApplicationResultMetrics({
     context,
     delivery: report.delivery,
@@ -357,48 +421,15 @@ export default async function OverviewPage({
     dateTo: context.dateTo,
     account: context.account,
     reportingCurrency: context.currency,
-    currencyOptions: [
-      ...new Set(
-        snapshot.assets.flatMap((asset) =>
-          asset.kind === "Ad Account" && asset.currency
-            ? [asset.currency]
-            : [],
-        ),
-      ),
-    ],
+    currencyOptions,
     compare: context.compareMode,
-    accounts: snapshot.assets
-      .filter((asset) => asset.kind === "Ad Account")
-      .map((asset) => ({ id: asset.id, name: asset.name })),
+    accounts,
     reportingBar,
     resultMetrics,
     previousResultMetrics,
     reportWarnings,
     selectedDrawer,
   };
-
-  if (v3Enabled) {
-    return (
-      <OverviewV3
-        {...sharedOverviewProps}
-        attribution={context.attributionSettingKey}
-        actionReportTime={context.actionReportTime}
-        syncVersion={context.syncVersion}
-        metricDisplayPresets={snapshot.settings.metricDisplayPresets}
-        settingsUpdatedAt={snapshot.settings.updatedAt}
-        metaBreakdown={metaBreakdown}
-        resultDefinitions={canonicalResults.definitions}
-        watchlist={buildOverviewCreativeWatchlistModel({
-          creatives: report.creatives,
-          objectiveKey: reportingBar.objective,
-          resultKey: reportingBar.result,
-          resultDefinitions: canonicalResults.definitions,
-          currency: context.currency,
-        })}
-        resetHref={resetOverviewHref(canonicalQuery)}
-      />
-    );
-  }
 
   return (
     <OverviewV2

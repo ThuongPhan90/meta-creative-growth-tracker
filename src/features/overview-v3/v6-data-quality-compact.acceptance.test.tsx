@@ -32,15 +32,15 @@ function readySummary(): LiveDeliverySummary {
     accounts: [],
     activeCampaigns: metric(3),
     activeAdSets: metric(4),
-    activeAds: metric(5),
-    activeAdsComparableForDelivery: metric(5),
-    activeDeliveringAds: metric(5),
+    activeAds: metric(4),
+    activeAdsComparableForDelivery: metric(4),
+    activeDeliveringAds: metric(4),
     activeWithoutDelivery: metric(0),
-    mappedActiveCreativeFamilies: metric(5),
+    mappedActiveCreativeFamilies: metric(2),
     mappingCoverage: {
-      activeAdsTotal: 5,
-      activeAdsWithCreativeFamily: 5,
-      percent: 1,
+      activeAdsTotal: 4,
+      activeAdsWithCreativeFamily: 2,
+      percent: 50,
     },
   };
 }
@@ -68,7 +68,8 @@ describe("V6 Data Quality compact acceptance", () => {
     expect(markup).toContain('aria-label="Chất lượng dữ liệu"');
     expect(markup).toContain("Dữ liệu ổn định");
     expect(markup).toContain("Delivery-ready 9/9 Ad Account");
-    expect(markup).toContain("Creative mapping 100%");
+    expect(markup).toContain("Creative mapping 50%");
+    expect(markup).not.toMatch(/Creative mapping 5[.,]000%/);
     expect(markup).toContain("Xem chi tiết");
     expect(markup).toContain(
       'href="/data-health?from=2026-07-03&amp;to=2026-08-01&amp;account_ids=act_1%2Cact_2&amp;objective=sales&amp;result=purchase&amp;currency=VND&amp;compare=previous_period&amp;attribution=account_default&amp;action_report_time=mixed&amp;sync_version=sync_20260801"',

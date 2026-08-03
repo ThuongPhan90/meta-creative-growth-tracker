@@ -44,15 +44,15 @@ function summary(
     accounts: [],
     activeCampaigns: metric(1),
     activeAdSets: metric(1),
-    activeAds: metric(1),
-    activeAdsComparableForDelivery: metric(1),
+    activeAds: metric(2),
+    activeAdsComparableForDelivery: metric(2),
     activeDeliveringAds: metric(1),
     activeWithoutDelivery: metric(0),
     mappedActiveCreativeFamilies: metric(1),
     mappingCoverage: {
-      activeAdsTotal: 1,
+      activeAdsTotal: 2,
       activeAdsWithCreativeFamily: 1,
-      percent: 1,
+      percent: 50,
     },
     ...overrides,
   };
@@ -72,6 +72,13 @@ function render(summaryValue: LiveDeliverySummary) {
 }
 
 describe("LiveDeliveryStrip", () => {
+  it("renders repository mapping percentages without scaling them a second time", () => {
+    const html = render(summary());
+
+    expect(html).toContain("Creative mapping 50%");
+    expect(html).not.toMatch(/Creative mapping 5[.,]000%/);
+  });
+
   it("does not present unavailable delivery as a verified zero-active scope", () => {
     const html = render(
       summary({

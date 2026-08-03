@@ -1,13 +1,11 @@
-import type { LiveDeliverySummary } from "@/lib/db";
 import type { ReportingBarModel } from "@/lib/presentation/reporting-bar";
 import type { MetricDisplayPresets } from "@/lib/reporting/metric-preset";
 import type {
   DynamicResultMetricsModel,
-  MetaBreakdownModel,
   ResultDefinition,
 } from "@/lib/reporting";
 
-import type { OverviewCreativeWatchlistModel } from "./creative-watchlist-model";
+import type { ReactNode } from "react";
 
 export type OverviewV3TrendPoint = {
   date: string;
@@ -25,9 +23,6 @@ export type OverviewV3Query = Record<
 >;
 
 export type OverviewV3Props = {
-  watchlist: OverviewCreativeWatchlistModel;
-  liveDelivery?: LiveDeliverySummary;
-  trend: OverviewV3TrendPoint[];
   connected: boolean;
   query: OverviewV3Query;
   dateFrom: string;
@@ -41,13 +36,25 @@ export type OverviewV3Props = {
   actionReportTime: "impression" | "conversion" | "mixed";
   syncVersion: string;
   reportingBar: ReportingBarModel;
+  reportWarnings?: readonly string[];
+  resetHref: string;
+  liveDeliverySlot?: ReactNode;
+  coreSlot?: ReactNode;
+};
+
+export type OverviewV3MetricsProps = {
+  trend: OverviewV3TrendPoint[];
+  reportingCurrency: string;
+  currencyOptions: string[];
+  compare: "previous_period" | "none";
+  reportingBar: ReportingBarModel;
   resultMetrics: DynamicResultMetricsModel;
   previousResultMetrics?: DynamicResultMetricsModel;
   metricDisplayPresets: MetricDisplayPresets;
   settingsUpdatedAt: string | null;
-  metaBreakdown: MetaBreakdownModel;
   resultDefinitions: readonly ResultDefinition[];
   reportWarnings?: readonly string[];
-  selectedDrawer?: React.ReactNode;
-  resetHref: string;
+  creativeSlot: ReactNode;
+  metaBreakdownSlot: ReactNode;
+  dataQualitySlot: ReactNode;
 };

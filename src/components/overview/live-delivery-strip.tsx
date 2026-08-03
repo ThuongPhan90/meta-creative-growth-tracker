@@ -87,7 +87,7 @@ function CoverageLine({ summary }: { summary: LiveDeliverySummary }) {
   const mapping =
     summary.mappingCoverage.percent === null
       ? "Creative mapping chưa khả dụng"
-      : `Creative mapping ${formatPercent(summary.mappingCoverage.percent * 100)}`;
+      : `Creative mapping ${formatPercent(summary.mappingCoverage.percent)}`;
 
   return (
     <p className="v2-live-delivery__coverage">
