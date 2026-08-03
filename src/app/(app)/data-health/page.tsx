@@ -1,6 +1,7 @@
 import { DataHealthV2 } from "@/components/data-health-v2";
 import { V3SurfacePage } from "@/components/ui-v3/surface-page";
 import {
+  getApplicationContextSnapshot,
   getApplicationOperationalSnapshot,
   getDataHealthCreativeReferences,
   getLiveDeliveryForReport,
@@ -17,14 +18,18 @@ export default async function DataHealthPage({
     Record<string, string | string[] | undefined>
   >;
 }) {
-  const [snapshot, query] = await Promise.all([
-    getApplicationOperationalSnapshot(),
+  const [contextSnapshot, query] = await Promise.all([
+    getApplicationContextSnapshot(),
     searchParams,
   ]);
-  const context = resolveApplicationReportContext(snapshot, query);
-  const [creatives, liveDelivery] = await Promise.all([
-    getDataHealthCreativeReferences(snapshot),
-    getLiveDeliveryForReport({ snapshot, context }),
+  const context = resolveApplicationReportContext(contextSnapshot, query);
+  // Operational health, Creative identity and current delivery are independent
+  // read-only projections. Start them together so a slower projection does not
+  // impose a barrier before the other pool work can begin.
+  const [snapshot, creatives, liveDelivery] = await Promise.all([
+    getApplicationOperationalSnapshot(),
+    getDataHealthCreativeReferences(contextSnapshot),
+    getLiveDeliveryForReport({ snapshot: contextSnapshot, context }),
   ]);
   const content = (
     <DataHealthV2

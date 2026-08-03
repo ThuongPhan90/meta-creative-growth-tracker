@@ -180,6 +180,43 @@ function asJsonArray(value: unknown): unknown[] {
   }
 }
 
+function resultDefinitionFromRow(row: DatabaseRow) {
+  return {
+    id: asId(row.result_definition_id),
+    canonicalKey: String(row.canonical_key),
+    label: String(row.label),
+    shortLabel: String(row.short_label),
+    objectiveKeys: asStringArray(row.objective_keys),
+    rawActionTypes: asStringArray(row.raw_action_types),
+    rawValueActionTypes: asStringArray(row.raw_value_action_types),
+    unit: row.unit as "count" | "currency" | "percent" | "duration",
+    efficiencyMetric: row.efficiency_metric as
+      | "cost_per_result"
+      | "rate"
+      | "roas"
+      | "none",
+    direction: row.direction as
+      | "lower_is_better"
+      | "higher_is_better",
+    defaultForObjective: Boolean(row.default_for_objective),
+    minimumResults: asNumber(row.minimum_results),
+    minimumImpressions: asNumber(row.minimum_impressions),
+    enabled: Boolean(row.enabled),
+  };
+}
+
+function resultMappingFromRow(row: DatabaseRow) {
+  return {
+    id: asId(row.result_mapping_id),
+    canonicalResultKey: String(row.canonical_key),
+    rawActionType: String(row.raw_action_type),
+    metricSource: row.metric_source as "action" | "action_value",
+    priority: asNumber(row.priority),
+    mappingSource: row.mapping_source as "system" | "owner",
+    enabled: Boolean(row.enabled),
+  };
+}
+
 function asLiveDeliveryAccountState(
   value: unknown,
 ): LiveDeliveryAccountFreshness["inventoryState"] {
@@ -7410,34 +7447,7 @@ export class TrackerRepository {
         order by enabled desc, canonical_key
       `,
     );
-    return rows.map((row) => ({
-      id: asId(row.result_definition_id),
-      canonicalKey: String(row.canonical_key),
-      label: String(row.label),
-      shortLabel: String(row.short_label),
-      objectiveKeys: asStringArray(row.objective_keys),
-      rawActionTypes: asStringArray(row.raw_action_types),
-      rawValueActionTypes: asStringArray(
-        row.raw_value_action_types,
-      ),
-      unit: row.unit as
-        | "count"
-        | "currency"
-        | "percent"
-        | "duration",
-      efficiencyMetric: row.efficiency_metric as
-        | "cost_per_result"
-        | "rate"
-        | "roas"
-        | "none",
-      direction: row.direction as
-        | "lower_is_better"
-        | "higher_is_better",
-      defaultForObjective: Boolean(row.default_for_objective),
-      minimumResults: asNumber(row.minimum_results),
-      minimumImpressions: asNumber(row.minimum_impressions),
-      enabled: Boolean(row.enabled),
-    }));
+    return rows.map(resultDefinitionFromRow);
   }
 
   async listResultMappings() {
@@ -7464,15 +7474,85 @@ export class TrackerRepository {
           mapping.raw_action_type
       `,
     );
-    return rows.map((row) => ({
-      id: asId(row.result_mapping_id),
-      canonicalResultKey: String(row.canonical_key),
-      rawActionType: String(row.raw_action_type),
-      metricSource: row.metric_source as "action" | "action_value",
-      priority: asNumber(row.priority),
-      mappingSource: row.mapping_source as "system" | "owner",
-      enabled: Boolean(row.enabled),
-    }));
+    return rows.map(resultMappingFromRow);
+  }
+
+  /**
+   * Reads the complete Result registry in one database round-trip. Keeping the
+   * two projections separate inside PostgreSQL preserves their canonical
+   * ordering while removing one registry round-trip and reducing pool
+   * contention on every application request.
+   */
+  async getResultRegistry() {
+    const rows = await this.query<DatabaseRow>(
+      `
+        select
+          coalesce((
+            select jsonb_agg(
+              to_jsonb(definition_row)
+              order by
+                definition_row.enabled desc,
+                definition_row.canonical_key
+            )
+            from (
+              select
+                definition.result_definition_id::text
+                  as result_definition_id,
+                definition.canonical_key,
+                definition.label,
+                definition.short_label,
+                definition.objective_keys,
+                definition.raw_action_types,
+                definition.raw_value_action_types,
+                definition.unit,
+                definition.efficiency_metric,
+                definition.direction,
+                definition.default_for_objective,
+                definition.minimum_results,
+                definition.minimum_impressions,
+                definition.enabled
+              from tracker.result_definitions definition
+              where definition.owner_id = 1
+            ) definition_row
+          ), '[]'::jsonb) as definitions,
+          coalesce((
+            select jsonb_agg(
+              to_jsonb(mapping_row)
+              order by
+                mapping_row.canonical_key,
+                mapping_row.metric_source,
+                mapping_row.priority,
+                mapping_row.raw_action_type
+            )
+            from (
+              select
+                mapping.result_mapping_id::text
+                  as result_mapping_id,
+                definition.canonical_key,
+                mapping.raw_action_type,
+                mapping.metric_source,
+                mapping.priority,
+                mapping.mapping_source,
+                mapping.enabled
+              from tracker.result_mappings mapping
+              join tracker.result_definitions definition
+                on definition.owner_id = mapping.owner_id
+                and definition.result_definition_id =
+                  mapping.result_definition_id
+              where mapping.owner_id = 1
+            ) mapping_row
+          ), '[]'::jsonb) as mappings
+      `,
+    );
+    const row = rows[0] ?? {};
+    return {
+      definitions: asJsonArray(row.definitions).map((value) =>
+        resultDefinitionFromRow(asJsonObject(value)),
+      ),
+      mappings: asJsonArray(row.mappings).map((value) =>
+        resultMappingFromRow(asJsonObject(value)),
+      ),
+    };
   }
 
   async listCampaignResultOverrides(connectionId: DatabaseId) {

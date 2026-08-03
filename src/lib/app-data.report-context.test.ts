@@ -511,6 +511,34 @@ beforeEach(() => {
 });
 
 describe("application snapshot Result registry", () => {
+  it("uses the combined production Result registry without duplicate list reads", async () => {
+    serverMocks.getRuntimeConfiguration.mockReturnValue(
+      runtimeConfiguration(false),
+    );
+    serverMocks.readPageOwnerSession.mockResolvedValue({
+      sub: liveConnection.connectionId,
+    });
+    serverMocks.readDatabaseHealth.mockResolvedValue({ ok: true });
+    const repository = liveSnapshotRepository([liveLeadDefinition]);
+    const getResultRegistry = vi.fn().mockResolvedValue({
+      definitions: [liveLeadDefinition],
+      mappings: liveLeadMappings,
+    });
+    Object.assign(repository, { getResultRegistry });
+    databaseMocks.createTrackerRepository.mockResolvedValue(repository);
+
+    const snapshot = await getApplicationContextSnapshot();
+
+    expect(snapshot.resultDefinitions).toEqual([
+      expect.objectContaining({
+        canonicalKey: liveLeadDefinition.canonicalKey,
+      }),
+    ]);
+    expect(getResultRegistry).toHaveBeenCalledOnce();
+    expect(repository.listResultDefinitions).not.toHaveBeenCalled();
+    expect(repository.listResultMappings).not.toHaveBeenCalled();
+  });
+
   it("keeps report context lightweight", async () => {
     serverMocks.getRuntimeConfiguration.mockReturnValue(
       runtimeConfiguration(false),

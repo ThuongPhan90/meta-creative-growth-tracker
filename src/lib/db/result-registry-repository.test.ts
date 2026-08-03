@@ -5,6 +5,70 @@ import { TrackerRepository } from "./repository";
 import { computeResultMappingVersion } from "./result-mapping-version";
 
 describe("result registry repository", () => {
+  it("loads definitions and mappings in one ordered database round-trip", async () => {
+    const unsafe = vi.fn().mockResolvedValue([
+      {
+        definitions: [
+          {
+            result_definition_id: "1",
+            canonical_key: "purchase",
+            label: "Purchase",
+            short_label: "Purchase",
+            objective_keys: ["sales"],
+            raw_action_types: ["purchase"],
+            raw_value_action_types: [],
+            unit: "count",
+            efficiency_metric: "cost_per_result",
+            direction: "lower_is_better",
+            default_for_objective: true,
+            minimum_results: 5,
+            minimum_impressions: 1000,
+            enabled: true,
+          },
+        ],
+        mappings: [
+          {
+            result_mapping_id: "2",
+            canonical_key: "purchase",
+            raw_action_type: "purchase",
+            metric_source: "action",
+            priority: 0,
+            mapping_source: "system",
+            enabled: true,
+          },
+        ],
+      },
+    ]);
+    const repository = new TrackerRepository({
+      unsafe,
+    } as unknown as DatabaseClient);
+
+    await expect(repository.getResultRegistry()).resolves.toEqual({
+      definitions: [
+        expect.objectContaining({
+          id: "1",
+          canonicalKey: "purchase",
+          rawActionTypes: ["purchase"],
+        }),
+      ],
+      mappings: [
+        expect.objectContaining({
+          id: "2",
+          canonicalResultKey: "purchase",
+          metricSource: "action",
+        }),
+      ],
+    });
+    expect(unsafe).toHaveBeenCalledOnce();
+    expect(unsafe.mock.calls[0]?.[0]).toContain("jsonb_agg");
+    expect(unsafe.mock.calls[0]?.[0]).toContain(
+      "from tracker.result_definitions definition",
+    );
+    expect(unsafe.mock.calls[0]?.[0]).toContain(
+      "from tracker.result_mappings mapping",
+    );
+  });
+
   it("versions semantic mappings independently of row order and metadata", () => {
     const first = [
       {

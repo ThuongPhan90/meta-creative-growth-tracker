@@ -2987,10 +2987,21 @@ function defaultApplicationResultDefinitions(): ResultDefinition[] {
 async function loadStoredResultRegistry(
   repository: TrackerRepository,
 ): Promise<StoredResultRegistry> {
-  const [storedDefinitions, mappings] = await Promise.all([
-    repository.listResultDefinitions(),
-    repository.listResultMappings(),
-  ]);
+  // Production repositories expose the combined read. The fallback keeps
+  // narrow test doubles and transaction-scoped legacy callers compatible.
+  const { definitions: storedDefinitions, mappings } =
+    typeof repository.getResultRegistry === "function"
+      ? await repository.getResultRegistry()
+      : await (async () => {
+          const [definitions, fallbackMappings] = await Promise.all([
+            repository.listResultDefinitions(),
+            repository.listResultMappings(),
+          ]);
+          return {
+            definitions,
+            mappings: fallbackMappings,
+          };
+        })();
   if (storedDefinitions.length === 0) {
     throw new Error("Result registry returned no stored definitions.");
   }

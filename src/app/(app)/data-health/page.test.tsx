@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   dataHealthV2: vi.fn(() => null),
+  getApplicationContextSnapshot: vi.fn(),
   getApplicationOperationalSnapshot: vi.fn(),
   getDataHealthCreativeReferences: vi.fn(),
   getLiveDeliveryForReport: vi.fn(),
@@ -20,6 +21,8 @@ vi.mock("@/components/ui-v3/surface-page", () => ({
 }));
 
 vi.mock("@/lib/app-data", () => ({
+  getApplicationContextSnapshot:
+    mocks.getApplicationContextSnapshot,
   getApplicationOperationalSnapshot:
     mocks.getApplicationOperationalSnapshot,
   getDataHealthCreativeReferences:
@@ -48,7 +51,7 @@ describe("Data Health page loading", () => {
   });
 
   it("uses the compact Creative projection and live delivery in parallel", async () => {
-    const snapshot = {
+    const contextSnapshot = {
       demoMode: false,
       authenticated: true,
       connection: {
@@ -58,31 +61,48 @@ describe("Data Health page loading", () => {
       dashboard: { events: [] },
       syncRuns: [],
     };
+    const snapshot = {
+      ...contextSnapshot,
+      dashboard: { events: [{ name: "Install" }] },
+    };
     const query = { selected: "issue_1" };
     const context = { adAccountIds: ["act_1"] };
     const creatives = [{ id: "asset_1" }];
     const liveDelivery = { state: "ready" };
-    mocks.getApplicationOperationalSnapshot.mockResolvedValue(snapshot);
+    mocks.getApplicationContextSnapshot.mockResolvedValue(contextSnapshot);
+    let resolveOperational!: (value: typeof snapshot) => void;
+    mocks.getApplicationOperationalSnapshot.mockReturnValue(
+      new Promise((resolve) => {
+        resolveOperational = resolve;
+      }),
+    );
     mocks.resolveApplicationReportContext.mockReturnValue(context);
     mocks.getDataHealthCreativeReferences.mockResolvedValue(creatives);
     mocks.getLiveDeliveryForReport.mockResolvedValue(liveDelivery);
 
-    const element = (await DataHealthPage({
+    const loading = DataHealthPage({
       searchParams: Promise.resolve(query),
-    })) as DataHealthPageElement;
+    });
 
+    await vi.waitFor(() => {
+      expect(mocks.getApplicationOperationalSnapshot).toHaveBeenCalledOnce();
+      expect(mocks.getDataHealthCreativeReferences).toHaveBeenCalledWith(
+        contextSnapshot,
+      );
+      expect(mocks.getLiveDeliveryForReport).toHaveBeenCalledWith({
+        snapshot: contextSnapshot,
+        context,
+      });
+    });
+    resolveOperational(snapshot);
+    const element = (await loading) as DataHealthPageElement;
+
+    expect(mocks.getApplicationContextSnapshot).toHaveBeenCalledOnce();
     expect(mocks.getApplicationOperationalSnapshot).toHaveBeenCalledOnce();
     expect(mocks.resolveApplicationReportContext).toHaveBeenCalledWith(
-      snapshot,
+      contextSnapshot,
       query,
     );
-    expect(mocks.getDataHealthCreativeReferences).toHaveBeenCalledWith(
-      snapshot,
-    );
-    expect(mocks.getLiveDeliveryForReport).toHaveBeenCalledWith({
-      snapshot,
-      context,
-    });
     expect(element.type).toBe(mocks.dataHealthV2);
     expect(element.props.creatives).toBe(creatives);
     expect(element.props.liveDelivery).toBe(liveDelivery);
