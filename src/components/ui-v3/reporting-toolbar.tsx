@@ -78,7 +78,11 @@ export function ReportingToolbar({
   ]);
 
   return (
-    <section className={styles.toolbar} aria-label="Bộ lọc báo cáo">
+    <section
+      id="reporting-toolbar"
+      className={styles.toolbar}
+      aria-label="Bộ lọc báo cáo"
+    >
       <form action={action} method="get" className={styles.form}>
         {Object.entries(preserved)
           .filter(([name]) => !representedFields.has(name))

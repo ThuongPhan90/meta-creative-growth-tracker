@@ -543,6 +543,9 @@
 
 .watchlistTab,
 .analyticsTab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   flex: 0 0 auto;
   padding: 11px 10px 10px;
   border: 0;
@@ -558,6 +561,23 @@
 .analyticsTabActive {
   border-bottom-color: var(--ui-v3-accent);
   color: var(--ui-v3-accent);
+}
+
+.watchlistTabCount {
+  min-width: 20px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  color: var(--ui-v3-text-secondary);
+  background: var(--ui-v3-surface-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.watchlistTabActive .watchlistTabCount {
+  color: var(--ui-v3-accent);
+  background: color-mix(in srgb, var(--ui-v3-accent) 12%, transparent);
 }
 
 .watchlistViewport {
@@ -713,11 +733,61 @@ th.watchlistCreative {
   text-decoration: none;
 }
 
-.emptyWatchlist,
+.emptyWatchlist {
+  display: grid;
+  gap: 8px;
+  padding: 28px 18px;
+  color: var(--ui-v3-text-secondary);
+  font-size: 14px;
+}
+
 .analyticsEmpty {
   padding: 28px 18px;
   color: var(--ui-v3-text-secondary);
   font-size: 14px;
+}
+
+.emptyWatchlistTitle {
+  color: var(--ui-v3-text-primary);
+  font-size: 15px;
+}
+
+.emptyWatchlistCopy {
+  max-width: 680px;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.emptyWatchlistActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.emptyWatchlistPrimary,
+.emptyWatchlistSecondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 11px;
+  border-radius: var(--ui-v3-radius-control);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.emptyWatchlistPrimary {
+  border: 1px solid var(--ui-v3-accent);
+  color: #fff;
+  background: var(--ui-v3-accent);
+}
+
+.emptyWatchlistSecondary {
+  border: 1px solid var(--ui-v3-border);
+  color: var(--ui-v3-accent);
+  background: var(--ui-v3-surface);
 }
 
 .analyticsBody {

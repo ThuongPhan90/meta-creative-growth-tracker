@@ -127,6 +127,22 @@ function pageTitle(pathname: string) {
   )?.label ?? "Meta Growth Tracker";
 }
 
+function compactFreshnessLabel(value: string) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) return "Chưa xác định";
+
+  const lower = normalized.toLocaleLowerCase("vi-VN");
+  if (lower.includes("dữ liệu mẫu") || lower.includes("chưa xác định")) {
+    return normalized;
+  }
+
+  const date = normalized.match(/\b\d{2}\/\d{2}(?:\/\d{4})?\b/)?.[0];
+  const age = normalized.match(/\b\d+\s+(?:phút|giờ|ngày)\s+trước\b/i)?.[0];
+  const status = /một phần|cảnh báo/i.test(normalized) ? "Cảnh báo" : age;
+
+  return [date?.slice(0, 5), status].filter(Boolean).join(" · ") || normalized;
+}
+
 export type AppShellV3Props = {
   children: React.ReactNode;
   ownerName?: string;
@@ -170,6 +186,7 @@ export function AppShellV3({
     scopeSummary(searchParams, reportingCurrency, reportingTimezone);
   const resolvedFreshness =
     freshnessLabel?.trim() || (demoMode ? "Dữ liệu mẫu" : "Chưa xác định");
+  const compactFreshness = compactFreshnessLabel(resolvedFreshness);
   const resolvedPageTitle = explicitPageTitle?.trim() || pageTitle(pathname);
   const connectionStatus = demoMode
     ? "demo"
@@ -365,6 +382,12 @@ export function AppShellV3({
             >
               <Clock3 aria-hidden="true" size={14} />
               <span>Dữ liệu</span>
+              <span
+                className="v3-app-shell__freshness-compact"
+                aria-hidden="true"
+              >
+                {compactFreshness}
+              </span>
               <strong>{resolvedFreshness}</strong>
             </span>
             <span className="v3-app-shell__read-only-badge" title="Ứng dụng chỉ đọc">

@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  ArrowUpRight,
   CheckCircle2,
   CircleDot,
   Clock3,
@@ -513,6 +514,14 @@ export function DataHealthV2({
         <div>
           <strong>Trạng thái tổng thể: {overall.label}</strong>
           <p>{overall.detail}</p>
+          {issues.length ? (
+            <Link
+              className="v2-overall-health__action"
+              href={`${href(query, { selected: null, coverage: null })}#health-issues`}
+            >
+              Xem {issues.length} vấn đề <ArrowUpRight aria-hidden="true" size={14} />
+            </Link>
+          ) : null}
         </div>
         <StatusPill status={overall.status} />
       </section>

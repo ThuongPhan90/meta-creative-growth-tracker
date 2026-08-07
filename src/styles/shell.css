@@ -290,6 +290,10 @@
   text-overflow: ellipsis;
 }
 
+.v3-app-shell__freshness-compact {
+  display: none;
+}
+
 .v3-app-shell__read-only-badge {
   border-color: #c7d7fe;
   color: #175cd3;
@@ -410,14 +414,21 @@
   }
 
   .v3-app-shell__connection > span,
-  .v3-app-shell__freshness > span,
+  .v3-app-shell__freshness > span:not(.v3-app-shell__freshness-compact),
   .v3-app-shell__read-only-badge > span,
   .v3-app-shell__topbar-owner > span:last-child {
     display: none;
   }
 
+  .v3-app-shell__freshness-compact {
+    display: inline-block;
+    max-width: 9rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .v3-app-shell__freshness strong {
-    max-width: 5.5rem;
+    display: none;
   }
 }
 
@@ -435,10 +446,6 @@
   .v3-app-shell__topbar-actions {
     width: 100%;
     justify-content: flex-start;
-  }
-
-  .v3-app-shell__freshness strong {
-    max-width: 6.5rem;
   }
 
   .v3-app-shell__page-title {

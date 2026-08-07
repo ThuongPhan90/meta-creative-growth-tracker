@@ -2232,8 +2232,13 @@ export function CreativePerformanceV2({
           <option value="inactive">Không có Ads hoạt động</option>
           <option value="unlinked">Chưa gắn Ads</option>
         </select>
-        <button className="v2-icon-button" type="submit" aria-label="Áp dụng bộ lọc">
+        <button
+          className="button button--primary v2-filter-submit"
+          type="submit"
+          aria-label="Áp dụng bộ lọc"
+        >
           <ListFilter aria-hidden="true" size={18} />
+          <span>Áp dụng bộ lọc</span>
         </button>
         {Object.values(filters).some(Boolean) ? (
           <Link

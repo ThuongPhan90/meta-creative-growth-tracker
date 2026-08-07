@@ -1,6 +1,7 @@
 "use client";
 
 import { ArrowUpRight, Image as ImageIcon } from "lucide-react";
+import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import {
@@ -137,27 +138,69 @@ export function CreativeWatchlistV3({
       </header>
 
       <div className={styles.watchlistTabs} role="group" aria-label="Bộ lọc Watchlist">
-        {WATCHLIST_TABS.map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            aria-pressed={tab === key}
-            className={`${styles.watchlistTab}${tab === key ? ` ${styles.watchlistTabActive}` : ""}`}
-            onClick={() => setTab(key)}
-          >
-            {label}
-          </button>
-        ))}
+        {WATCHLIST_TABS.map(([key, label]) => {
+          const count = model.itemIdsByView[key].length;
+          return (
+            <button
+              key={key}
+              type="button"
+              aria-label={`${label}: ${count}`}
+              aria-pressed={tab === key}
+              className={`${styles.watchlistTab}${tab === key ? ` ${styles.watchlistTabActive}` : ""}`}
+              onClick={() => setTab(key)}
+            >
+              <span>{label}</span>
+              <span className={styles.watchlistTabCount}>{count}</span>
+            </button>
+          );
+        })}
       </div>
 
       {!canEvaluate ? (
-        <p className={styles.emptyWatchlist}>
-          Chọn một Mục tiêu, Kết quả chính và tiền tệ để hệ thống chỉ so sánh các Creative cùng ngữ cảnh dữ liệu.
-        </p>
+        <div className={styles.emptyWatchlist}>
+          <strong className={styles.emptyWatchlistTitle}>
+            Chưa đủ context để xếp hạng
+          </strong>
+          <p className={styles.emptyWatchlistCopy}>
+            Chọn Mục tiêu, Kết quả chính và tiền tệ ở bộ lọc báo cáo để chỉ so
+            sánh các Creative cùng ngữ cảnh dữ liệu.
+          </p>
+          <div className={styles.emptyWatchlistActions}>
+            <a className={styles.emptyWatchlistPrimary} href="#reporting-toolbar">
+              Chọn context
+            </a>
+            <Link
+              className={styles.emptyWatchlistSecondary}
+              href={buildContextHref("/creatives", query)}
+            >
+              Mở Creative Tracker <ArrowUpRight aria-hidden="true" size={14} />
+            </Link>
+          </div>
+        </div>
       ) : visible.length === 0 ? (
-        <p className={styles.emptyWatchlist}>
-          Không có Creative phù hợp với bộ lọc này hoặc chưa đủ dữ liệu Meta để xếp hạng an toàn.
-        </p>
+        <div className={styles.emptyWatchlist}>
+          <strong className={styles.emptyWatchlistTitle}>
+            Chưa có Creative trong nhóm này
+          </strong>
+          <p className={styles.emptyWatchlistCopy}>
+            Không có Creative phù hợp với bộ lọc này hoặc chưa đủ dữ liệu Meta
+            để xếp hạng an toàn.
+          </p>
+          <div className={styles.emptyWatchlistActions}>
+            <Link
+              className={styles.emptyWatchlistPrimary}
+              href={buildContextHref("/creatives", query)}
+            >
+              Mở Creative Tracker <ArrowUpRight aria-hidden="true" size={14} />
+            </Link>
+            <Link
+              className={styles.emptyWatchlistSecondary}
+              href={buildContextHref("/data-health", query)}
+            >
+              Kiểm tra Data Health <ArrowUpRight aria-hidden="true" size={14} />
+            </Link>
+          </div>
+        </div>
       ) : (
         <div className={styles.watchlistViewport}>
           <table className={styles.watchlistTable}>

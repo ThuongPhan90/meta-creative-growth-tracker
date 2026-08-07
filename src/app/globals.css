@@ -2257,6 +2257,22 @@ a.v2-kpi:hover {
   font-size: 12px;
 }
 
+.v2-overall-health__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 9px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.v2-overall-health__action:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .v2-health-dimensions {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
