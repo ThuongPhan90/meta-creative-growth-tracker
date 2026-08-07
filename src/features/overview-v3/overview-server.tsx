@@ -308,7 +308,7 @@ async function OverviewV3CoreSection({
       resultDefinitions={core.canonicalResults.definitions}
       reportWarnings={deferredWarnings}
       creativeSlot={
-        <Suspense fallback={<OverviewCreativeSkeleton />}>
+        <Suspense key="overview-creative-slot" fallback={<OverviewCreativeSkeleton />}>
           <OverviewV3CreativeSection
             creativePromise={creativePromise}
             canonicalQuery={canonicalQuery}
@@ -321,14 +321,14 @@ async function OverviewV3CoreSection({
         </Suspense>
       }
       metaBreakdownSlot={
-        <Suspense fallback={<OverviewBreakdownSkeleton />}>
+        <Suspense key="overview-breakdown-slot" fallback={<OverviewBreakdownSkeleton />}>
           <OverviewV3MetaBreakdownSection
             metaBreakdownPromise={metaBreakdownPromise}
           />
         </Suspense>
       }
       dataQualitySlot={
-        <Suspense fallback={<OverviewDataQualitySkeleton />}>
+        <Suspense key="overview-data-quality-slot" fallback={<OverviewDataQualitySkeleton />}>
           <OverviewV3DataQualitySection
             liveDeliveryPromise={liveDeliveryPromise}
             warnings={allWarnings}
