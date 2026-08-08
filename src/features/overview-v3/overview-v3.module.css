@@ -1,9 +1,9 @@
 .page {
   display: grid;
   width: min(100%, 1520px);
-  gap: 24px;
+  gap: 20px;
   margin: 0 auto;
-  padding: 0 24px 36px;
+  padding: 0 2px 36px;
   color: var(--ui-v3-text-primary);
 }
 
@@ -18,7 +18,7 @@
   align-items: end;
   justify-content: space-between;
   gap: 24px;
-  padding-top: 4px;
+  padding: 8px 4px 2px;
 }
 
 .pageHeader h1,
@@ -34,7 +34,8 @@
 }
 
 .pageHeader h1 {
-  font-size: clamp(28px, 3vw, 36px);
+  font-size: clamp(30px, 3vw, 40px);
+  font-weight: 760;
   line-height: 1.1;
 }
 
@@ -70,8 +71,8 @@
   padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--ui-v3-warning) 35%, var(--ui-v3-border));
   border-radius: var(--ui-v3-radius-control);
-  background: #fffaeb;
-  color: #7a2e0e;
+  background: var(--v3-color-warning-surface);
+  color: var(--v3-color-warning-foreground);
   font-size: 13px;
   line-height: 1.45;
 }
@@ -89,6 +90,7 @@
   border: 1px solid var(--ui-v3-border);
   border-radius: var(--ui-v3-radius-card);
   background: var(--ui-v3-surface);
+  box-shadow: 0 18px 44px rgba(2, 8, 20, 0.18);
   text-align: center;
 }
 
@@ -177,6 +179,7 @@
   font-size: 14px;
   font-weight: 700;
   text-decoration: none;
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--ui-v3-accent) 26%, transparent);
 }
 
 .liveDelivery {
@@ -186,6 +189,7 @@
   border: 1px solid var(--ui-v3-border);
   border-radius: var(--ui-v3-radius-card);
   background: var(--ui-v3-surface);
+  box-shadow: 0 16px 36px rgba(2, 8, 20, 0.14);
 }
 
 .liveHeader,
@@ -233,8 +237,8 @@
   max-width: 180px;
   padding: 7px 30px 7px 10px;
   border: 1px solid var(--ui-v3-border);
-  border-radius: 8px;
-  background: var(--ui-v3-surface);
+  border-radius: var(--ui-v3-radius-control);
+  background: var(--ui-v3-surface-muted);
   color: var(--ui-v3-text-primary);
   font: inherit;
   font-size: 12px;
@@ -265,13 +269,13 @@
 }
 
 .statusready {
-  background: #ecfdf3;
-  color: #067647;
+  background: var(--v3-color-success-surface);
+  color: var(--v3-color-success-foreground);
 }
 
 .statuspartial {
-  background: #fffaeb;
-  color: #b54708;
+  background: var(--v3-color-warning-surface);
+  color: var(--v3-color-warning-foreground);
 }
 
 .statusunavailable {
@@ -285,6 +289,7 @@
   overflow: hidden;
   border: 1px solid var(--ui-v3-border);
   border-radius: var(--ui-v3-radius-control);
+  background: var(--ui-v3-surface-muted);
 }
 
 .liveMetric {
@@ -302,7 +307,7 @@
 }
 
 .liveMetric:where(a):hover {
-  background: #f8fbff;
+  background: color-mix(in srgb, var(--ui-v3-accent) 9%, var(--ui-v3-surface-muted));
 }
 
 .liveMetricLabel {
@@ -369,7 +374,7 @@
   padding: 0 10px;
   border: 1px solid var(--ui-v3-border);
   border-radius: var(--ui-v3-radius-control);
-  background: var(--ui-v3-surface);
+  background: var(--ui-v3-surface-muted);
   color: var(--ui-v3-text-primary);
   font: inherit;
   font-size: 12px;
@@ -402,6 +407,7 @@
   background: var(--ui-v3-surface);
   color: inherit;
   text-align: left;
+  box-shadow: 0 12px 28px rgba(2, 8, 20, 0.1);
   transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
 }
 
@@ -413,7 +419,9 @@
 
 .kpiCardSelected {
   border-color: var(--ui-v3-selected);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-v3-selected) 12%, transparent);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--ui-v3-selected) 18%, transparent),
+    0 14px 32px color-mix(in srgb, var(--ui-v3-selected) 16%, transparent);
 }
 
 .kpiCardLabel {
@@ -466,6 +474,7 @@
   border: 1px solid var(--ui-v3-border);
   border-radius: var(--ui-v3-radius-card);
   background: var(--ui-v3-surface);
+  box-shadow: 0 16px 36px rgba(2, 8, 20, 0.12);
 }
 
 .qualityPanelReady {
@@ -687,18 +696,18 @@ th.watchlistCreative {
 }
 
 .deliveryPill {
-  background: #ecfdf3;
-  color: #067647;
+  background: var(--v3-color-success-surface);
+  color: var(--v3-color-success-foreground);
 }
 
 .performancePillGood {
-  background: #ecfdf3;
-  color: #067647;
+  background: var(--v3-color-success-surface);
+  color: var(--v3-color-success-foreground);
 }
 
 .performancePillWatch {
-  background: #fffaeb;
-  color: #b54708;
+  background: var(--v3-color-warning-surface);
+  color: var(--v3-color-warning-foreground);
 }
 
 .performancePillUnavailable,
@@ -708,18 +717,18 @@ th.watchlistCreative {
 }
 
 .fatiguePill {
-  background: #fef3f2;
-  color: #b42318;
+  background: var(--v3-color-critical-surface);
+  color: var(--v3-color-critical-foreground);
 }
 
 .trendPillStable {
-  background: #eef2ff;
-  color: #4338ca;
+  background: var(--v3-color-info-surface);
+  color: var(--v3-color-info-foreground);
 }
 
 .trendPillMonitor {
-  background: #fff7ed;
-  color: #c2410c;
+  background: var(--v3-color-warning-surface);
+  color: var(--v3-color-warning-foreground);
 }
 
 .trendPillUnavailable {
@@ -782,6 +791,7 @@ th.watchlistCreative {
   border: 1px solid var(--ui-v3-accent);
   color: #fff;
   background: var(--ui-v3-accent);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--ui-v3-accent) 22%, transparent);
 }
 
 .emptyWatchlistSecondary {
@@ -841,6 +851,7 @@ th.watchlistCreative {
   padding: 12px;
   border: 1px solid var(--ui-v3-border);
   border-radius: var(--ui-v3-radius-control);
+  background: var(--ui-v3-surface-muted);
 }
 
 .analyticsRow span,
@@ -881,8 +892,8 @@ th.watchlistCreative {
   padding: 8px 10px;
   border: 1px solid color-mix(in srgb, var(--ui-v3-warning) 35%, var(--ui-v3-border));
   border-radius: 8px;
-  background: #fffaeb;
-  color: #7a2e0e;
+  background: var(--v3-color-warning-surface);
+  color: var(--v3-color-warning-foreground);
 }
 
 .breakdownMeta {
@@ -952,7 +963,7 @@ th.watchlistCreative {
   inset: 0;
   display: flex;
   justify-content: flex-end;
-  background: color-mix(in srgb, #101828 38%, transparent);
+  background: color-mix(in srgb, var(--v3-color-sidebar) 72%, transparent);
 }
 
 .customizerDrawer {
@@ -962,7 +973,7 @@ th.watchlistCreative {
   grid-template-rows: auto minmax(0, 1fr) auto;
   border-left: 1px solid var(--ui-v3-border);
   background: var(--ui-v3-surface);
-  box-shadow: -18px 0 42px color-mix(in srgb, #17213d 18%, transparent);
+  box-shadow: -18px 0 42px color-mix(in srgb, var(--v3-color-sidebar) 55%, transparent);
   outline: none;
 }
 
@@ -1125,8 +1136,8 @@ th.watchlistCreative {
   margin-left: 7px;
   padding: 2px 5px;
   border-radius: 999px;
-  background: #eef2ff;
-  color: #4338ca !important;
+  background: var(--v3-color-info-surface);
+  color: var(--v3-color-info-foreground) !important;
   font-size: 10px !important;
   font-weight: 700;
   vertical-align: middle;
@@ -1140,8 +1151,8 @@ th.watchlistCreative {
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--ui-v3-warning) 35%, var(--ui-v3-border));
   border-radius: var(--ui-v3-radius-control);
-  background: #fffaeb;
-  color: #7a2e0e;
+  background: var(--v3-color-warning-surface);
+  color: var(--v3-color-warning-foreground);
   font-size: 12px;
   line-height: 1.45;
 }
@@ -1192,7 +1203,7 @@ th.watchlistCreative {
 @media (min-width: 1400px) {
   .pageHeader {
     gap: 16px;
-    padding-top: 0;
+    padding-top: 4px;
   }
 
   .pageHeader h1 {
@@ -1400,7 +1411,7 @@ th.watchlistCreative {
 @media (max-width: 720px) {
   .page {
     gap: 18px;
-    padding: 0 14px 28px;
+    padding: 0 0 28px;
   }
 
   .pageHeader {

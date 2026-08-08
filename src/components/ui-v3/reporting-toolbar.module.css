@@ -5,6 +5,7 @@
   border: 1px solid var(--ui-v3-border);
   border-radius: var(--ui-v3-radius-card);
   background: var(--ui-v3-surface);
+  color-scheme: inherit;
 }
 
 .form {
@@ -56,6 +57,69 @@
 .scopeControl,
 .objectiveControl {
   border: 0;
+}
+
+/* The selectors are shared with the legacy reporting context. Re-skin them
+   inside the V3 toolbar only so older routes keep their light contract. */
+.scopeControl :global(.v2-context-scope > summary),
+.objectiveControl :global(.v2-context-control) {
+  border-color: var(--ui-v3-border);
+  color: var(--ui-v3-text-secondary);
+  background: var(--ui-v3-surface-muted);
+}
+
+.scopeControl :global(.v2-context-scope > summary strong),
+.objectiveControl :global(.v2-context-control select) {
+  color: var(--ui-v3-text-primary);
+}
+
+.scopeControl :global(.v2-context-scope > summary small) {
+  color: var(--ui-v3-text-tertiary);
+}
+
+.scopeControl :global(.v2-context-scope__panel) {
+  border-color: var(--ui-v3-border);
+  background: var(--ui-v3-surface);
+  box-shadow: 0 20px 48px rgba(2, 8, 20, 0.32);
+}
+
+.scopeControl :global(.v2-context-scope__panel > header) {
+  border-bottom-color: var(--ui-v3-border);
+  background: var(--ui-v3-surface-muted);
+}
+
+.scopeControl :global(.v2-context-scope__panel > header small),
+.scopeControl :global(.v2-context-scope__panel > header strong) {
+  color: var(--ui-v3-text-secondary);
+}
+
+.scopeControl :global(.v2-context-scope__panel > header strong) {
+  color: var(--ui-v3-text-primary);
+}
+
+.scopeControl :global(.v2-context-scope__list > section) {
+  border-bottom-color: var(--ui-v3-border);
+}
+
+.scopeControl :global(.v2-scope-parent strong),
+.scopeControl :global(.v2-scope-child strong) {
+  color: var(--ui-v3-text-primary);
+}
+
+.scopeControl :global(.v2-scope-parent small),
+.scopeControl :global(.v2-scope-child small) {
+  color: var(--ui-v3-text-tertiary);
+}
+
+.scopeControl :global(.v2-scope-parent:hover),
+.scopeControl :global(.v2-scope-child:hover) {
+  background: color-mix(in srgb, var(--ui-v3-accent) 9%, var(--ui-v3-surface));
+}
+
+.scopeControl :global(.v2-context-scope__panel button) {
+  border-color: var(--ui-v3-border);
+  color: var(--ui-v3-accent);
+  background: var(--ui-v3-surface);
 }
 
 .scopeControl :global(.v2-context-scope),
@@ -153,7 +217,7 @@
   border: 1px solid var(--ui-v3-border);
   border-radius: var(--ui-v3-radius-card);
   background: var(--ui-v3-surface);
-  box-shadow: 0 16px 34px color-mix(in srgb, #17213d 16%, transparent);
+  box-shadow: 0 16px 34px color-mix(in srgb, var(--v3-color-sidebar) 34%, transparent);
 }
 
 .advancedControl {

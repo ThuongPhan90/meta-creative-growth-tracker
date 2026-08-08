@@ -71,10 +71,10 @@
   align-items: center;
   gap: 6px;
   padding: 6px 9px;
-  border: 1px solid #c7d7fe;
+  border: 1px solid color-mix(in srgb, var(--v3-color-accent) 50%, var(--v3-color-border));
   border-radius: var(--ui-v3-radius-control);
-  color: #175cd3;
-  background: #eff4ff;
+  color: var(--v3-color-info-foreground);
+  background: var(--v3-color-info-surface);
   font-size: 12px;
   font-weight: 650;
   white-space: nowrap;
@@ -104,6 +104,34 @@
  * These scoped rules make their structural primitives follow the V3 system
  * only when a page is intentionally wrapped by V3SurfacePage.
  */
+.legacy {
+  /* Map legacy component variables to the V3 theme at the wrapper boundary. */
+  --text: var(--ui-v3-text-primary);
+  --ink: var(--ui-v3-text-primary);
+  --muted: var(--ui-v3-text-secondary);
+  --muted-strong: var(--ui-v3-text-secondary);
+  --border: var(--ui-v3-border);
+  --border-strong: color-mix(
+    in srgb,
+    var(--ui-v3-border) 78%,
+    var(--ui-v3-text-secondary)
+  );
+  --surface: var(--ui-v3-surface);
+  --surface-subtle: var(--ui-v3-surface-muted);
+  --accent: var(--ui-v3-accent);
+  --accent-2: var(--ui-v3-selected);
+  --accent-soft: var(--v3-color-info-surface);
+  --success: var(--v3-color-success-foreground);
+  --success-soft: var(--v3-color-success-surface);
+  --warning: var(--v3-color-warning-foreground);
+  --warning-soft: var(--v3-color-warning-surface);
+  --danger: var(--v3-color-critical-foreground);
+  --danger-soft: var(--v3-color-critical-surface);
+  --shadow: 0 18px 40px rgba(2, 8, 20, 0.16);
+  color: var(--ui-v3-text-primary);
+  color-scheme: inherit;
+}
+
 .legacy :global(.v2-page) {
   display: grid;
   min-width: 0;
@@ -128,6 +156,12 @@
 
 .legacy :global(.v2-panel) {
   background: var(--ui-v3-surface);
+}
+
+.legacy :global(.v2-panel__header),
+.legacy :global(.v2-panel__body),
+.legacy :global(.v2-panel__footer) {
+  border-color: var(--ui-v3-border);
 }
 
 .legacy :global(.v2-panel__header),
@@ -161,8 +195,8 @@
 }
 
 .legacy :global(.v2-tab[aria-current="page"]) {
-  color: #3730a3;
-  background: #f1f0ff;
+  color: var(--v3-color-info-foreground);
+  background: var(--v3-color-info-surface);
 }
 
 .legacy :global(.v2-kpi-grid) {
@@ -177,19 +211,114 @@
   box-shadow: none;
 }
 
+.legacy :global(.v2-chip) {
+  border-color: var(--ui-v3-border);
+  color: var(--ui-v3-text-secondary);
+  background: var(--ui-v3-surface-muted);
+}
+
+.legacy :global(.v2-chip--accent),
+.legacy :global(.v2-action-chip) {
+  border-color: color-mix(in srgb, var(--ui-v3-accent) 48%, var(--ui-v3-border));
+  color: var(--v3-color-info-foreground);
+  background: var(--v3-color-info-surface);
+}
+
+.legacy :global(.v2-chip--success),
+.legacy :global(.v2-health-badge--healthy) {
+  border-color: color-mix(in srgb, var(--v3-color-delivery) 50%, var(--ui-v3-border));
+  color: var(--v3-color-success-foreground);
+  background: var(--v3-color-success-surface);
+}
+
+.legacy :global(.v2-chip--warning),
+.legacy :global(.v2-health-badge--warning),
+.legacy :global(.v2-health-badge--partial) {
+  border-color: color-mix(in srgb, var(--v3-color-warning) 52%, var(--ui-v3-border));
+  color: var(--v3-color-warning-foreground);
+  background: var(--v3-color-warning-surface);
+}
+
+.legacy :global(.v2-chip--danger),
+.legacy :global(.v2-health-badge--error) {
+  border-color: color-mix(in srgb, var(--v3-color-critical) 52%, var(--ui-v3-border));
+  color: var(--v3-color-critical-foreground);
+  background: var(--v3-color-critical-surface);
+}
+
 .legacy :global(.v2-filter-bar),
 .legacy :global(.v2-library-toolbar),
 .legacy :global(.v2-campaign-filters) {
   min-width: 0;
   border-color: var(--ui-v3-border);
   border-radius: var(--ui-v3-radius-card);
+  background: color-mix(in srgb, var(--ui-v3-surface) 94%, transparent);
+  box-shadow: 0 12px 30px rgba(2, 8, 20, 0.12);
+}
+
+.legacy :global(.v2-segmented) {
+  border-color: var(--ui-v3-border);
+  background: var(--ui-v3-surface-muted);
+}
+
+.legacy :global(.v2-segmented [aria-current="page"]),
+.legacy :global(.v2-segmented [aria-pressed="true"]) {
+  color: var(--ui-v3-accent);
   background: var(--ui-v3-surface);
+  box-shadow: 0 2px 8px rgba(2, 8, 20, 0.18);
 }
 
 .legacy :global(.v2-report-context-shell) {
   border-color: var(--ui-v3-border);
   border-radius: var(--ui-v3-radius-card);
   background: var(--ui-v3-surface);
+}
+
+.legacy :global(.v2-report-context-warning),
+.legacy :global(.v2-metric-presets__notice) {
+  border-color: color-mix(in srgb, var(--v3-color-warning) 52%, var(--ui-v3-border));
+  color: var(--v3-color-warning-foreground);
+  background: var(--v3-color-warning-surface);
+}
+
+.legacy :global(.v2-context-control),
+.legacy :global(.v2-freshness),
+.legacy :global(.v2-filter-bar label),
+.legacy :global(.v2-filter-bar > select) {
+  border-color: var(--ui-v3-border);
+  color: var(--ui-v3-text-secondary);
+  background: var(--ui-v3-surface-muted);
+}
+
+.legacy :global(.v2-context-control input),
+.legacy :global(.v2-context-control select),
+.legacy :global(.v2-filter-bar input),
+.legacy :global(.v2-filter-bar select) {
+  color: var(--ui-v3-text-primary);
+  background: transparent;
+}
+
+.legacy :global(.v2-context-scope > summary),
+.legacy :global(.v2-context-scope__panel),
+.legacy :global(.v2-context-scope__panel button) {
+  border-color: var(--ui-v3-border);
+  color: var(--ui-v3-text-primary);
+  background: var(--ui-v3-surface);
+}
+
+.legacy :global(.v2-context-scope__panel > header) {
+  border-bottom-color: var(--ui-v3-border);
+  background: var(--ui-v3-surface-muted);
+}
+
+.legacy :global(.v2-context-scope__error) {
+  border-bottom-color: color-mix(in srgb, var(--v3-color-critical) 54%, var(--ui-v3-border));
+  color: var(--v3-color-critical-foreground);
+  background: var(--v3-color-critical-surface);
+}
+
+.legacy :global(.v2-context-scope__list > section) {
+  border-bottom-color: var(--ui-v3-border);
 }
 
 /* Freshness is already presented once in the V3 top bar. */
@@ -223,7 +352,87 @@
   min-width: 0;
   border-color: var(--ui-v3-border);
   border-radius: var(--ui-v3-radius-card);
+  background: var(--ui-v3-surface);
   box-shadow: none;
+}
+
+.legacy :global(.v2-library-card:hover) {
+  border-color: color-mix(in srgb, var(--ui-v3-accent) 52%, var(--ui-v3-border));
+  box-shadow: 0 16px 32px rgba(2, 8, 20, 0.22);
+}
+
+.legacy :global(.v2-library-card__preview) {
+  background: var(--ui-v3-surface-muted);
+}
+
+.legacy :global(.v2-library-card__footer) {
+  border-top-color: var(--ui-v3-border);
+  background: var(--ui-v3-surface-muted);
+}
+
+.legacy :global(.v2-library-table),
+.legacy :global(.v2-creative-table),
+.legacy :global(.v2-campaign-table),
+.legacy :global(.v2-ads-table),
+.legacy :global(.v2-source-table),
+.legacy :global(.v2-sync-table) {
+  border-color: var(--ui-v3-border);
+  background: var(--ui-v3-surface);
+  box-shadow: none;
+}
+
+.legacy :global(.v2-library-table__head),
+.legacy :global(.v2-creative-table__head),
+.legacy :global(.v2-campaign-table__head),
+.legacy :global(.v2-ads-table__head),
+.legacy :global(.v2-source-table__head),
+.legacy :global(.v2-sync-table__head) {
+  border-color: var(--ui-v3-border);
+  color: var(--ui-v3-text-secondary);
+  background: var(--ui-v3-surface-muted);
+}
+
+.legacy :global(.v2-library-table__row),
+.legacy :global(.v2-creative-table__row),
+.legacy :global(.v2-campaign-table__row),
+.legacy :global(.v2-ads-table__row),
+.legacy :global(.v2-source-table__row),
+.legacy :global(.v2-sync-table__row) {
+  border-color: var(--ui-v3-border);
+  background: var(--ui-v3-surface);
+}
+
+.legacy :global(.v2-library-table__row:hover),
+.legacy :global(.v2-creative-table__row:hover),
+.legacy :global(.v2-campaign-table__row:hover),
+.legacy :global(.v2-ads-table__row:hover),
+.legacy :global(.v2-source-table__row:hover),
+.legacy :global(.v2-issues-list > a:hover) {
+  background: color-mix(in srgb, var(--ui-v3-accent) 8%, var(--ui-v3-surface));
+}
+
+.legacy :global(.v2-library-table__head > span),
+.legacy :global(.v2-library-table__row > span),
+.legacy :global(.v2-creative-table__head > span),
+.legacy :global(.v2-creative-table__row > span),
+.legacy :global(.v2-campaign-table__head > span),
+.legacy :global(.v2-campaign-table__row > span),
+.legacy :global(.v2-ads-table__head > span),
+.legacy :global(.v2-ads-table__row > span),
+.legacy :global(.v2-source-table__head > span),
+.legacy :global(.v2-source-table__row > span),
+.legacy :global(.v2-sync-table__head > span),
+.legacy :global(.v2-sync-table__row > span) {
+  border-color: color-mix(in srgb, var(--ui-v3-border) 76%, transparent);
+}
+
+.legacy :global(.v2-creative-table__head > .v2-creative-metric--active) {
+  color: var(--v3-color-info-foreground);
+  background: var(--v3-color-info-surface);
+}
+
+.legacy :global(.v2-creative-table__row > .v2-creative-metric--active) {
+  background: color-mix(in srgb, var(--ui-v3-accent) 8%, var(--ui-v3-surface));
 }
 
 .legacy :global(.v2-source-summary) {
@@ -239,8 +448,83 @@
   background: var(--ui-v3-surface);
 }
 
+.legacy :global(.v2-source-summary > article) {
+  min-width: 0;
+  border-color: transparent;
+  background: var(--ui-v3-surface);
+}
+
 .legacy :global(.v2-source-summary > a[aria-current="page"]) {
-  background: #f5f3ff;
+  background: var(--v3-color-info-surface);
+}
+
+.legacy :global(.v2-event-map article),
+.legacy :global(.v2-event-map dl > div),
+.legacy :global(.v2-affected-entities li),
+.legacy :global(.v2-technical-details) {
+  border-color: var(--ui-v3-border);
+  background: var(--ui-v3-surface-muted);
+}
+
+.legacy :global(.v2-source-note),
+.legacy :global(.v2-manual-sync) {
+  border-color: color-mix(in srgb, var(--ui-v3-accent) 46%, var(--ui-v3-border));
+  background: var(--v3-color-info-surface);
+}
+
+.legacy :global(.v2-source-note strong),
+.legacy :global(.v2-manual-sync strong) {
+  color: var(--ui-v3-text-primary);
+}
+
+/* The connection route predates the V2 namespace but lives in the V3 shell. */
+.legacy :global(.connection-state),
+.legacy :global(.connect-hero),
+.legacy :global(.permission-grid article) {
+  border-color: var(--ui-v3-border);
+  background: var(--ui-v3-surface);
+  box-shadow: none;
+}
+
+.legacy :global(.permission-grid article) {
+  background: var(--ui-v3-surface-muted);
+}
+
+.legacy :global(.loading-shell span) {
+  border-color: var(--ui-v3-border);
+  background: linear-gradient(
+    90deg,
+    var(--ui-v3-surface-muted) 25%,
+    color-mix(in srgb, var(--ui-v3-surface-muted) 68%, var(--ui-v3-surface)) 50%,
+    var(--ui-v3-surface-muted) 75%
+  );
+}
+
+.legacy :global(.v2-overall-health),
+.legacy :global(.v2-health-dimensions article),
+.legacy :global(.v2-coverage-grid article),
+.legacy :global(.v2-coverage-card) {
+  border-color: var(--ui-v3-border);
+  background: var(--ui-v3-surface);
+}
+
+.legacy :global(.v2-overall-health > span:first-child),
+.legacy :global(.v2-coverage-meter) {
+  background: var(--ui-v3-surface-muted);
+}
+
+.legacy :global(.v2-coverage-card--warning) {
+  border-color: color-mix(in srgb, var(--v3-color-warning) 52%, var(--ui-v3-border));
+  background: var(--v3-color-warning-surface);
+}
+
+.legacy :global(.v2-coverage-card--warning .v2-coverage-meter i) {
+  background: var(--v3-color-warning);
+}
+
+.legacy :global(.v2-issues-list > a),
+.legacy :global(.v2-affected-entities li) {
+  border-color: var(--ui-v3-border);
 }
 
 .legacy :global(.v2-detail-list) {
@@ -249,6 +533,46 @@
 
 .legacy :global(.v2-settings-form) {
   min-width: 0;
+}
+
+.legacy :global(.v2-settings-grid > label),
+.legacy :global(.v2-action-editor),
+.legacy :global(.v2-weight-grid label),
+.legacy :global(.v2-security-grid article),
+.legacy :global(.v2-security-card-link),
+.legacy :global(.v2-settings-audit),
+.legacy :global(.v2-metric-presets) {
+  border-color: var(--ui-v3-border);
+  background: var(--ui-v3-surface-muted);
+}
+
+.legacy :global(.v2-settings-grid select),
+.legacy :global(.v2-settings-grid input),
+.legacy :global(.v2-action-editor input),
+.legacy :global(.v2-weight-grid input),
+.legacy :global(.v2-metric-presets__header),
+.legacy :global(.v2-metric-presets__list article),
+.legacy :global(.v2-metric-presets__empty),
+.legacy :global(.v2-settings-audit > header),
+.legacy :global(.v2-settings-audit__changes > li),
+.legacy :global(.v2-settings-footer) {
+  border-color: var(--ui-v3-border);
+  color: var(--ui-v3-text-primary);
+  background: var(--ui-v3-surface);
+}
+
+.legacy :global(.v2-metric-presets__list article > header),
+.legacy :global(.v2-metric-presets__list article > ul > li),
+.legacy :global(.v2-settings-audit__list > li) {
+  border-color: var(--ui-v3-border);
+}
+
+.legacy :global(.v2-settings-toggle > span) {
+  color: var(--ui-v3-text-primary) !important;
+}
+
+.legacy :global(.v2-action-chip button:hover) {
+  background: var(--ui-v3-surface);
 }
 
 .legacy :global(.v2-settings-footer) {

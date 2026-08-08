@@ -9,14 +9,16 @@ import {
   Link2,
   ListTree,
   Menu,
+  Moon,
   Settings,
   ShieldCheck,
+  Sun,
   TrendingUp,
   X,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import {
   buildNavigationHref,
@@ -158,6 +160,28 @@ export type AppShellV3Props = {
   pageTitle?: string;
 };
 
+type ShellTheme = "dark" | "light";
+
+const SHELL_THEME_STORAGE_KEY = "meta-growth-tracker-v3-theme";
+
+function persistedShellTheme(): ShellTheme {
+  if (typeof window === "undefined") return "dark";
+
+  const persistedTheme = window.localStorage.getItem(SHELL_THEME_STORAGE_KEY);
+  return persistedTheme === "light" || persistedTheme === "dark"
+    ? persistedTheme
+    : "dark";
+}
+
+function subscribeToShellTheme(onChange: () => void) {
+  window.addEventListener("storage", onChange);
+  window.addEventListener("v3-theme-change", onChange);
+  return () => {
+    window.removeEventListener("storage", onChange);
+    window.removeEventListener("v3-theme-change", onChange);
+  };
+}
+
 /**
  * Presentation-only V3 application shell. It deliberately keeps the existing
  * navigation query contract and carries no mutation controls.
@@ -176,6 +200,11 @@ export function AppShellV3({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const theme = useSyncExternalStore(
+    subscribeToShellTheme,
+    persistedShellTheme,
+    () => "dark",
+  );
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
@@ -198,6 +227,12 @@ export function AppShellV3({
     : isConnected
       ? "Meta đã kết nối"
       : "Meta chưa kết nối";
+
+  const toggleTheme = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    window.localStorage.setItem(SHELL_THEME_STORAGE_KEY, next);
+    window.dispatchEvent(new Event("v3-theme-change"));
+  };
 
   useEffect(() => {
     if (!mobileOpen) {
@@ -256,7 +291,7 @@ export function AppShellV3({
   }, [mobileOpen]);
 
   return (
-    <div className="v3-app-shell">
+    <div className="v3-app-shell" data-theme={theme}>
       <button
         ref={mobileMenuRef}
         className="v3-app-shell__mobile-menu"
@@ -394,6 +429,23 @@ export function AppShellV3({
               <ShieldCheck aria-hidden="true" size={14} />
               <span>Chỉ đọc</span>
             </span>
+            <button
+              className="v3-app-shell__theme-toggle"
+              type="button"
+              aria-label={theme === "dark" ? "Chuyển sang chế độ sáng" : "Chuyển sang chế độ tối"}
+              aria-pressed={theme === "light"}
+              title={theme === "dark" ? "Chế độ sáng" : "Chế độ tối"}
+              onClick={toggleTheme}
+            >
+              {theme === "dark" ? (
+                <Sun aria-hidden="true" size={14} />
+              ) : (
+                <Moon aria-hidden="true" size={14} />
+              )}
+              <span className="v3-app-shell__theme-toggle-label">
+                {theme === "dark" ? "Sáng" : "Tối"}
+              </span>
+            </button>
             <span
               className="v3-app-shell__topbar-owner"
               aria-label={`Chủ sở hữu: ${resolvedOwnerName}`}
